@@ -1,0 +1,72 @@
+{
+  "collections": [
+    {
+      "name": "products",
+      "description": "Fashion catalog items, imagery, pricing, and dimensional variants (size x color matrix)",
+      "fields": {
+        "name": "string",
+        "category": "string",
+        "description": "string",
+        "tags": "array",
+        "price": "number",
+        "cost": "number",
+        "enabledOnline": "boolean",
+        "images": "array",
+        "coverIndex": "number",
+        "variants": "array",
+        "totalStock": "number",
+        "createdAt": "string",
+        "updatedAt": "string"
+      }
+    },
+    {
+      "name": "sales",
+      "description": "Commercial ledger sales records, items snapshot, payment transactions, and statuses",
+      "fields": {
+        "id": "string",
+        "date": "string",
+        "customer": "string",
+        "contactInfo": "string",
+        "dueDate": "string",
+        "items": "array",
+        "subtotal": "number",
+        "total": "number",
+        "paidTotal": "number",
+        "pendingBalance": "number",
+        "status": "string",
+        "payments": "array",
+        "createdAt": "string",
+        "updatedAt": "string"
+      }
+    },
+    {
+      "name": "storeSettings",
+      "description": "Brand customizer configuration, logo, active palette, categories, and master variants",
+      "fields": {
+        "logoUrl": "string",
+        "logoScale": "number",
+        "primaryColor": "string",
+        "secondaryColor": "string",
+        "backgroundColor": "string",
+        "whatsappEnabled": "boolean",
+        "whatsappNumber": "string",
+        "categories": "array",
+        "masterSizes": "array",
+        "masterColors": "array",
+        "updatedAt": "string"
+      }
+    },
+    {
+      "name": "users",
+      "description": "User profiles authenticated via Google Sign-In with Firebase Auth",
+      "fields": {
+        "uid": "string",
+        "email": "string",
+        "displayName": "string",
+        "photoURL": "string",
+        "role": "string",
+        "createdAt": "string"
+      }
+    }
+  ]
+}

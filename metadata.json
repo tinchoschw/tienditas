@@ -1,0 +1,6 @@
+{
+  "name": "Atelier Studio - Plataforma Boutique de Moda y Operaciones",
+  "description": "Plataforma de moda boutique con catálogo en línea, control dimensional de inventario y variantes talle x color, registro de ventas y cobros sincronizado, y personalización de marca con autenticación Firebase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
