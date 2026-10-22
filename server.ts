@@ -438,8 +438,13 @@ ${guide}
     });
   }
 });
+
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://tienditas.ai.studio').replace(/\/+$/, '');
+const MP_APP_ID = process.env.MERCADOPAGO_APP_ID || '1254765898303511';
+const MP_REDIRECT_URI = `${PUBLIC_BASE_URL}/api/mercadopago/oauth/callback`;
+
 let platformMpConfig = {
-  appId: process.env.MERCADOPAGO_APP_ID || '1254765898303511',
+  appId: MP_APP_ID,
   publicKey: process.env.MERCADOPAGO_PUBLIC_KEY || '',
   accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || '',
   sandboxMode: process.env.MERCADOPAGO_SANDBOX !== 'false',
@@ -585,40 +590,17 @@ app.post('/api/mercadopago/verify-credentials', async (req, res) => {
 // -------- MERCADO PAGO OFFICIAL OAUTH (CONNECT) ---------
 // ========================================================
 
-// Helper to determine the public container origin
-function getAppOrigin(req: any): string {
-  // If client provided its origin explicitly in query param or header
-  const clientOrigin = String(req.query?.clientOrigin || req.headers?.['x-client-origin'] || '').trim();
-  if (clientOrigin && (clientOrigin.startsWith('http://') || clientOrigin.startsWith('https://'))) {
-    return clientOrigin.replace(/\/+$/, '');
-  }
-
-  // Check Cloud Run forwarded headers
-  const fHost = req.headers?.['x-forwarded-host'];
-  const fProto = req.headers?.['x-forwarded-proto'] || 'https';
-  if (fHost && typeof fHost === 'string') {
-    return `${fProto}://${fHost.split(',')[0].trim()}`;
-  }
-
-  // Fallback to APP_URL or Host
-  if (process.env.APP_URL) {
-    return process.env.APP_URL.replace(/\/+$/, '');
-  }
-
-  const host = req.headers?.host || 'localhost:3000';
-  const protocol = req.headers?.['x-forwarded-proto'] || 'http';
-  return `${protocol}://${host}`;
-}
+// ========================================================
+// -------- MERCADO PAGO OFFICIAL OAUTH (CONNECT) ---------
+// ========================================================
 
 // 0. Endpoint to get authorization URL dynamically for popups (recommended by AI Studio iframe guidelines)
 app.get('/api/mercadopago/oauth/url', (req, res) => {
   try {
     const storeSlug = String(req.query.storeSlug || 'apolo').trim();
     const isSandbox = req.query.isSandbox === 'true';
-    const appId = platformMpConfig.appId || '1254765898303511';
-
-    const origin = getAppOrigin(req);
-    const redirectUri = `${origin}/api/mercadopago/oauth/callback`;
+    const appId = MP_APP_ID;
+    const redirectUri = MP_REDIRECT_URI;
     // Clean URL-safe state: letters, numbers and underscores only (no colons or special chars)
     const state = `${storeSlug}_${isSandbox ? 'sandbox' : 'prod'}`;
 
@@ -632,7 +614,7 @@ app.get('/api/mercadopago/oauth/url', (req, res) => {
       state,
       storeSlug,
       isSandbox,
-      origin,
+      origin: PUBLIC_BASE_URL,
     });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || 'Error al generar URL de autorización' });
@@ -644,10 +626,8 @@ app.get('/api/mercadopago/oauth/start', (req, res) => {
   try {
     const storeSlug = String(req.query.storeSlug || 'apolo').trim();
     const isSandbox = req.query.isSandbox === 'true';
-    const appId = platformMpConfig.appId || '1254765898303511';
-
-    const origin = getAppOrigin(req);
-    const redirectUri = `${origin}/api/mercadopago/oauth/callback`;
+    const appId = MP_APP_ID;
+    const redirectUri = MP_REDIRECT_URI;
     const state = `${storeSlug}_${isSandbox ? 'sandbox' : 'prod'}`;
 
     const mpAuthUrl = `https://auth.mercadopago.com/authorization?client_id=${encodeURIComponent(appId)}&response_type=code&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
@@ -665,9 +645,7 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
   try {
     const { code, state, error, error_description } = req.query;
 
-    let origin = getAppOrigin(req);
-
-    // Parse state: "storeSlug_sandbox" or "storeSlug_prod" (also backwards-compatible with "storeSlug:sandbox:...")
+    // Parse state: "storeSlug_sandbox" or "storeSlug_prod"
     let targetStore = 'apolo';
     let isSandbox = false;
     if (typeof state === 'string') {
@@ -679,21 +657,13 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
         const parts = state.split(':');
         targetStore = parts[0] || 'apolo';
         isSandbox = parts[1] === 'sandbox';
-        if (parts[2]) {
-          try {
-            const decoded = Buffer.from(parts[2], 'base64url').toString('utf-8');
-            if (decoded && (decoded.endsWith('.run.app') || decoded.includes('localhost'))) {
-              origin = decoded;
-            }
-          } catch (e) {}
-        }
       } else {
         targetStore = state;
       }
     }
 
-    const redirectUri = `${origin}/api/mercadopago/oauth/callback`;
-    const failUrl = `${origin}/${targetStore}/admin?mp_auth=error&error_desc=${encodeURIComponent(String(error_description || error || 'Autorización cancelada'))}`;
+    const redirectUri = MP_REDIRECT_URI;
+    const failUrl = `${PUBLIC_BASE_URL}/${targetStore}/admin?mp_auth=error&error_desc=${encodeURIComponent(String(error_description || error || 'Autorización cancelada'))}`;
 
     if (error || !code) {
       console.warn('[Mercado Pago OAuth] Authorization cancelled or returned error:', error, error_description);
@@ -740,8 +710,53 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
       `);
     }
 
-    const appId = platformMpConfig.appId || '1254765898303511';
-    const clientSecret = process.env.MERCADOPAGO_CLIENT_SECRET || platformMpConfig.accessToken || process.env.MERCADOPAGO_ACCESS_TOKEN || '';
+    const appId = MP_APP_ID;
+    const clientSecret = process.env.MERCADOPAGO_CLIENT_SECRET;
+
+    if (!clientSecret) {
+      console.error('[Mercado Pago OAuth] Error: Falta configurar MERCADOPAGO_CLIENT_SECRET en el servidor');
+      const errorMsg = 'Falta configurar MERCADOPAGO_CLIENT_SECRET en el servidor';
+      return res.status(500).send(`
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+          <meta charset="utf-8">
+          <title>Mercado Pago - Error de Configuración</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1.5rem; box-sizing: border-box; }
+            .card { background: white; border: 1px solid #fee2e2; border-radius: 1.25rem; padding: 2.25rem 2rem; max-width: 440px; width: 100%; text-align: center; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); }
+            .icon { width: 56px; height: 56px; border-radius: 50%; background: #fee2e2; color: #dc2626; font-size: 28px; display: inline-flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
+            h2 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #991b1b; }
+            p { font-size: 0.875rem; color: #64748b; line-height: 1.5; margin: 0 0 1.25rem; }
+            .btn { display: inline-block; background: #0f172a; color: white; padding: 0.65rem 1.25rem; border-radius: 0.75rem; text-decoration: none; font-size: 0.875rem; font-weight: 600; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="icon">✕</div>
+            <h2>Falta configurar MERCADOPAGO_CLIENT_SECRET</h2>
+            <p>${errorMsg}</p>
+            <a id="btnFallback" href="${failUrl}" class="btn">Volver al Panel</a>
+          </div>
+          <script>
+            if (window.opener && !window.opener.closed) {
+              try {
+                window.opener.postMessage({
+                  type: 'MP_OAUTH_ERROR',
+                  error: ${JSON.stringify(errorMsg)},
+                  storeSlug: ${JSON.stringify(targetStore)}
+                }, '*');
+              } catch (e) {}
+              setTimeout(() => {
+                window.close();
+              }, 3000);
+            }
+          </script>
+        </body>
+        </html>
+      `);
+    }
 
     console.log(`[Mercado Pago OAuth] Exchanging code for store="${targetStore}", isSandbox=${isSandbox}, appId=${appId}`);
 
@@ -960,15 +975,10 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       return res.status(500).json({ error: 'No se configuró un Access Token de Mercado Pago en la plataforma.' });
     }
 
-    // Determine host URL for return callbacks
-    const protocol = req.headers['x-forwarded-proto'] || 'http';
-    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000';
-    const origin = process.env.APP_URL || `${protocol}://${host}`;
-
     const storePath = storeSlug ? `/${storeSlug}` : '';
-    const defaultSuccessUrl = `${origin}${storePath}?payment_status=approved&ext_ref=${encodeURIComponent(externalReference || '')}`;
-    const defaultFailureUrl = `${origin}${storePath}?payment_status=failure&ext_ref=${encodeURIComponent(externalReference || '')}`;
-    const defaultPendingUrl = `${origin}${storePath}?payment_status=pending&ext_ref=${encodeURIComponent(externalReference || '')}`;
+    const defaultSuccessUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=approved&ext_ref=${encodeURIComponent(externalReference || '')}`;
+    const defaultFailureUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=failure&ext_ref=${encodeURIComponent(externalReference || '')}`;
+    const defaultPendingUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=pending&ext_ref=${encodeURIComponent(externalReference || '')}`;
 
     const formattedItems = items.map((it: any, index: number) => ({
       id: String(it.id || it.productId || `item-${index + 1}`),
@@ -999,10 +1009,8 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       binary_mode: false,
     };
 
-    // Add notification webhook URL if publicly accessible HTTPS origin is available
-    if (origin && origin.startsWith('https://')) {
-      preferencePayload.notification_url = `${origin}/api/mercadopago/webhook?storeSlug=${encodeURIComponent(storeSlug || '')}`;
-    }
+    // Add notification webhook URL using PUBLIC_BASE_URL
+    preferencePayload.notification_url = `${PUBLIC_BASE_URL}/api/mercadopago/webhook?storeSlug=${encodeURIComponent(storeSlug || '')}`;
 
     const mpResponse = await fetch('https://api.mercadopago.com/checkout/preferences', {
       method: 'POST',

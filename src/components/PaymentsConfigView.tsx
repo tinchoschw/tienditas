@@ -170,9 +170,8 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
     setConnectingStep('opening');
 
     try {
-      const clientOrigin = typeof window !== 'undefined' ? window.location.origin : '';
       const res = await fetch(
-        `/api/mercadopago/oauth/url?storeSlug=${encodeURIComponent(storeSlug || 'apolo')}&isSandbox=${connectSandbox}&clientOrigin=${encodeURIComponent(clientOrigin)}`
+        `/api/mercadopago/oauth/url?storeSlug=${encodeURIComponent(storeSlug || 'apolo')}&isSandbox=${connectSandbox}`
       );
       if (!res.ok) {
         throw new Error('No se pudo generar la URL de autorización oficial de Mercado Pago.');
@@ -614,7 +613,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    const url = typeof window !== 'undefined' ? `${window.location.origin}/api/mercadopago/oauth/callback` : '/api/mercadopago/oauth/callback';
+                    const url = 'https://tienditas.ai.studio/api/mercadopago/oauth/callback';
                     navigator.clipboard.writeText(url);
                     setCopiedUrl(true);
                     setTimeout(() => setCopiedUrl(false), 2000);
@@ -626,7 +625,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                 </button>
               </div>
               <code className="block p-2 rounded-lg bg-white border border-neutral-200 text-[10px] text-neutral-700 font-mono break-all select-all">
-                {typeof window !== 'undefined' ? `${window.location.origin}/api/mercadopago/oauth/callback` : '/api/mercadopago/oauth/callback'}
+                https://tienditas.ai.studio/api/mercadopago/oauth/callback
               </code>
             </div>
           </div>
