@@ -35,21 +35,26 @@ function setLocalItem<T>(key: string, data: T) {
   }
 }
 
-function getSettingsKey(storeId: string) {
+export function getSettingsKey(storeId: string) {
   return storeId === 'apolo' ? 'atelier_local_settings' : `atelier_local_settings_${storeId}`;
 }
 
-function getProductsKey(storeId: string) {
+export function getProductsKey(storeId: string) {
   return storeId === 'apolo' ? 'atelier_local_products' : `atelier_local_products_${storeId}`;
 }
 
-function getSalesKey(storeId: string) {
+export function getSalesKey(storeId: string) {
   return storeId === 'apolo' ? 'atelier_local_sales' : `atelier_local_sales_${storeId}`;
 }
 
-function normalizeStoreId(val?: string): string {
+export function normalizeStoreId(val?: string): string {
   if (!val || val === 'default') return 'apolo';
   return val.trim().toLowerCase();
+}
+
+// Deep clean helper to ensure Firestore NEVER encounters undefined values
+export function sanitizeForFirestore<T>(data: T): T {
+  return JSON.parse(JSON.stringify(data, (_, value) => (value === undefined ? null : value)));
 }
 
 // ========================================================
@@ -357,11 +362,16 @@ export function subscribeStoreSettings(
             }
           }
 
-          // Otherwise seed INITIAL_SETTINGS
-          const init = storeId === 'apolo' ? INITIAL_SETTINGS : { ...INITIAL_SETTINGS, storeName: storeId };
+          // Otherwise seed settings: prefer existing local changes if available, otherwise INITIAL_SETTINGS
+          const init = (local && (local.storeName || local.mercadoPago?.connected)) 
+            ? local 
+            : (storeId === 'apolo' ? INITIAL_SETTINGS : { ...INITIAL_SETTINGS, storeName: storeId });
           try {
-            await setDoc(settingsDoc, init);
+            await setDoc(settingsDoc, sanitizeForFirestore(init));
             setLocalItem(key, init);
+            if (storeId === 'apolo') {
+              setLocalItem('atelier_local_settings_apolo', init);
+            }
             onData(init);
           } catch (initErr) {
             console.warn('Could not seed settings into Firestore:', initErr);
@@ -408,24 +418,28 @@ export async function updateStoreSettings(
     updatedBy: authorName
   };
   setLocalItem(key, updated);
+  if (storeId === 'apolo') {
+    setLocalItem('atelier_local_settings_apolo', updated);
+  }
 
   try {
+    const cleanUpdated = sanitizeForFirestore(updated);
     const settingsDoc = doc(db, 'stores', storeId, 'settings', 'current');
-    await setDoc(settingsDoc, updated, { merge: true });
+    await setDoc(settingsDoc, cleanUpdated, { merge: true });
 
     // Also sync store metadata in stores collection
-    await setDoc(doc(db, 'stores', storeId), {
+    await setDoc(doc(db, 'stores', storeId), sanitizeForFirestore({
       name: updated.storeName || storeId,
       logoUrl: updated.logoUrl || '',
       whatsappNumber: updated.whatsappNumber || '',
       primaryColor: updated.primaryColor || '#1A1A1A',
       updatedAt: new Date().toISOString()
-    }, { merge: true });
+    }), { merge: true });
 
     // If apolo, mirror to legacy storeSettings/default as well
     if (storeId === 'apolo') {
       try {
-        await setDoc(doc(db, 'storeSettings', 'default'), updated, { merge: true });
+        await setDoc(doc(db, 'storeSettings', 'default'), cleanUpdated, { merge: true });
       } catch (legacyErr) {
         console.warn(legacyErr);
       }

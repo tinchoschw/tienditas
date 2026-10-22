@@ -1,13 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StoreSettings, MercadoPagoConfig } from '../types';
 
 interface PaymentsConfigViewProps {
+  storeSlug?: string;
   settings: StoreSettings;
+  isSandboxStore?: boolean;
   onSaveSettings: (newSettings: StoreSettings) => Promise<StoreSettings>;
 }
 
 export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
+  storeSlug = 'apolo',
   settings,
+  isSandboxStore = false,
   onSaveSettings,
 }) => {
   // Current store connection state
@@ -19,7 +23,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
     sandboxMode: false
   };
 
-  // A store is connected if connected is true AND it has an email or nickname
+  // A store is connected if connected is true AND it has an email or nickname or accessToken
   const isConnected = Boolean(mpState.connected && (mpState.accountEmail || mpState.accountNickname || mpState.accessToken));
   const isPaymentEnabled = isConnected && mpState.enabled !== false;
 
@@ -28,12 +32,13 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
 
-  // 1-Click Connect Modal state
+  // Official OAuth Connect Modal state
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
-  const [connectingStep, setConnectingStep] = useState<'form' | 'authorizing' | 'success'>('form');
-  const [connectEmail, setConnectEmail] = useState(mpState.accountEmail || '');
-  const [connectNickname, setConnectNickname] = useState(mpState.accountNickname || settings.storeName || '');
-  const [connectSandbox, setConnectSandbox] = useState<boolean>(Boolean(mpState.sandboxMode));
+  const [connectingStep, setConnectingStep] = useState<'form' | 'opening' | 'authorizing' | 'success' | 'error'>('form');
+  const [connectSandbox, setConnectSandbox] = useState<boolean>(isSandboxStore ? Boolean(mpState.sandboxMode) : false);
+  const [authUrl, setAuthUrl] = useState<string>('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [copiedUrl, setCopiedUrl] = useState(false);
 
   // Disconnect confirmation modal
   const [isDisconnectModalOpen, setIsDisconnectModalOpen] = useState(false);
@@ -46,6 +51,56 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [customAccessToken, setCustomAccessToken] = useState(mpState.accessToken || '');
   const [customPublicKey, setCustomPublicKey] = useState(mpState.publicKey || '');
+
+  // Listen for official OAuth postMessage callback from the Mercado Pago authorization popup
+  useEffect(() => {
+    const handleMessage = async (event: MessageEvent) => {
+      if (!event.data) return;
+
+      if (event.data.type === 'MP_OAUTH_SUCCESS') {
+        const { accountEmail, accountNickname, accessToken, publicKey, isSandbox } = event.data;
+        try {
+          const updatedConfig: MercadoPagoConfig = {
+            connected: true,
+            enabled: true,
+            accountEmail: accountEmail || '',
+            accountNickname: accountNickname || settings.storeName || 'Mercado Pago',
+            sandboxMode: Boolean(isSandbox),
+            connectedAt: new Date().toISOString(),
+            lastVerifiedAt: new Date().toISOString(),
+            accessToken: accessToken || '',
+            publicKey: publicKey || '',
+          };
+
+          await onSaveSettings({
+            ...settings,
+            mercadoPago: updatedConfig,
+          });
+
+          setConnectingStep('success');
+          setEnabled(true);
+          setSaveSuccess(true);
+
+          setTimeout(() => {
+            setIsConnectModalOpen(false);
+            setConnectingStep('form');
+            setTimeout(() => setSaveSuccess(false), 3000);
+          }, 1500);
+        } catch (err) {
+          console.error('Error saving OAuth credentials:', err);
+          setAuthError('Error al sincronizar la cuenta con la tienda.');
+          setConnectingStep('error');
+        }
+      } else if (event.data.type === 'MP_OAUTH_ERROR') {
+        console.warn('OAuth Error received from popup:', event.data.error);
+        setAuthError(event.data.error || 'No se completó la vinculación en Mercado Pago.');
+        setConnectingStep('error');
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [settings, onSaveSettings]);
 
   // Toggle payment method in store catalog
   const handleToggleEnabled = async (nextEnabled: boolean) => {
@@ -75,38 +130,13 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
     }
   };
 
-  // Open 1-Click Connect Modal
-  const handleOpenConnectModal = () => {
-    setConnectEmail(mpState.accountEmail || '');
-    setConnectNickname(mpState.accountNickname || settings.storeName || 'Mi Tienda');
-    setConnectSandbox(Boolean(mpState.sandboxMode));
-    setConnectingStep('form');
-    setIsConnectModalOpen(true);
-  };
-
-  // Perform 1-Click Linking
-  const handlePerformLink = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!connectEmail.trim()) {
-      return;
-    }
-
-    setConnectingStep('authorizing');
-
-    // Simulate official OAuth handshake with Mercado Pago
-    await new Promise((resolve) => setTimeout(resolve, 1400));
-
+  // Quick toggle between Sandbox and Production (Only available for sandbox store)
+  const handleToggleSandboxMode = async (nextSandbox: boolean) => {
+    setIsSaving(true);
     try {
       const updatedConfig: MercadoPagoConfig = {
-        connected: true,
-        enabled: true,
-        accountEmail: connectEmail.trim(),
-        accountNickname: connectNickname.trim() || settings.storeName || 'Mi Tienda',
-        sandboxMode: connectSandbox,
-        connectedAt: new Date().toISOString(),
-        lastVerifiedAt: new Date().toISOString(),
-        accessToken: customAccessToken.trim() || undefined,
-        publicKey: customPublicKey.trim() || undefined,
+        ...mpState,
+        sandboxMode: nextSandbox,
       };
 
       await onSaveSettings({
@@ -114,18 +144,63 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
         mercadoPago: updatedConfig
       });
 
-      setConnectingStep('success');
-      setEnabled(true);
       setSaveSuccess(true);
-
-      setTimeout(() => {
-        setIsConnectModalOpen(false);
-        setConnectingStep('form');
-        setTimeout(() => setSaveSuccess(false), 3000);
-      }, 1200);
+      setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
-      console.error('Error al vincular cuenta de Mercado Pago:', err);
-      setConnectingStep('form');
+      console.error('Error toggling sandbox mode:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Open Official Connect Modal
+  const handleOpenConnectModal = () => {
+    // Normal stores always connect in production mode (false).
+    // ONLY the dedicated test store (isSandboxStore) uses sandbox mode.
+    setConnectSandbox(isSandboxStore ? Boolean(mpState.sandboxMode ?? true) : false);
+    setAuthError(null);
+    setAuthUrl('');
+    setConnectingStep('form');
+    setIsConnectModalOpen(true);
+  };
+
+  // Initiate official OAuth Handshake popup with Mercado Pago
+  const handleStartOAuth = async () => {
+    setAuthError(null);
+    setConnectingStep('opening');
+
+    try {
+      const clientOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+      const res = await fetch(
+        `/api/mercadopago/oauth/url?storeSlug=${encodeURIComponent(storeSlug || 'apolo')}&isSandbox=${connectSandbox}&clientOrigin=${encodeURIComponent(clientOrigin)}`
+      );
+      if (!res.ok) {
+        throw new Error('No se pudo generar la URL de autorización oficial de Mercado Pago.');
+      }
+      const data = await res.json();
+      if (!data.url) {
+        throw new Error('Respuesta inválida del servidor.');
+      }
+
+      setAuthUrl(data.url);
+      setConnectingStep('authorizing');
+
+      // Open official Mercado Pago OAuth directly in popup
+      const popup = window.open(
+        data.url,
+        'mercadopago_oauth_popup',
+        'width=640,height=760,scrollbars=yes,resizable=yes'
+      );
+
+      if (!popup) {
+        setAuthError(
+          'Tu navegador bloqueó la ventana emergente. Hacé clic en "Abrir ventana de Mercado Pago" a continuación.'
+        );
+      }
+    } catch (err: any) {
+      console.error('Error initiating MP OAuth:', err);
+      setAuthError(err?.message || 'Error al conectar con Mercado Pago');
+      setConnectingStep('error');
     }
   };
 
@@ -139,8 +214,8 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
         accountEmail: '',
         accountNickname: '',
         sandboxMode: false,
-        connectedAt: undefined,
-        lastVerifiedAt: undefined,
+        connectedAt: '',
+        lastVerifiedAt: '',
         accessToken: '',
         publicKey: ''
       };
@@ -152,7 +227,6 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
 
       setIsDisconnectModalOpen(false);
       setEnabled(false);
-      setConnectEmail('');
       setCustomAccessToken('');
       setCustomPublicKey('');
       setSaveSuccess(true);
@@ -229,7 +303,12 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                     Sin vincular
                   </span>
                 )}
-                {isConnected && mpState.sandboxMode && (
+                {isSandboxStore && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                    TIENDA TEST (SANDBOX)
+                  </span>
+                )}
+                {isSandboxStore && isConnected && mpState.sandboxMode && (
                   <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200">
                     MODO PRUEBAS
                   </span>
@@ -335,9 +414,17 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                     <span className="text-xs font-bold text-emerald-700 uppercase tracking-wider bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
                       Cuenta Activa & Vinculada
                     </span>
-                    {mpState.sandboxMode && (
-                      <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-200">
-                        Sandbox (Pruebas)
+                    {isSandboxStore ? (
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                        mpState.sandboxMode
+                          ? 'bg-purple-50 text-purple-700 border-purple-200'
+                          : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      }`}>
+                        {mpState.sandboxMode ? 'Sandbox (Pruebas)' : 'Producción (Real)'}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold text-neutral-600 bg-neutral-100 px-2 py-0.5 rounded-md border border-neutral-200">
+                        Producción (Cobros Reales)
                       </span>
                     )}
                   </div>
@@ -385,11 +472,31 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
               </div>
             </div>
 
-            {/* Quick verify banner */}
-            {verifyMessage && (
-              <div className="mt-4 p-2.5 rounded-lg text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 flex items-center gap-2 animate-fade-in">
-                <span className="material-symbols-outlined text-sm">verified</span>
-                <span>{verifyMessage}</span>
+            {/* In-card sandbox switch ONLY for test store */}
+            {isSandboxStore && (
+              <div className="mt-5 pt-4 border-t border-emerald-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-emerald-50/60 -mx-6 -mb-6 p-4 px-6 rounded-b-2xl">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-neutral-900">Entorno de Pruebas (Exclusivo Tienda Sandbox)</span>
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 bg-amber-200 text-amber-900 rounded">Admin Test</span>
+                  </div>
+                  <p className="text-[11px] text-neutral-500 mt-0.5">
+                    {mpState.sandboxMode
+                      ? 'Activo: los pagos en esta tienda se procesan con tarjetas de prueba de Mercado Pago.'
+                      : 'Activo en Producción: los pagos se procesan con tarjetas y saldo real.'}
+                  </p>
+                </div>
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <span className="text-xs font-bold text-neutral-700">
+                    {mpState.sandboxMode ? 'Sandbox (Test)' : 'Producción (Real)'}
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(mpState.sandboxMode)}
+                    onChange={(e) => handleToggleSandboxMode(e.target.checked)}
+                    className="w-4 h-4 text-[#009EE3] rounded border-neutral-300 focus:ring-[#009EE3] cursor-pointer"
+                  />
+                </label>
               </div>
             )}
           </div>
@@ -500,6 +607,28 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                 </button>
               </div>
             </form>
+
+            <div className="pt-3 border-t border-neutral-200">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-bold text-neutral-700">URL de redireccionamiento (Callback) para MP Developers:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const url = typeof window !== 'undefined' ? `${window.location.origin}/api/mercadopago/oauth/callback` : '/api/mercadopago/oauth/callback';
+                    navigator.clipboard.writeText(url);
+                    setCopiedUrl(true);
+                    setTimeout(() => setCopiedUrl(false), 2000);
+                  }}
+                  className="text-[11px] font-semibold text-[#009EE3] hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-xs">{copiedUrl ? 'check' : 'content_copy'}</span>
+                  <span>{copiedUrl ? '¡Copiada!' : 'Copiar URL'}</span>
+                </button>
+              </div>
+              <code className="block p-2 rounded-lg bg-white border border-neutral-200 text-[10px] text-neutral-700 font-mono break-all select-all">
+                {typeof window !== 'undefined' ? `${window.location.origin}/api/mercadopago/oauth/callback` : '/api/mercadopago/oauth/callback'}
+              </code>
+            </div>
           </div>
         )}
       </div>
@@ -527,114 +656,200 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setIsConnectModalOpen(false)}
-                disabled={connectingStep === 'authorizing'}
-                className="text-neutral-400 hover:text-neutral-600 p-1 rounded-lg hover:bg-neutral-100 transition-colors cursor-pointer"
+                onClick={() => {
+                  setIsConnectModalOpen(false);
+                  setConnectingStep('form');
+                }}
+                className="text-neutral-400 hover:text-neutral-700 p-1.5 rounded-lg hover:bg-neutral-100 transition-colors cursor-pointer"
+                title="Cerrar ventana"
               >
-                <span className="material-symbols-outlined text-lg">close</span>
+                <span className="material-symbols-outlined text-xl">close</span>
               </button>
             </div>
 
             {/* Modal Body based on Step */}
             {connectingStep === 'form' && (
-              <form onSubmit={handlePerformLink} className="space-y-4 pt-4">
-                <div className="p-3.5 rounded-xl bg-blue-50/70 border border-blue-100 text-xs text-blue-900 flex items-start gap-2.5">
-                  <span className="material-symbols-outlined text-blue-600 text-base shrink-0 mt-0.5">info</span>
-                  <p className="leading-relaxed">
-                    Autorizá la conexión para que los pagos de tus clientes ingresen directamente a tu cuenta bancaria o saldo de Mercado Pago.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-neutral-800 mb-1.5">
-                    Email o Usuario de tu cuenta de Mercado Pago <span className="text-rose-500">*</span>
-                  </label>
-                  <div className="relative">
-                    <span className="material-symbols-outlined absolute left-3 top-2.5 text-neutral-400 text-lg">
-                      mail
-                    </span>
-                    <input
-                      type="email"
-                      required
-                      value={connectEmail}
-                      onChange={(e) => setConnectEmail(e.target.value)}
-                      placeholder="ej: cobros@mitienda.com"
-                      className="w-full pl-9 pr-3 py-2.5 bg-neutral-50 border border-neutral-300 rounded-xl text-sm focus:bg-white focus:ring-2 focus:ring-[#009EE3] focus:border-transparent focus:outline-none transition-all"
-                    />
+              <div className="space-y-4 pt-4">
+                <div className="p-3.5 rounded-xl bg-blue-50/80 border border-blue-200/80 text-xs text-blue-900 flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-[#009EE3] text-lg shrink-0 mt-0.5">verified_user</span>
+                  <div className="space-y-1">
+                    <p className="font-semibold text-blue-950">
+                      Conexión oficial directa con Mercado Pago
+                    </p>
+                    <p className="text-blue-800/90 leading-relaxed text-[11px]">
+                      Al continuar, se abrirá la ventana oficial de Mercado Pago para autorizar a <strong>{settings.storeName || 'tu tienda'}</strong> a recibir pagos.
+                    </p>
                   </div>
-                  <p className="text-[11px] text-neutral-500 mt-1">
-                    Es el email con el que iniciás sesión en mercadopago.com
-                  </p>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-neutral-800 mb-1.5">
-                    Nombre o Razón Social (para el comprobante)
-                  </label>
-                  <input
-                    type="text"
-                    value={connectNickname}
-                    onChange={(e) => setConnectNickname(e.target.value)}
-                    placeholder="ej: Apolo Store Indumentaria"
-                    className="w-full px-3 py-2.5 bg-neutral-50 border border-neutral-300 rounded-xl text-sm focus:bg-white focus:ring-2 focus:ring-[#009EE3] focus:border-transparent focus:outline-none transition-all"
-                  />
+                <div className="space-y-2.5 py-1 text-xs text-neutral-600">
+                  <div className="flex items-start gap-2">
+                    <span className="material-symbols-outlined text-emerald-600 text-base shrink-0 mt-0.5">check_circle</span>
+                    <span>Los cobros de tus clientes van directo a tu dinero en cuenta o banco.</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="material-symbols-outlined text-emerald-600 text-base shrink-0 mt-0.5">check_circle</span>
+                    <span>100% seguro: nunca ingresás contraseñas en esta plataforma.</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="material-symbols-outlined text-emerald-600 text-base shrink-0 mt-0.5">check_circle</span>
+                    <span>Podés desvincular la cuenta cuando quieras desde este panel.</span>
+                  </div>
                 </div>
 
-                {/* Sandbox / Production Selector */}
-                <div className="pt-2">
-                  <label className="flex items-center justify-between p-3 rounded-xl border border-neutral-200 bg-neutral-50 hover:bg-neutral-100/60 transition-colors cursor-pointer">
-                    <div className="space-y-0.5">
-                      <span className="text-xs font-bold text-neutral-800 block">Modo de Pruebas (Sandbox)</span>
-                      <span className="text-[11px] text-neutral-500 block">
-                        Activá esto si querés probar compras con tarjetas ficticias sin dinero real.
-                      </span>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={connectSandbox}
-                      onChange={(e) => setConnectSandbox(e.target.checked)}
-                      className="w-4 h-4 text-[#009EE3] rounded border-neutral-300 focus:ring-[#009EE3]"
-                    />
-                  </label>
-                </div>
+                {/* Exclusivo y ÚNICAMENTE para la tienda de pruebas Sandbox */}
+                {isSandboxStore && (
+                  <div className="pt-2">
+                    <label className="flex items-start justify-between p-3 rounded-xl border border-amber-200 bg-amber-50/70 hover:bg-amber-100/60 transition-colors cursor-pointer gap-3">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-bold text-amber-900">Entorno de Pruebas (Exclusivo Tienda Sandbox)</span>
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-amber-200 text-amber-900 rounded">Test</span>
+                        </div>
+                        <span className="text-[11px] text-amber-800 block leading-relaxed">
+                          Activá esto si vas a iniciar sesión con una cuenta de vendedor de prueba creada en Mercado Pago Developers.
+                        </span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={connectSandbox}
+                        onChange={(e) => setConnectSandbox(e.target.checked)}
+                        className="w-4 h-4 mt-0.5 text-[#009EE3] rounded border-neutral-300 focus:ring-[#009EE3] cursor-pointer"
+                      />
+                    </label>
+                  </div>
+                )}
 
                 {/* Submit Action */}
                 <div className="flex items-center justify-end gap-3 pt-4 border-t border-neutral-100">
                   <button
                     type="button"
-                    onClick={() => setIsConnectModalOpen(false)}
+                    onClick={() => {
+                      setIsConnectModalOpen(false);
+                      setConnectingStep('form');
+                    }}
                     className="px-4 py-2.5 text-xs font-semibold text-neutral-600 hover:text-neutral-900 rounded-xl transition-colors cursor-pointer"
                   >
                     Cancelar
                   </button>
                   <button
-                    type="submit"
+                    type="button"
+                    onClick={handleStartOAuth}
                     className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#009EE3] hover:bg-[#0089c7] text-white text-xs font-bold rounded-xl shadow-md transition-all cursor-pointer"
                   >
-                    <span className="material-symbols-outlined text-sm">link</span>
-                    <span>Autorizar y Vincular</span>
+                    <span>Conectar con Mercado Pago</span>
+                    <span className="material-symbols-outlined text-sm">open_in_new</span>
                   </button>
                 </div>
-              </form>
+              </div>
+            )}
+
+            {connectingStep === 'opening' && (
+              <div className="py-12 flex flex-col items-center justify-center text-center space-y-4">
+                <div className="w-14 h-14 rounded-full border-4 border-[#009EE3]/20 border-t-[#009EE3] animate-spin"></div>
+                <div>
+                  <h4 className="text-sm font-bold text-neutral-900">
+                    Generando enlace seguro...
+                  </h4>
+                  <p className="text-xs text-neutral-500 mt-1">
+                    Conectando con los servidores oficiales de Mercado Pago
+                  </p>
+                </div>
+              </div>
             )}
 
             {connectingStep === 'authorizing' && (
-              <div className="py-12 flex flex-col items-center justify-center text-center space-y-4">
-                <div className="w-16 h-16 rounded-full border-4 border-[#009EE3]/20 border-t-[#009EE3] animate-spin"></div>
+              <div className="py-8 flex flex-col items-center justify-center text-center space-y-4">
+                <div className="relative">
+                  <div className="w-16 h-16 rounded-2xl bg-[#009EE3]/10 text-[#009EE3] flex items-center justify-center font-bold text-3xl">
+                    <span className="material-symbols-outlined text-3xl animate-pulse">lock_open</span>
+                  </div>
+                  <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-emerald-500 border-2 border-white animate-ping"></div>
+                </div>
+
+                <div className="max-w-xs">
+                  <h4 className="text-sm font-bold text-neutral-900">
+                    Ventana de Mercado Pago abierta
+                  </h4>
+                  <p className="text-xs text-neutral-500 mt-1.5 leading-relaxed">
+                    Iniciá sesión y aceptá los permisos en la ventana emergente oficial. Tu panel se vinculará automáticamente.
+                  </p>
+                </div>
+
+                {authUrl && (
+                  <div className="pt-2">
+                    <a
+                      href={authUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-sm">open_in_new</span>
+                      <span>¿No se abrió la ventana? Hacé clic acá</span>
+                    </a>
+                  </div>
+                )}
+
+                <div className="pt-4 border-t border-neutral-100 w-full flex items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setConnectingStep('form')}
+                    className="px-3.5 py-1.5 text-xs text-neutral-600 hover:text-neutral-900 font-semibold rounded-lg hover:bg-neutral-100 transition-colors cursor-pointer"
+                  >
+                    Volver atrás
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsConnectModalOpen(false);
+                      setConnectingStep('form');
+                    }}
+                    className="px-3.5 py-1.5 text-xs text-rose-600 hover:text-rose-700 font-semibold rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
+                  >
+                    Cancelar vinculación
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {connectingStep === 'error' && (
+              <div className="py-8 flex flex-col items-center justify-center text-center space-y-4 animate-fade-in">
+                <div className="w-14 h-14 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-3xl">error_outline</span>
+                </div>
                 <div>
                   <h4 className="text-sm font-bold text-neutral-900">
-                    Conectando con Mercado Pago...
+                    No se completó la vinculación
                   </h4>
-                  <p className="text-xs text-neutral-500 mt-1">
-                    Validando autorización y vinculando cuenta para {connectEmail}
+                  <p className="text-xs text-rose-600 mt-1 max-w-xs leading-relaxed">
+                    {authError || 'La autorización fue cancelada o expiró.'}
                   </p>
+                </div>
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsConnectModalOpen(false);
+                      setConnectingStep('form');
+                    }}
+                    className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:text-neutral-900 rounded-xl"
+                  >
+                    Cerrar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleStartOAuth}
+                    className="px-5 py-2 bg-[#009EE3] hover:bg-[#0089c7] text-white text-xs font-bold rounded-xl shadow-sm transition-all"
+                  >
+                    Reintentar vinculación
+                  </button>
                 </div>
               </div>
             )}
 
             {connectingStep === 'success' && (
               <div className="py-10 flex flex-col items-center justify-center text-center space-y-3 animate-fade-in">
-                <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center font-bold text-2xl">
+                <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center font-bold text-2xl shadow-sm">
                   <span className="material-symbols-outlined text-3xl">check</span>
                 </div>
                 <div>
@@ -642,7 +857,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                     ¡Cuenta Vinculada con Éxito!
                   </h4>
                   <p className="text-xs text-neutral-500 mt-1">
-                    Tu tienda ya puede recibir cobros con Mercado Pago.
+                    Tu tienda ya está lista para procesar cobros directos.
                   </p>
                 </div>
               </div>

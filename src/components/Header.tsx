@@ -14,6 +14,7 @@ interface HeaderProps {
   featureFlags?: StoreFeatureFlags;
   onExitAdmin: () => void;
   onLogoutAdmin: () => void;
+  onOpenHelpAssistant?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -28,7 +29,8 @@ export const Header: React.FC<HeaderProps> = ({
   isSandbox = false,
   featureFlags,
   onExitAdmin,
-  onLogoutAdmin
+  onLogoutAdmin,
+  onOpenHelpAssistant
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const scale = typeof settings.logoScale === 'number' && settings.logoScale > 0 ? settings.logoScale : 100;
@@ -157,23 +159,34 @@ export const Header: React.FC<HeaderProps> = ({
             </nav>
 
 
-            <div className="flex items-center gap-2 sm:gap-3">
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              {onOpenHelpAssistant && (
+                <button
+                  onClick={onOpenHelpAssistant}
+                  className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-200 text-xs font-semibold transition-all cursor-pointer shadow-xs hover:shadow-sm"
+                  title="Abrir Asistente de Ayuda"
+                >
+                  <span className="text-[13px] leading-none">✨</span>
+                  <span>Ayuda</span>
+                </button>
+              )}
+
               <button
                 onClick={onExitAdmin}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#efeded] hover:bg-neutral-200 text-black text-xs font-medium transition-colors"
+                className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-neutral-800 text-xs font-medium transition-all cursor-pointer border border-neutral-200/60 shadow-xs"
                 title="Ver la tienda como cliente"
               >
                 <span className="material-symbols-outlined text-[16px]">visibility</span>
-                <span className="hidden sm:inline">Ver Tienda Online</span>
+                <span>Ver Tienda Online</span>
               </button>
 
               <button
                 onClick={onLogoutAdmin}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 text-red-700 hover:bg-red-50 text-xs font-medium transition-colors"
+                className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-red-200 text-red-700 bg-red-50/40 hover:bg-red-50 text-xs font-medium transition-colors cursor-pointer shadow-xs"
                 title="Cerrar sesión de administración"
               >
                 <span className="material-symbols-outlined text-[16px]">logout</span>
-                <span className="hidden sm:inline">Cerrar Sesión</span>
+                <span>Cerrar Sesión</span>
               </button>
 
               {/* Mobile menu trigger */}
@@ -276,24 +289,43 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="material-symbols-outlined text-[16px]">credit_card</span>
             </button>
 
-            <div className="pt-2 border-t border-neutral-100 flex items-center justify-between">
-              <button
-                onClick={() => {
-                  onExitAdmin();
-                  setMobileMenuOpen(false);
-                }}
-                className="text-xs font-medium text-neutral-600 hover:text-black py-1.5"
-              >
-                Ver Tienda Online
-              </button>
+            {/* Divider and bottom action buttons with solid entity */}
+            <div className="pt-3 mt-3 border-t border-neutral-200/80 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => {
+                    onExitAdmin();
+                    setMobileMenuOpen(false);
+                  }}
+                  className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-neutral-800 text-xs font-semibold transition-all cursor-pointer border border-neutral-200/70 shadow-xs"
+                >
+                  <span className="material-symbols-outlined text-[17px]">visibility</span>
+                  <span>Ver Tienda</span>
+                </button>
+
+                {onOpenHelpAssistant && (
+                  <button
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      onOpenHelpAssistant();
+                    }}
+                    className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-semibold transition-all cursor-pointer border border-amber-200 shadow-xs"
+                  >
+                    <span className="text-[14px]">✨</span>
+                    <span>Ayuda</span>
+                  </button>
+                )}
+              </div>
+
               <button
                 onClick={() => {
                   onLogoutAdmin();
                   setMobileMenuOpen(false);
                 }}
-                className="text-xs font-medium text-red-600 hover:text-red-700 py-1.5"
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border border-red-200 bg-red-50/60 hover:bg-red-100/60 text-red-700 text-xs font-semibold transition-colors cursor-pointer"
               >
-                Cerrar Sesión
+                <span className="material-symbols-outlined text-[17px]">logout</span>
+                <span>Cerrar Sesión</span>
               </button>
             </div>
           </div>

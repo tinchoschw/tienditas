@@ -7,8 +7,6 @@ interface AdminLoginViewProps {
   onBackToStore: () => void;
 }
 
-export const MASTER_BACKUP_KEY = 'AdminApolo2026!';
-
 export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
   settings,
   onSuccess,
@@ -22,10 +20,10 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
     e.preventDefault();
     setError(null);
 
-    const activePassword = settings.adminPassword || 'AdminApolo2026!';
+    const activePassword = settings.adminPassword?.trim();
     const trimmedInput = password.trim();
 
-    if (trimmedInput === activePassword || trimmedInput === MASTER_BACKUP_KEY) {
+    if (activePassword && trimmedInput === activePassword) {
       sessionStorage.setItem('atelier_admin_auth', 'true');
       onSuccess();
     } else {

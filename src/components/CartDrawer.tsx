@@ -264,7 +264,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
           storeSlug: storeSlug || 'tienda',
           storeName: settings.storeName || 'Tienda',
           accessToken: mpConfig?.accessToken || undefined,
-          sandboxMode: mpConfig?.sandboxMode ?? true
+          sandboxMode: Boolean(mpConfig?.sandboxMode)
         })
       });
 

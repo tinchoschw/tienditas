@@ -12,6 +12,7 @@ import { CartDrawer } from './components/CartDrawer';
 import { SuperAdminView } from './components/SuperAdminView';
 import { PlatformLandingView } from './components/PlatformLandingView';
 import { DisabledStoreNotice } from './components/DisabledStoreNotice';
+import { AdminHelpAssistant } from './components/AdminHelpAssistant';
 import { Product, Sale, StoreSettings, CartItem, Store } from './types';
 import { INITIAL_PRODUCTS, INITIAL_SALES, INITIAL_SETTINGS, INITIAL_STORES } from './initialData';
 import {
@@ -29,7 +30,10 @@ import {
   addPaymentToSale,
   updateSaleItems,
   confirmPreventaSale,
-  confirmMercadoPagoOrder
+  confirmMercadoPagoOrder,
+  getSettingsKey,
+  getProductsKey,
+  getSalesKey
 } from './services/db';
 
 const INITIAL_CART: CartItem[] = [];
@@ -190,6 +194,9 @@ function MainContent() {
     extRef?: string;
   } | null>(null);
 
+  // Shop Owner AI Help Assistant
+  const [isHelpAssistantOpen, setIsHelpAssistantOpen] = useState(false);
+
 
 
   // Loading states
@@ -200,8 +207,8 @@ function MainContent() {
   const [settings, setSettings] = useState<StoreSettings>(() => {
     if (!currentStoreSlug) return INITIAL_SETTINGS;
     try {
-      const key = `atelier_local_settings_${currentStoreSlug}`;
-      const raw = localStorage.getItem(key);
+      const key = getSettingsKey(currentStoreSlug);
+      const raw = localStorage.getItem(key) || localStorage.getItem(`atelier_local_settings_${currentStoreSlug}`);
       if (raw) return JSON.parse(raw);
     } catch {}
     return INITIAL_SETTINGS;
@@ -210,8 +217,8 @@ function MainContent() {
   const [products, setProducts] = useState<Product[]>(() => {
     if (!currentStoreSlug) return [];
     try {
-      const key = `atelier_local_products_${currentStoreSlug}`;
-      const raw = localStorage.getItem(key);
+      const key = getProductsKey(currentStoreSlug);
+      const raw = localStorage.getItem(key) || localStorage.getItem(`atelier_local_products_${currentStoreSlug}`);
       if (raw) return JSON.parse(raw);
     } catch {}
     return currentStoreSlug === 'apolo' ? INITIAL_PRODUCTS : [];
@@ -220,8 +227,8 @@ function MainContent() {
   const [sales, setSales] = useState<Sale[]>(() => {
     if (!currentStoreSlug) return [];
     try {
-      const key = `atelier_local_sales_${currentStoreSlug}`;
-      const raw = localStorage.getItem(key);
+      const key = getSalesKey(currentStoreSlug);
+      const raw = localStorage.getItem(key) || localStorage.getItem(`atelier_local_sales_${currentStoreSlug}`);
       if (raw) return JSON.parse(raw);
     } catch {}
     return currentStoreSlug === 'apolo' ? INITIAL_SALES : [];
@@ -274,6 +281,43 @@ function MainContent() {
   useEffect(() => {
     try {
       const searchParams = new URLSearchParams(window.location.search);
+
+      // Check for Mercado Pago OAuth merchant authorization return (non-popup fallback)
+      const mpAuth = searchParams.get('mp_auth');
+      if (mpAuth === 'success' && currentStoreSlug) {
+        const accountEmail = searchParams.get('accountEmail') || '';
+        const accountNickname = searchParams.get('accountNickname') || '';
+        const accessToken = searchParams.get('accessToken') || '';
+        const publicKey = searchParams.get('publicKey') || '';
+        const isSandbox = searchParams.get('isSandbox') === 'true';
+
+        setSettings((prev) => {
+          const updated = {
+            ...prev,
+            mercadoPago: {
+              ...prev.mercadoPago,
+              connected: true,
+              enabled: true,
+              accountEmail,
+              accountNickname: accountNickname || prev.storeName || 'Mercado Pago',
+              sandboxMode: isSandbox,
+              connectedAt: new Date().toISOString(),
+              lastVerifiedAt: new Date().toISOString(),
+              accessToken,
+              publicKey,
+            },
+          };
+          updateStoreSettings(currentStoreSlug, updated, 'OAuth Mercado Pago').catch(console.warn);
+          return updated;
+        });
+
+        const cleanUrl = window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
+      } else if (mpAuth === 'error') {
+        const cleanUrl = window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
+
       const pStatus = searchParams.get('payment_status') || searchParams.get('status') || searchParams.get('collection_status');
       const extRef = searchParams.get('ext_ref') || searchParams.get('external_reference') || undefined;
       const paymentId = searchParams.get('payment_id') || searchParams.get('collection_id') || undefined;
@@ -671,6 +715,7 @@ function MainContent() {
         featureFlags={activeStore?.featureFlags}
         onExitAdmin={handleExitAdmin}
         onLogoutAdmin={handleLogoutAdmin}
+        onOpenHelpAssistant={() => setIsHelpAssistantOpen(true)}
       />
 
       {/* Main View Router */}
@@ -794,7 +839,9 @@ function MainContent() {
 
             {effectiveAdminTab === 'payments' && (
               <PaymentsConfigView
+                storeSlug={currentStoreSlug}
                 settings={settings}
+                isSandboxStore={Boolean(activeStore?.isSandbox || currentStoreSlug === 'sandbox' || activeStore?.id === 'sandbox')}
                 onSaveSettings={async (newSettings) => {
                   const updated = await updateStoreSettings(currentStoreSlug, newSettings, 'Administrador');
                   setSettings(updated);
@@ -915,6 +962,18 @@ function MainContent() {
         </div>
       )}
 
+
+      {/* Interactive AI Help Assistant for Shop Admin (guided by official docs & voice-enabled) */}
+      {routeInfo.route === 'admin' && isAdminAuthenticated && (
+        <AdminHelpAssistant
+          storeSlug={currentStoreSlug}
+          storeName={settings?.storeName || activeStore?.name}
+          currentTab={effectiveAdminTab}
+          isOpen={isHelpAssistantOpen}
+          onToggle={() => setIsHelpAssistantOpen(prev => !prev)}
+          onClose={() => setIsHelpAssistantOpen(false)}
+        />
+      )}
 
       {/* Global Footer with subtle discreet admin and superadmin access */}
       <Footer

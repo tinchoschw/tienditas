@@ -33,8 +33,11 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedSizes, setSelectedSizes] = useState<string[]>([]);
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
-  const [onlyInStock, setOnlyInStock] = useState<boolean>(false);
+  const [onlyInStock, setOnlyInStock] = useState<boolean>(true);
   const [sortBy, setSortBy] = useState<string>('recent');
+  const [isFiltersOpen, setIsFiltersOpen] = useState<boolean>(() => 
+    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
+  );
   const [lastAddedProduct, setLastAddedProduct] = useState<string | null>(null);
 
   // Deep link share feedback
@@ -132,14 +135,15 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     setSelectedCategories([]);
     setSelectedSizes([]);
     setSelectedColors([]);
-    setOnlyInStock(false);
+    setOnlyInStock(true);
   };
 
+  const hasSpecificFilters = selectedCategories.length > 0 || selectedSizes.length > 0 || selectedColors.length > 0;
   const activeFiltersCount =
     selectedCategories.length +
     selectedSizes.length +
     selectedColors.length +
-    (onlyInStock ? 1 : 0);
+    (!onlyInStock ? 1 : 0);
 
   // Filtered & Sorted products (Supporting multi-select, combined color+size constraint and stock boolean)
   const filteredProducts = useMemo(() => {
@@ -154,33 +158,44 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
           if (!matchCat) return false;
         }
 
-        // Combined Size and Color matching:
-        // If BOTH size and color filters are selected, there MUST be at least one enabled variant matching BOTH!
-        if (selectedSizes.length > 0 && selectedColors.length > 0) {
-          const matchBoth = p.variants.some((v) =>
-            isVariantVisible(v) &&
-            selectedSizes.some((s) => s.toLowerCase() === v.size.toLowerCase()) &&
-            selectedColors.some((c) => c.toLowerCase() === v.color.toLowerCase())
-          );
-          if (!matchBoth) return false;
-        } else if (selectedSizes.length > 0) {
-          // Multi Size filter (only visible / enabled combinations)
-          const matchSize = p.variants.some((v) =>
-            isVariantVisible(v) && selectedSizes.some((s) => s.toLowerCase() === v.size.toLowerCase())
-          );
-          if (!matchSize) return false;
-        } else if (selectedColors.length > 0) {
-          // Multi Color filter (only visible / enabled combinations)
-          const matchColor = p.variants.some((v) =>
-            isVariantVisible(v) && selectedColors.some((c) => c.toLowerCase() === v.color.toLowerCase())
-          );
-          if (!matchColor) return false;
+        // Helper to check if a variant matches active size and color filters
+        const variantMatchesCriteria = (v: any) => {
+          if (!isVariantVisible(v)) return false;
+
+          if (selectedSizes.length > 0) {
+            const matchSize = selectedSizes.some(
+              (s) => s.toLowerCase() === v.size.toLowerCase()
+            );
+            if (!matchSize) return false;
+          }
+
+          if (selectedColors.length > 0) {
+            const matchColor = selectedColors.some(
+              (c) => c.toLowerCase() === v.color.toLowerCase()
+            );
+            if (!matchColor) return false;
+          }
+
+          return true;
+        };
+
+        // All visible variants of this product that match the selected size/color criteria
+        const matchingVariants = p.variants.filter(variantMatchesCriteria);
+
+        // If no variant exists matching the selected combination, exclude product
+        // (e.g. if the shirt does not exist in size M, it does not exist under this filter)
+        if (matchingVariants.length === 0) {
+          return false;
         }
 
-        // Solo en stock boolean toggle (only visible / enabled combinations with real stock)
+        // If "Solo en stock" is active, at least one of the MATCHING variants MUST have stock > 0
         if (onlyInStock) {
-          const hasStock = p.variants.some((v) => isVariantVisible(v) && Number(v.stock || 0) > 0);
-          if (!hasStock) return false;
+          const hasMatchingStock = matchingVariants.some(
+            (v) => Number(v.stock || 0) > 0
+          );
+          if (!hasMatchingStock) {
+            return false;
+          }
         }
 
         return true;
@@ -495,18 +510,18 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
         </div>
       )}
 
-      {/* Filtros Multiselección: Categoría, Talle, Color e Interruptor de Stock */}
-      <section className="w-full px-2.5 sm:px-8 mt-3 sm:mt-6 mb-3 sm:mb-6 max-w-[1600px] mx-auto">
-        <div className="bg-white p-3 sm:p-4 rounded-xl sm:rounded-2xl shadow-xs border border-[#efeded] flex flex-col gap-3 sm:gap-4">
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-            {/* Filter Buttons Deck */}
-            <div className="flex flex-wrap items-center gap-2.5">
+      {/* Filtros Multiselección: Categoría, Talle, Color, Stock y Ordenar con Botón Flotante */}
+      <section className="w-full px-2.5 sm:px-8 mt-3 sm:mt-5 mb-5 sm:mb-6 max-w-[1600px] mx-auto">
+        <div className="relative bg-white p-3 sm:p-3.5 rounded-2xl shadow-xs border border-[#efeded]">
+          {/* Deck de Controles de Filtros y Ordenar en una sola fila fluida */}
+          {isFiltersOpen && (
+            <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
               {/* Categorías Dropdown */}
               <div className="relative">
                 <button
                   type="button"
                   onClick={() => setActiveDropdown(activeDropdown === 'cat' ? null : 'cat')}
-                  className={`h-10 px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
+                  className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
                     selectedCategories.length > 0
                       ? 'bg-black text-white border-black shadow-xs'
                       : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
@@ -579,7 +594,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveDropdown(activeDropdown === 'size' ? null : 'size')}
-                  className={`h-10 px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
+                  className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
                     selectedSizes.length > 0
                       ? 'bg-black text-white border-black shadow-xs'
                       : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
@@ -644,7 +659,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveDropdown(activeDropdown === 'color' ? null : 'color')}
-                  className={`h-10 px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
+                  className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
                     selectedColors.length > 0
                       ? 'bg-black text-white border-black shadow-xs'
                       : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
@@ -711,7 +726,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
               </div>
 
               {/* Interruptor Booleano: Solo en Stock */}
-              <div className="h-10 px-3.5 rounded-xl bg-[#f5f3f3] border border-transparent hover:border-neutral-200 flex items-center gap-2.5 transition-colors">
+              <div className="h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl bg-[#f5f3f3] border border-transparent hover:border-neutral-200 flex items-center gap-2.5 transition-colors">
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -736,53 +751,36 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                 </label>
               </div>
 
-              {/* Botón rápido de Limpiar Todo si hay filtros activos */}
-              {activeFiltersCount > 0 && (
-                <button
-                  type="button"
-                  onClick={clearAllFilters}
-                  className="h-10 px-3 rounded-xl text-xs font-semibold text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1 cursor-pointer"
-                  title="Restablecer todos los filtros"
-                >
-                  <span className="material-symbols-outlined text-[16px]">filter_alt_off</span>
-                  <span>Limpiar ({activeFiltersCount})</span>
-                </button>
-              )}
-            </div>
-
-            {/* Contador y Orden */}
-            <div className="flex items-center justify-between lg:justify-end gap-3 text-xs text-neutral-500">
-              <span className="whitespace-nowrap">
-                <strong className="text-black font-bold">{filteredProducts.length}</strong>{' '}
-                {filteredProducts.length === 1 ? 'prenda' : 'prendas'}
-              </span>
-
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-neutral-500 uppercase tracking-wider font-semibold hidden sm:inline">
+              {/* Selector de Ordenar: en el MISMO renglón de los filtros */}
+              <div className="h-9 sm:h-10 px-2.5 sm:px-3 rounded-xl bg-[#f5f3f3] hover:bg-[#efeded] border border-transparent hover:border-neutral-200 flex items-center gap-1.5 transition-colors">
+                <span className="material-symbols-outlined text-[17px] text-neutral-500">
+                  swap_vert
+                </span>
+                <span className="text-xs text-neutral-600 font-semibold hidden xs:inline">
                   Ordenar:
                 </span>
                 <div className="relative">
                   <select
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value)}
-                    className="appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] hover:bg-[#efeded] text-black text-xs font-semibold rounded-xl outline-none cursor-pointer border border-transparent focus:border-neutral-300 transition-colors shadow-2xs"
+                    className="appearance-none pl-1 pr-6 py-1 bg-transparent text-black text-xs font-semibold outline-none cursor-pointer"
                   >
                     <option value="recent">Más recientes</option>
                     <option value="price-low">Menor precio</option>
                     <option value="price-high">Mayor precio</option>
                     <option value="popular">Más stock / unidades</option>
                   </select>
-                  <span className="material-symbols-outlined text-[18px] text-neutral-500 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2">
+                  <span className="material-symbols-outlined text-[16px] text-neutral-500 pointer-events-none absolute right-0 top-1/2 -translate-y-1/2">
                     expand_more
                   </span>
                 </div>
               </div>
             </div>
-          </div>
+          )}
 
-          {/* Active Filter Badges Bar */}
+          {/* Cuadrito de Filtros aplicados: siempre visible cuando hay filtros activos (incluso si los controles están ocultos) */}
           {activeFiltersCount > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap pt-2 border-t border-neutral-100 text-xs">
+            <div className={`flex items-center gap-1.5 flex-wrap text-xs ${isFiltersOpen ? 'pt-2.5 mt-2.5 border-t border-neutral-100' : ''}`}>
               <span className="text-[11px] font-semibold text-neutral-400 mr-1">Filtros aplicados:</span>
 
               {selectedCategories.map((cat) => (
@@ -833,7 +831,20 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                 </span>
               ))}
 
-              {onlyInStock && (
+              {!onlyInStock && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-neutral-200 text-neutral-800 text-[11px] font-medium">
+                  <span>Incluye sin stock</span>
+                  <button
+                    type="button"
+                    onClick={() => setOnlyInStock(true)}
+                    className="hover:text-red-600 cursor-pointer"
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+
+              {hasSpecificFilters && onlyInStock && (
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 text-[11px] font-medium">
                   <span>Solo con stock</span>
                   <button
@@ -845,8 +856,42 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                   </button>
                 </span>
               )}
+
+              {/* Botón 'Limpiar' integrado como un ítem más del listado en rojo y chiquito */}
+              <button
+                type="button"
+                onClick={clearAllFilters}
+                className="text-[11px] font-semibold text-rose-600 hover:text-rose-700 hover:underline px-2 py-0.5 cursor-pointer flex items-center gap-0.5 transition-colors"
+                title="Limpiar todos los filtros aplicados"
+              >
+                <span>Limpiar</span>
+              </button>
             </div>
           )}
+
+          {/* Estado colapsado sin filtros activos: indicación mínima discreta */}
+          {!isFiltersOpen && activeFiltersCount === 0 && (
+            <div
+              onClick={() => setIsFiltersOpen(true)}
+              className="py-0.5 text-center text-xs text-neutral-400 font-medium cursor-pointer hover:text-neutral-700 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <span className="material-symbols-outlined text-[16px]">tune</span>
+              <span>Filtros y ordenación</span>
+            </div>
+          )}
+
+          {/* Botón FLOTANTE debajo de los filtros aplicados, justo en el límite del área blanca */}
+          <button
+            type="button"
+            onClick={() => setIsFiltersOpen((prev) => !prev)}
+            className="absolute -bottom-3.5 left-1/2 -translate-x-1/2 w-7 h-7 rounded-full bg-white hover:bg-neutral-50 text-neutral-600 hover:text-neutral-900 border border-neutral-300 shadow-xs flex items-center justify-center transition-all cursor-pointer z-10 hover:scale-105 active:scale-95"
+            title={isFiltersOpen ? "Ocultar filtros" : "Mostrar filtros"}
+            aria-label={isFiltersOpen ? "Ocultar filtros" : "Mostrar filtros"}
+          >
+            <span className="material-symbols-outlined text-[18px]">
+              {isFiltersOpen ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}
+            </span>
+          </button>
         </div>
       </section>
 
@@ -891,19 +936,31 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                 {filteredProducts.map((product) => {
                   const visibleVariants = product.variants.filter(isVariantVisible);
                   const uniqueColors = Array.from(new Set(visibleVariants.map((v) => v.color)));
+                  // Prefer user's active color filter if available for this product
+                  const preferredFilterColor = selectedColors.find((sc) =>
+                    uniqueColors.some((c) => c.toLowerCase() === sc.toLowerCase())
+                  );
                   const currentColorName =
                     cardSelectedColor[product.id] && uniqueColors.includes(cardSelectedColor[product.id])
                       ? cardSelectedColor[product.id]
-                      : uniqueColors[0] || '';
+                      : (preferredFilterColor
+                          ? uniqueColors.find((c) => c.toLowerCase() === preferredFilterColor.toLowerCase())!
+                          : uniqueColors[0] || '');
                   const currentColorVariants = visibleVariants.filter(
                     (v) => v.color === currentColorName
                   );
 
                   const uniqueSizes = Array.from(new Set(currentColorVariants.map((v) => v.size)));
+                  // Prefer user's active size filter if available in current color
+                  const preferredFilterSize = selectedSizes.find((sz) =>
+                    uniqueSizes.some((s) => s.toLowerCase() === sz.toLowerCase())
+                  );
                   const currentSizeName =
                     cardSelectedSize[product.id] && uniqueSizes.includes(cardSelectedSize[product.id])
                       ? cardSelectedSize[product.id]
-                      : uniqueSizes[0] || '';
+                      : (preferredFilterSize
+                          ? uniqueSizes.find((s) => s.toLowerCase() === preferredFilterSize.toLowerCase())!
+                          : uniqueSizes[0] || '');
 
                   const selectedVariant =
                     visibleVariants.find(

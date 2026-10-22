@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+*-backup.json
+*.backup.json
+backups/

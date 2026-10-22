@@ -36,7 +36,7 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   const [newStoreName, setNewStoreName] = useState('');
   const [newStoreSlug, setNewStoreSlug] = useState('');
   const [newStoreWhatsApp, setNewStoreWhatsApp] = useState('');
-  const [newStorePassword, setNewStorePassword] = useState('AdminApolo2026!');
+  const [newStorePassword, setNewStorePassword] = useState('');
   const [showNewStorePassword, setShowNewStorePassword] = useState(false);
   const [newStoreIsSandbox, setNewStoreIsSandbox] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -69,8 +69,8 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
 
   // Platform Mercado Pago Master Settings Modal
   const [isPlatformMpModalOpen, setIsPlatformMpModalOpen] = useState(false);
-  const [platformPublicKey, setPlatformPublicKey] = useState('APP_USR-5bed7b67-e57e-4f32-92fa-d6555c149928');
-  const [platformAccessToken, setPlatformAccessToken] = useState('APP_USR-1254765898303511-101901-bf79a18105c13f25b1a0bfb65082e01c-3776798082');
+  const [platformPublicKey, setPlatformPublicKey] = useState('');
+  const [platformAccessToken, setPlatformAccessToken] = useState('');
   const [showPlatformToken, setShowPlatformToken] = useState(false);
   const [platformSandboxMode, setPlatformSandboxMode] = useState(true);
   const [isVerifyingMp, setIsVerifyingMp] = useState(false);
@@ -188,17 +188,28 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (passwordInput === 'GenericaApolo2026!') {
-      try {
-        sessionStorage.setItem('atelier_superadmin_auth', 'true');
-      } catch (err) {
-        console.warn(err);
+    setAuthError(false);
+    try {
+      const res = await fetch('/api/auth/superadmin-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: passwordInput.trim() }),
+      });
+      if (res.ok) {
+        try {
+          sessionStorage.setItem('atelier_superadmin_auth', 'true');
+        } catch (err) {
+          console.warn(err);
+        }
+        setIsAuthenticated(true);
+        setAuthError(false);
+      } else {
+        setAuthError(true);
       }
-      setIsAuthenticated(true);
-      setAuthError(false);
-    } else {
+    } catch (err) {
+      console.warn('Superadmin auth error:', err);
       setAuthError(true);
     }
   };
