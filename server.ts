@@ -953,9 +953,9 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
     }
 
     // Success URL for non-popup fallbacks
-    const successUrl = `${origin}/${targetStore}/admin?mp_auth=success&accountEmail=${encodeURIComponent(email)}&accountNickname=${encodeURIComponent(nickname)}&accessToken=${encodeURIComponent(merchantAccessToken)}&publicKey=${encodeURIComponent(merchantPublicKey)}&isSandbox=${isSandbox}`;
+    const successUrl = `${PUBLIC_BASE_URL}/${targetStore}/admin?mp_auth=success&accountEmail=${encodeURIComponent(email)}&accountNickname=${encodeURIComponent(nickname)}&accessToken=${encodeURIComponent(merchantAccessToken)}&publicKey=${encodeURIComponent(merchantPublicKey)}&isSandbox=${isSandbox}`;
 
-    // Return HTML page with postMessage communication for popups
+    // Return HTML page with multi-channel communication (localStorage, BroadcastChannel, postMessage) for popups
     return res.send(`
       <!DOCTYPE html>
       <html lang="es">
@@ -979,7 +979,7 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
           <h2>¡Cuenta Vinculada con Éxito!</h2>
           <div class="account-badge">${nickname} (${email || 'Cuenta autorizada'})</div>
           <p id="msg">Sincronizando con tu panel de control...</p>
-          <a id="btnFallback" href="${successUrl}" class="btn" style="display:none;">Volver al Panel</a>
+          <a id="btnFallback" href="${successUrl}" class="btn">Volver al Panel de Administración</a>
         </div>
         <script>
           const payload = ${JSON.stringify({
@@ -992,21 +992,40 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
             isSandbox: isSandbox,
           })};
 
+          // 1. Broadcast via localStorage (cross-window on same domain, survives severed window.opener)
+          try {
+            localStorage.setItem('MP_OAUTH_SUCCESS_EVENT', JSON.stringify({
+              ...payload,
+              timestamp: Date.now()
+            }));
+          } catch (e) {}
+
+          // 2. Broadcast via BroadcastChannel (modern multi-tab channel)
+          try {
+            if (typeof BroadcastChannel !== 'undefined') {
+              const channel = new BroadcastChannel('MP_OAUTH_CHANNEL');
+              channel.postMessage(payload);
+              setTimeout(() => { channel.close(); }, 1000);
+            }
+          } catch (e) {}
+
+          // 3. postMessage if window.opener is still connected
           if (window.opener && !window.opener.closed) {
             try {
               window.opener.postMessage(payload, '*');
-            } catch (e) {
-              console.warn('postMessage failed', e);
-            }
-            setTimeout(() => {
+            } catch (e) {}
+          }
+
+          // 4. Auto-close popup after 1.2s, or fallback to direct admin redirect
+          setTimeout(() => {
+            try {
               window.close();
-            }, 1200);
-          } else {
-            document.getElementById('btnFallback').style.display = 'inline-block';
+            } catch (e) {}
+            // If window.close() was prevented by browser policy, navigate to admin panel
             setTimeout(() => {
               window.location.href = ${JSON.stringify(successUrl)};
-            }, 1400);
-          }
+            }, 500);
+          }, 1200);
         </script>
       </body>
       </html>
@@ -1060,12 +1079,6 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
 
     const preferencePayload: Record<string, any> = {
       items: formattedItems,
-      payer: {
-        name: payer?.name || 'Cliente',
-        surname: payer?.surname || '',
-        email: payer?.email || 'comprador.prueba@testuser.com',
-        phone: payer?.phone ? { number: String(payer.phone).replace(/[^0-9]/g, '') } : undefined,
-      },
       back_urls: {
         success: backUrls?.success || defaultSuccessUrl,
         failure: backUrls?.failure || defaultFailureUrl,
@@ -1073,9 +1086,19 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       },
       auto_return: 'approved',
       external_reference: String(externalReference || `order-${Date.now()}`),
-      statement_descriptor: (storeName || storeSlug || 'TIENDA').substring(0, 16).toUpperCase(),
+      statement_descriptor: String(storeName || storeSlug || 'TIENDA').replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 16).toUpperCase(),
       binary_mode: false,
     };
+
+    // Only attach payer if a real, valid email was explicitly typed by the customer (never inject fake fallback emails)
+    if (payer?.email && typeof payer.email === 'string' && payer.email.includes('@') && !payer.email.includes('testuser.com') && !payer.email.includes('prueba')) {
+      preferencePayload.payer = {
+        name: payer?.name ? String(payer.name).trim() : undefined,
+        surname: payer?.surname ? String(payer.surname).trim() : undefined,
+        email: payer.email.trim(),
+        phone: payer?.phone ? { number: String(payer.phone).replace(/[^0-9]/g, '') } : undefined,
+      };
+    }
 
     // Add notification webhook URL using PUBLIC_BASE_URL
     preferencePayload.notification_url = `${PUBLIC_BASE_URL}/api/mercadopago/webhook?storeSlug=${encodeURIComponent(storeSlug || '')}`;
@@ -1103,6 +1126,8 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
     const checkoutUrl = (sandboxMode && data.sandbox_init_point)
       ? data.sandbox_init_point
       : data.init_point;
+
+    console.log(`[Mercado Pago Preference Created] Preference ID: "${data.id}" | External Reference: "${preferencePayload.external_reference}" | Store: "${storeSlug}" | Sandbox: ${sandboxMode}`);
 
     return res.json({
       id: data.id,

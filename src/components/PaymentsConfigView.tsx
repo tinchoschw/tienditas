@@ -52,54 +52,137 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
   const [customAccessToken, setCustomAccessToken] = useState(mpState.accessToken || '');
   const [customPublicKey, setCustomPublicKey] = useState(mpState.publicKey || '');
 
-  // Listen for official OAuth postMessage callback from the Mercado Pago authorization popup
+  // Listen for official OAuth callbacks via postMessage, localStorage, BroadcastChannel, or URL params
   useEffect(() => {
-    const handleMessage = async (event: MessageEvent) => {
-      if (!event.data) return;
+    let isHandled = false;
 
-      if (event.data.type === 'MP_OAUTH_SUCCESS') {
-        const { accountEmail, accountNickname, accessToken, publicKey, isSandbox } = event.data;
-        try {
-          const updatedConfig: MercadoPagoConfig = {
-            connected: true,
-            enabled: true,
-            accountEmail: accountEmail || '',
-            accountNickname: accountNickname || settings.storeName || 'Mercado Pago',
-            sandboxMode: Boolean(isSandbox),
-            connectedAt: new Date().toISOString(),
-            lastVerifiedAt: new Date().toISOString(),
-            accessToken: accessToken || '',
-            publicKey: publicKey || '',
-          };
+    const handleSuccess = async (data: any) => {
+      if (isHandled) return;
+      isHandled = true;
 
-          await onSaveSettings({
-            ...settings,
-            mercadoPago: updatedConfig,
-          });
+      const { accountEmail, accountNickname, accessToken, publicKey, isSandbox } = data;
+      try {
+        const updatedConfig: MercadoPagoConfig = {
+          connected: true,
+          enabled: true,
+          accountEmail: accountEmail || '',
+          accountNickname: accountNickname || settings.storeName || 'Mercado Pago',
+          sandboxMode: Boolean(isSandbox),
+          connectedAt: new Date().toISOString(),
+          lastVerifiedAt: new Date().toISOString(),
+          accessToken: accessToken || '',
+          publicKey: publicKey || '',
+        };
 
-          setConnectingStep('success');
-          setEnabled(true);
-          setSaveSuccess(true);
+        await onSaveSettings({
+          ...settings,
+          mercadoPago: updatedConfig,
+        });
 
-          setTimeout(() => {
-            setIsConnectModalOpen(false);
-            setConnectingStep('form');
-            setTimeout(() => setSaveSuccess(false), 3000);
-          }, 1500);
-        } catch (err) {
-          console.error('Error saving OAuth credentials:', err);
-          setAuthError('Error al sincronizar la cuenta con la tienda.');
-          setConnectingStep('error');
-        }
-      } else if (event.data.type === 'MP_OAUTH_ERROR') {
-        console.warn('OAuth Error received from popup:', event.data.error);
-        setAuthError(event.data.error || 'No se completó la vinculación en Mercado Pago.');
+        setConnectingStep('success');
+        setEnabled(true);
+        setSaveSuccess(true);
+
+        setTimeout(() => {
+          setIsConnectModalOpen(false);
+          setConnectingStep('form');
+          setTimeout(() => setSaveSuccess(false), 3000);
+        }, 1500);
+      } catch (err) {
+        console.error('Error saving OAuth credentials:', err);
+        setAuthError('Error al sincronizar la cuenta con la tienda.');
         setConnectingStep('error');
       }
     };
 
+    const handleError = (error: string) => {
+      console.warn('OAuth Error received:', error);
+      setAuthError(error || 'No se completó la vinculación en Mercado Pago.');
+      setConnectingStep('error');
+    };
+
+    // 1. Listen for postMessage (when window.opener is active)
+    const handleMessage = (event: MessageEvent) => {
+      if (!event.data) return;
+      if (event.data.type === 'MP_OAUTH_SUCCESS') {
+        handleSuccess(event.data);
+      } else if (event.data.type === 'MP_OAUTH_ERROR') {
+        handleError(event.data.error);
+      }
+    };
+
+    // 2. Listen for localStorage changes (when window.opener was severed by cross-origin redirect)
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'MP_OAUTH_SUCCESS_EVENT' && event.newValue) {
+        try {
+          const parsed = JSON.parse(event.newValue);
+          localStorage.removeItem('MP_OAUTH_SUCCESS_EVENT');
+          handleSuccess(parsed);
+        } catch (e) {}
+      } else if (event.key === 'MP_OAUTH_ERROR_EVENT' && event.newValue) {
+        try {
+          const parsed = JSON.parse(event.newValue);
+          localStorage.removeItem('MP_OAUTH_ERROR_EVENT');
+          handleError(parsed.error);
+        } catch (e) {}
+      }
+    };
+
+    // 3. Listen for BroadcastChannel (modern browser inter-tab/popup API)
+    let channel: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        channel = new BroadcastChannel('MP_OAUTH_CHANNEL');
+        channel.onmessage = (event) => {
+          if (!event.data) return;
+          if (event.data.type === 'MP_OAUTH_SUCCESS') {
+            handleSuccess(event.data);
+          } else if (event.data.type === 'MP_OAUTH_ERROR') {
+            handleError(event.data.error);
+          }
+        };
+      }
+    } catch (e) {}
+
+    // 4. URL query fallback check (if popup or redirect landed on this page: ?mp_auth=success)
+    if (typeof window !== 'undefined' && window.location.search) {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('mp_auth') === 'success') {
+        const email = params.get('accountEmail') || '';
+        const nickname = params.get('accountNickname') || '';
+        const token = params.get('accessToken') || '';
+        const pKey = params.get('publicKey') || '';
+        const isSb = params.get('isSandbox') === 'true';
+
+        // Clean query params from URL without reload
+        const newUrl = window.location.pathname;
+        window.history.replaceState({}, '', newUrl);
+
+        handleSuccess({
+          accountEmail: email,
+          accountNickname: nickname,
+          accessToken: token,
+          publicKey: pKey,
+          isSandbox: isSb,
+        });
+      } else if (params.get('mp_auth') === 'error') {
+        const errorDesc = params.get('error_desc') || 'Error en la autorización';
+        const newUrl = window.location.pathname;
+        window.history.replaceState({}, '', newUrl);
+        handleError(errorDesc);
+      }
+    }
+
     window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
+    window.addEventListener('storage', handleStorage);
+
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      window.removeEventListener('storage', handleStorage);
+      if (channel) {
+        channel.close();
+      }
+    };
   }, [settings, onSaveSettings]);
 
   // Toggle payment method in store catalog
