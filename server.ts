@@ -441,10 +441,12 @@ ${guide}
 
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://tienditas.ai.studio').replace(/\/+$/, '');
 const MP_APP_ID = process.env.MERCADOPAGO_APP_ID || '1254765898303511';
+const MP_CLIENT_ID = process.env.MERCADOPAGO_CLIENT_ID || '';
 const MP_REDIRECT_URI = `${PUBLIC_BASE_URL}/api/mercadopago/oauth/callback`;
 
 let platformMpConfig = {
   appId: MP_APP_ID,
+  clientId: MP_CLIENT_ID,
   publicKey: process.env.MERCADOPAGO_PUBLIC_KEY || '',
   accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || '',
   sandboxMode: process.env.MERCADOPAGO_SANDBOX !== 'false',
@@ -467,6 +469,7 @@ app.post('/api/auth/superadmin-login', (req, res) => {
 app.get('/api/platform/mercadopago', (_req, res) => {
   return res.json({
     appId: platformMpConfig.appId,
+    clientId: platformMpConfig.clientId,
     publicKey: platformMpConfig.publicKey,
     accessToken: platformMpConfig.accessToken,
     accessTokenMasked: platformMpConfig.accessToken
@@ -483,10 +486,14 @@ app.get('/api/platform/mercadopago', (_req, res) => {
 // Endpoint for SuperAdmin to update platform Mercado Pago credentials
 app.post('/api/platform/mercadopago', async (req, res) => {
   try {
-    const { appId, publicKey, accessToken, sandboxMode } = req.body;
+    const { appId, clientId, publicKey, accessToken, sandboxMode } = req.body;
 
     if (typeof appId === 'string' && appId.trim()) {
       platformMpConfig.appId = appId.trim();
+    }
+
+    if (typeof clientId === 'string' && clientId.trim()) {
+      platformMpConfig.clientId = clientId.trim();
     }
 
     if (typeof publicKey === 'string') {
@@ -599,18 +606,27 @@ app.get('/api/mercadopago/oauth/url', (req, res) => {
   try {
     const storeSlug = String(req.query.storeSlug || 'apolo').trim();
     const isSandbox = req.query.isSandbox === 'true';
-    const appId = MP_APP_ID;
+    const clientId = platformMpConfig.clientId || MP_CLIENT_ID;
+    const appId = platformMpConfig.appId || MP_APP_ID;
+
+    if (!clientId) {
+      return res.status(400).json({
+        error: 'Falta configurar MERCADOPAGO_CLIENT_ID en los secrets del servidor.'
+      });
+    }
+
     const redirectUri = MP_REDIRECT_URI;
     // Clean URL-safe state: letters, numbers and underscores only (no colons or special chars)
     const state = `${storeSlug}_${isSandbox ? 'sandbox' : 'prod'}`;
 
     // Canonical Mercado Pago OAuth authorization URL
-    const mpAuthUrl = `https://auth.mercadopago.com/authorization?client_id=${encodeURIComponent(appId)}&response_type=code&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+    const mpAuthUrl = `https://auth.mercadopago.com/authorization?client_id=${encodeURIComponent(clientId)}&response_type=code&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
     return res.json({
       url: mpAuthUrl,
       redirectUri,
       appId,
+      clientId,
       state,
       storeSlug,
       isSandbox,
@@ -626,11 +642,16 @@ app.get('/api/mercadopago/oauth/start', (req, res) => {
   try {
     const storeSlug = String(req.query.storeSlug || 'apolo').trim();
     const isSandbox = req.query.isSandbox === 'true';
-    const appId = MP_APP_ID;
+    const clientId = platformMpConfig.clientId || MP_CLIENT_ID;
+
+    if (!clientId) {
+      return res.status(500).send('Falta configurar MERCADOPAGO_CLIENT_ID en los secrets del servidor.');
+    }
+
     const redirectUri = MP_REDIRECT_URI;
     const state = `${storeSlug}_${isSandbox ? 'sandbox' : 'prod'}`;
 
-    const mpAuthUrl = `https://auth.mercadopago.com/authorization?client_id=${encodeURIComponent(appId)}&response_type=code&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+    const mpAuthUrl = `https://auth.mercadopago.com/authorization?client_id=${encodeURIComponent(clientId)}&response_type=code&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
     console.log(`[Mercado Pago OAuth] Redirecting store "${storeSlug}" to Mercado Pago OAuth: ${mpAuthUrl}`);
     return res.redirect(mpAuthUrl);
@@ -758,11 +779,58 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
       `);
     }
 
-    console.log(`[Mercado Pago OAuth] Exchanging code for store="${targetStore}", isSandbox=${isSandbox}, appId=${appId}`);
+    const clientId = platformMpConfig.clientId || MP_CLIENT_ID;
+
+    if (!clientId) {
+      console.error('[Mercado Pago OAuth] Error: Falta configurar MERCADOPAGO_CLIENT_ID en el servidor');
+      const errorMsg = 'Falta configurar MERCADOPAGO_CLIENT_ID en los secrets del servidor';
+      return res.status(500).send(`
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+          <meta charset="utf-8">
+          <title>Mercado Pago - Error de Configuración</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1.5rem; box-sizing: border-box; }
+            .card { background: white; border: 1px solid #fee2e2; border-radius: 1.25rem; padding: 2.25rem 2rem; max-width: 440px; width: 100%; text-align: center; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); }
+            .icon { width: 56px; height: 56px; border-radius: 50%; background: #fee2e2; color: #dc2626; font-size: 28px; display: inline-flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
+            h2 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #991b1b; }
+            p { font-size: 0.875rem; color: #64748b; line-height: 1.5; margin: 0 0 1.25rem; }
+            .btn { display: inline-block; background: #0f172a; color: white; padding: 0.65rem 1.25rem; border-radius: 0.75rem; text-decoration: none; font-size: 0.875rem; font-weight: 600; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="icon">✕</div>
+            <h2>Falta configurar MERCADOPAGO_CLIENT_ID</h2>
+            <p>${errorMsg}</p>
+            <a id="btnFallback" href="${failUrl}" class="btn">Volver al Panel</a>
+          </div>
+          <script>
+            if (window.opener && !window.opener.closed) {
+              try {
+                window.opener.postMessage({
+                  type: 'MP_OAUTH_ERROR',
+                  error: ${JSON.stringify(errorMsg)},
+                  storeSlug: ${JSON.stringify(targetStore)}
+                }, '*');
+              } catch (e) {}
+              setTimeout(() => {
+                window.close();
+              }, 3000);
+            }
+          </script>
+        </body>
+        </html>
+      `);
+    }
+
+    console.log(`[Mercado Pago OAuth] Exchanging code for store="${targetStore}", isSandbox=${isSandbox}, clientId=${clientId}`);
 
     // Request body for token exchange
     const tokenPayload: Record<string, any> = {
-      client_id: appId,
+      client_id: clientId,
       client_secret: clientSecret,
       grant_type: 'authorization_code',
       code: String(code),
