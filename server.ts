@@ -1152,14 +1152,14 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       });
     }
 
-    // 2. Usá siempre data.init_point como URL de checkout, también en sandbox.
-    // NOTA (Prueba solicitada por el usuario para evaluar si resuelve error de sandbox):
-    // Para volver atrás fácilmente:
-    // const checkoutUrl = (sandboxMode && data.sandbox_init_point) ? data.sandbox_init_point : data.init_point;
-    const checkoutUrl = data.init_point;
+    // Revertido punto 2 de Tarea 3: en modo sandbox se usa sandbox_init_point
+    const isSandbox = Boolean(sandboxMode) || (typeof token === 'string' && token.startsWith('TEST-'));
+    const checkoutUrl = (isSandbox && data.sandbox_init_point)
+      ? data.sandbox_init_point
+      : data.init_point;
 
     // 3. Logueá el collector_id y el id de la preferencia creada, sin imprimir tokens
-    console.log(`[Mercado Pago Preference Created] Preference ID: "${data.id}", Collector ID: "${data.collector_id}", Store: "${cleanStoreSlug}", External Reference: "${preferencePayload.external_reference}"`);
+    console.log(`[Mercado Pago Preference Created] Preference ID: "${data.id}", Collector ID: "${data.collector_id}", Store: "${cleanStoreSlug}", External Reference: "${preferencePayload.external_reference}" | Sandbox: ${isSandbox}`);
 
     return res.json({
       id: data.id,
