@@ -287,9 +287,6 @@ function MainContent() {
       if (mpAuth === 'success' && currentStoreSlug) {
         const accountEmail = searchParams.get('accountEmail') || '';
         const accountNickname = searchParams.get('accountNickname') || '';
-        const accessToken = searchParams.get('accessToken') || '';
-        const publicKey = searchParams.get('publicKey') || '';
-        const isSandbox = searchParams.get('isSandbox') === 'true';
 
         setSettings((prev) => {
           const updated = {
@@ -298,13 +295,10 @@ function MainContent() {
               ...prev.mercadoPago,
               connected: true,
               enabled: true,
-              accountEmail,
-              accountNickname: accountNickname || prev.storeName || 'Mercado Pago',
-              sandboxMode: isSandbox,
-              connectedAt: new Date().toISOString(),
+              accountEmail: accountEmail || prev.mercadoPago?.accountEmail || '',
+              accountNickname: accountNickname || prev.mercadoPago?.accountNickname || prev.storeName || 'Mercado Pago',
+              connectedAt: prev.mercadoPago?.connectedAt || new Date().toISOString(),
               lastVerifiedAt: new Date().toISOString(),
-              accessToken,
-              publicKey,
             },
           };
           updateStoreSettings(currentStoreSlug, updated, 'OAuth Mercado Pago').catch(console.warn);

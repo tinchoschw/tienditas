@@ -49,8 +49,15 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
 
   // Advanced developer settings accordion (hidden by default)
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [customAccessToken, setCustomAccessToken] = useState(mpState.accessToken || '');
+  const [customAccessToken, setCustomAccessToken] = useState('');
   const [customPublicKey, setCustomPublicKey] = useState(mpState.publicKey || '');
+
+  // Helper to safely mask sensitive tokens for display
+  const maskToken = (token?: string) => {
+    if (!token) return '';
+    if (token.length <= 8) return '••••••••';
+    return `${token.slice(0, 5)}••••••••••••${token.slice(-4)}`;
+  };
 
   // Listen for official OAuth callbacks via postMessage, localStorage, BroadcastChannel, or URL params
   useEffect(() => {
@@ -60,18 +67,17 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
       if (isHandled) return;
       isHandled = true;
 
-      const { accountEmail, accountNickname, accessToken, publicKey, isSandbox } = data;
+      const { accountEmail, accountNickname, isSandbox } = data;
       try {
         const updatedConfig: MercadoPagoConfig = {
+          ...settings.mercadoPago,
           connected: true,
           enabled: true,
-          accountEmail: accountEmail || '',
-          accountNickname: accountNickname || settings.storeName || 'Mercado Pago',
-          sandboxMode: Boolean(isSandbox),
-          connectedAt: new Date().toISOString(),
+          accountEmail: accountEmail || settings.mercadoPago?.accountEmail || '',
+          accountNickname: accountNickname || settings.mercadoPago?.accountNickname || settings.storeName || 'Mercado Pago',
+          sandboxMode: typeof isSandbox === 'boolean' ? isSandbox : Boolean(settings.mercadoPago?.sandboxMode),
+          connectedAt: settings.mercadoPago?.connectedAt || new Date().toISOString(),
           lastVerifiedAt: new Date().toISOString(),
-          accessToken: accessToken || '',
-          publicKey: publicKey || '',
         };
 
         await onSaveSettings({
@@ -150,9 +156,6 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
       if (params.get('mp_auth') === 'success') {
         const email = params.get('accountEmail') || '';
         const nickname = params.get('accountNickname') || '';
-        const token = params.get('accessToken') || '';
-        const pKey = params.get('publicKey') || '';
-        const isSb = params.get('isSandbox') === 'true';
 
         // Clean query params from URL without reload
         const newUrl = window.location.pathname;
@@ -161,9 +164,6 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
         handleSuccess({
           accountEmail: email,
           accountNickname: nickname,
-          accessToken: token,
-          publicKey: pKey,
-          isSandbox: isSb,
         });
       } else if (params.get('mp_auth') === 'error') {
         const errorDesc = params.get('error_desc') || 'Error en la autorización';
@@ -342,8 +342,8 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
     try {
       const updatedConfig: MercadoPagoConfig = {
         ...mpState,
-        accessToken: customAccessToken.trim() || undefined,
-        publicKey: customPublicKey.trim() || undefined,
+        accessToken: customAccessToken.trim() ? customAccessToken.trim() : mpState.accessToken,
+        publicKey: customPublicKey.trim() ? customPublicKey.trim() : mpState.publicKey,
       };
 
       await onSaveSettings({
@@ -351,6 +351,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
         mercadoPago: updatedConfig
       });
 
+      setCustomAccessToken('');
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
@@ -654,14 +655,21 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
 
             <form onSubmit={handleSaveAdvanced} className="space-y-3">
               <div>
-                <label className="block font-semibold text-neutral-700 mb-1">
-                  Access Token Personalizado (Opcional)
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block font-semibold text-neutral-700">
+                    Access Token Personalizado (Opcional)
+                  </label>
+                  {mpState.accessToken && (
+                    <span className="text-[10px] font-mono text-neutral-500 bg-neutral-200/80 px-2 py-0.5 rounded font-medium">
+                      Configurado: {maskToken(mpState.accessToken)}
+                    </span>
+                  )}
+                </div>
                 <input
                   type="password"
                   value={customAccessToken}
                   onChange={(e) => setCustomAccessToken(e.target.value)}
-                  placeholder="APP_USR-..."
+                  placeholder={mpState.accessToken ? 'Ingresá un nuevo token para reemplazar...' : 'APP_USR-...'}
                   className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-[#009EE3] focus:outline-none"
                 />
               </div>

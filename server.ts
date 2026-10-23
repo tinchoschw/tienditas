@@ -952,8 +952,8 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
       }
     }
 
-    // Success URL for non-popup fallbacks
-    const successUrl = `${PUBLIC_BASE_URL}/${targetStore}/admin?mp_auth=success&accountEmail=${encodeURIComponent(email)}&accountNickname=${encodeURIComponent(nickname)}&accessToken=${encodeURIComponent(merchantAccessToken)}&publicKey=${encodeURIComponent(merchantPublicKey)}&isSandbox=${isSandbox}`;
+    // Success URL for non-popup fallbacks (Tarea 1: no exponer accessToken en la URL)
+    const successUrl = `${PUBLIC_BASE_URL}/${targetStore}/admin?mp_auth=success&accountEmail=${encodeURIComponent(email)}&accountNickname=${encodeURIComponent(nickname)}`;
 
     // Return HTML page with multi-channel communication (localStorage, BroadcastChannel, postMessage) for popups
     return res.send(`
@@ -987,8 +987,6 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
             storeSlug: targetStore,
             accountEmail: email,
             accountNickname: nickname,
-            accessToken: merchantAccessToken,
-            publicKey: merchantPublicKey,
             isSandbox: isSandbox,
           })};
 
@@ -1036,7 +1034,33 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
   }
 });
 
-// Endpoint to create a Checkout Pro Preference
+// Helper to retrieve store's Mercado Pago Access Token from Firestore
+async function getStoreAccessToken(storeSlug: string): Promise<string | null> {
+  if (!storeSlug) return null;
+  const fsProjectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zinc-doodad-wwh4c';
+  const fsDbId = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || 'ai-studio-dee35615-acaf-42d4-984f-7cbc923722c4';
+  const fsApiKey = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || '';
+
+  try {
+    const keyParam = fsApiKey ? `?key=${encodeURIComponent(fsApiKey)}` : '';
+    const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${storeSlug}/settings/current${keyParam}`;
+
+    const res = await fetch(firestoreUrl);
+    if (!res.ok) {
+      return null;
+    }
+    const doc: any = await res.json();
+    const fields = doc.fields || {};
+    const mpMap = fields.mercadoPago?.mapValue?.fields || {};
+    const token = mpMap.accessToken?.stringValue;
+    return token && token.trim() ? token.trim() : null;
+  } catch (err) {
+    console.warn(`[Firestore] Error fetching store settings for "${storeSlug}":`, err);
+    return null;
+  }
+}
+
+// Endpoint to create a Checkout Pro Preference (Tarea 3)
 app.post('/api/mercadopago/create-preference', async (req, res) => {
   try {
     const {
@@ -1045,7 +1069,7 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       externalReference,
       storeSlug,
       storeName,
-      accessToken,
+      // accessToken from req.body is intentionally IGNORED per Tarea 3
       sandboxMode = false,
       backUrls,
     } = req.body;
@@ -1054,15 +1078,21 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       return res.status(400).json({ error: 'La orden debe contener al menos un producto.' });
     }
 
-    const token = (accessToken && typeof accessToken === 'string' && accessToken.trim())
-      ? accessToken.trim()
-      : platformMpConfig.accessToken;
-
-    if (!token) {
-      return res.status(500).json({ error: 'No se configuró un Access Token de Mercado Pago en la plataforma.' });
+    const cleanStoreSlug = String(storeSlug || '').toLowerCase().trim();
+    if (!cleanStoreSlug) {
+      return res.status(400).json({ error: 'Se requiere el identificador de la tienda (storeSlug).' });
     }
 
-    const storePath = storeSlug ? `/${storeSlug}` : '';
+    // 1. Obtener el token del comercio directamente desde Firestore usando storeSlug
+    const token = await getStoreAccessToken(cleanStoreSlug);
+
+    if (!token) {
+      return res.status(400).json({
+        error: 'La tienda no tiene una cuenta de Mercado Pago vinculada. Por favor vinculá tu cuenta desde el panel de administración.',
+      });
+    }
+
+    const storePath = cleanStoreSlug ? `/${cleanStoreSlug}` : '';
     const defaultSuccessUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=approved&ext_ref=${encodeURIComponent(externalReference || '')}`;
     const defaultFailureUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=failure&ext_ref=${encodeURIComponent(externalReference || '')}`;
     const defaultPendingUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=pending&ext_ref=${encodeURIComponent(externalReference || '')}`;
@@ -1086,7 +1116,7 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       },
       auto_return: 'approved',
       external_reference: String(externalReference || `order-${Date.now()}`),
-      statement_descriptor: String(storeName || storeSlug || 'TIENDA').replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 16).toUpperCase(),
+      statement_descriptor: String(storeName || cleanStoreSlug || 'TIENDA').replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 16).toUpperCase(),
       binary_mode: false,
     };
 
@@ -1101,7 +1131,7 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
     }
 
     // Add notification webhook URL using PUBLIC_BASE_URL
-    preferencePayload.notification_url = `${PUBLIC_BASE_URL}/api/mercadopago/webhook?storeSlug=${encodeURIComponent(storeSlug || '')}`;
+    preferencePayload.notification_url = `${PUBLIC_BASE_URL}/api/mercadopago/webhook?storeSlug=${encodeURIComponent(cleanStoreSlug)}`;
 
     const mpResponse = await fetch('https://api.mercadopago.com/checkout/preferences', {
       method: 'POST',
@@ -1122,12 +1152,14 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       });
     }
 
-    // Select suitable URL: sandbox_init_point for testing credentials, init_point for production
-    const checkoutUrl = (sandboxMode && data.sandbox_init_point)
-      ? data.sandbox_init_point
-      : data.init_point;
+    // 2. Usá siempre data.init_point como URL de checkout, también en sandbox.
+    // NOTA (Prueba solicitada por el usuario para evaluar si resuelve error de sandbox):
+    // Para volver atrás fácilmente:
+    // const checkoutUrl = (sandboxMode && data.sandbox_init_point) ? data.sandbox_init_point : data.init_point;
+    const checkoutUrl = data.init_point;
 
-    console.log(`[Mercado Pago Preference Created] Preference ID: "${data.id}" | External Reference: "${preferencePayload.external_reference}" | Store: "${storeSlug}" | Sandbox: ${sandboxMode}`);
+    // 3. Logueá el collector_id y el id de la preferencia creada, sin imprimir tokens
+    console.log(`[Mercado Pago Preference Created] Preference ID: "${data.id}", Collector ID: "${data.collector_id}", Store: "${cleanStoreSlug}", External Reference: "${preferencePayload.external_reference}"`);
 
     return res.json({
       id: data.id,
@@ -1144,70 +1176,100 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
   }
 });
 
-// Mercado Pago Webhook / IPN notification receiver
+// Mercado Pago Webhook / IPN notification receiver (Tarea 2)
 app.post('/api/mercadopago/webhook', async (req, res) => {
   try {
     const { type, data, action } = req.body || {};
     const queryType = req.query.type || req.query.topic;
     const paymentId = (data && data.id) || req.query.id || req.query['data.id'];
-    const storeSlug = req.query.storeSlug || '';
+    const rawStoreSlug = req.query.storeSlug || '';
+    const storeSlug = String(rawStoreSlug).toLowerCase().trim();
 
-    console.log(`[Mercado Pago Webhook] Received notification: type=${type || queryType}, paymentId=${paymentId}, storeSlug=${storeSlug}, action=${action}`);
+    // Log 1: Recibido
+    console.log(`[Mercado Pago Webhook] 1. Notificación recibida: type=${type || queryType || 'payment'}, paymentId=${paymentId || 'none'}, storeSlug=${storeSlug || 'none'}, action=${action || 'none'}`);
 
-    // If payment notification received, query Mercado Pago API to verify payment state
-    if (paymentId && platformMpConfig.accessToken) {
-      try {
-        const mpCheck = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-          headers: {
-            'Authorization': `Bearer ${platformMpConfig.accessToken}`,
-          },
-        });
-        if (mpCheck.ok) {
-          const paymentData: any = await mpCheck.json();
-          if (paymentData.status === 'approved' && paymentData.external_reference) {
-            const extRef = paymentData.external_reference;
-            const targetStore = String(storeSlug || 'apolo').toLowerCase();
-            const nowIso = new Date().toISOString();
-
-            // Direct server-to-server sync with Firestore so admin dashboard updates immediately
-            const fsProjectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zinc-doodad-wwh4c';
-            const fsDbId = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || 'ai-studio-dee35615-acaf-42d4-984f-7cbc923722c4';
-            const fsApiKey = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || '';
-
-            try {
-              const keyParam = fsApiKey ? `&key=${encodeURIComponent(fsApiKey)}` : '';
-              const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${targetStore}/sales/${extRef}?updateMask.fieldPaths=status&updateMask.fieldPaths=paidTotal&updateMask.fieldPaths=pendingBalance&updateMask.fieldPaths=updatedAt${keyParam}`;
-
-              const patchRes = await fetch(firestoreUrl, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  fields: {
-                    status: { stringValue: 'cobrada_total' },
-                    paidTotal: { doubleValue: Number(paymentData.transaction_amount) || 0 },
-                    pendingBalance: { doubleValue: 0 },
-                    updatedAt: { stringValue: nowIso },
-                  },
-                }),
-              });
-
-              if (patchRes.ok) {
-                console.log(`[Mercado Pago Webhook] Successfully marked order ${extRef} as 'cobrada_total' in Firestore!`);
-              }
-            } catch (dbErr) {
-              console.warn('[Mercado Pago Webhook] Error updating Firestore sale:', dbErr);
-            }
-          }
-        }
-      } catch (checkErr) {
-        console.warn('[Mercado Pago Webhook] Error fetching payment info from MP:', checkErr);
-      }
+    if (!paymentId) {
+      return res.status(200).json({ status: 'ok', message: 'No paymentId provided' });
     }
 
-    // Mercado Pago expects a 200/201 response immediately
+    if (!storeSlug) {
+      console.warn('[Mercado Pago Webhook] Warning: storeSlug query param faltante en la URL del webhook.');
+      return res.status(200).json({ status: 'ok', warning: 'missing_store_slug' });
+    }
+
+    // 1. Obtener el token del comercio desde Firestore
+    const merchantToken = await getStoreAccessToken(storeSlug);
+
+    // Log 2: Token encontrado sí/no
+    if (!merchantToken) {
+      console.warn(`[Mercado Pago Webhook] 2. Token encontrado: NO (No se encontró access token en Firestore para la tienda "${storeSlug}").`);
+      return res.status(200).json({ status: 'ok', warning: 'no_merchant_token' });
+    }
+    console.log(`[Mercado Pago Webhook] 2. Token encontrado: SÍ (Token del comercio obtenido de Firestore para "${storeSlug}").`);
+
+    // Consultar el pago en Mercado Pago con el token del comercio
+    const mpCheck = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+      headers: {
+        'Authorization': `Bearer ${merchantToken}`,
+      },
+    });
+
+    if (!mpCheck.ok) {
+      console.warn(`[Mercado Pago Webhook] Error al consultar el pago ${paymentId} en MP: status=${mpCheck.status}`);
+      return res.status(200).json({ status: 'ok', warning: 'mp_query_failed' });
+    }
+
+    const paymentData: any = await mpCheck.json();
+    const paymentStatus = paymentData.status;
+    const extRef = paymentData.external_reference;
+
+    // Log 3: Estado del pago
+    console.log(`[Mercado Pago Webhook] 3. Estado del pago ${paymentId}: "${paymentStatus}" | external_reference: "${extRef || 'none'}"`);
+
+    // 3. Solo marcar como cobrada_total si status es 'approved' y external_reference existe en la tienda
+    if (paymentStatus === 'approved' && extRef) {
+      const fsProjectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zinc-doodad-wwh4c';
+      const fsDbId = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || 'ai-studio-dee35615-acaf-42d4-984f-7cbc923722c4';
+      const fsApiKey = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || '';
+      const keyParam = fsApiKey ? `?key=${encodeURIComponent(fsApiKey)}` : '';
+      const saleUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${storeSlug}/sales/${extRef}${keyParam}`;
+
+      // Verificar que la venta exista en la tienda
+      const checkSaleRes = await fetch(saleUrl);
+      if (checkSaleRes.ok) {
+        const patchUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${storeSlug}/sales/${extRef}?updateMask.fieldPaths=status&updateMask.fieldPaths=paidTotal&updateMask.fieldPaths=pendingBalance&updateMask.fieldPaths=updatedAt${fsApiKey ? `&key=${encodeURIComponent(fsApiKey)}` : ''}`;
+        const nowIso = new Date().toISOString();
+
+        const patchRes = await fetch(patchUrl, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fields: {
+              status: { stringValue: 'cobrada_total' },
+              paidTotal: { doubleValue: Number(paymentData.transaction_amount) || 0 },
+              pendingBalance: { doubleValue: 0 },
+              updatedAt: { stringValue: nowIso },
+            },
+          }),
+        });
+
+        // Log 4: Venta actualizada sí/no
+        if (patchRes.ok) {
+          console.log(`[Mercado Pago Webhook] 4. Venta actualizada: SÍ (Venta ${extRef} de la tienda "${storeSlug}" actualizada a 'cobrada_total').`);
+        } else {
+          console.warn(`[Mercado Pago Webhook] 4. Venta actualizada: NO (Error al actualizar venta en Firestore: status ${patchRes.status}).`);
+        }
+      } else {
+        console.warn(`[Mercado Pago Webhook] 4. Venta actualizada: NO (La venta ${extRef} no existe en la tienda "${storeSlug}").`);
+      }
+    } else {
+      console.log(`[Mercado Pago Webhook] 4. Venta no actualizada (Estado no aprobado o sin external_reference: status=${paymentStatus}).`);
+    }
+
+    // 5. El endpoint sigue respondiendo 200 rápido siempre
     return res.status(200).json({ status: 'ok', received: true });
   } catch (err: any) {
-    console.error('[Mercado Pago Webhook Error]:', err);
+    console.error('[Mercado Pago Webhook Error]:', err?.message || err);
     return res.status(200).json({ status: 'error_handled', message: err?.message });
   }
 });
