@@ -31,6 +31,7 @@ import {
   updateSaleItems,
   confirmPreventaSale,
   confirmMercadoPagoOrder,
+  getStoreSettingsFromDb,
   getSettingsKey,
   getProductsKey,
   getSalesKey
@@ -285,25 +286,13 @@ function MainContent() {
       // Check for Mercado Pago OAuth merchant authorization return (non-popup fallback)
       const mpAuth = searchParams.get('mp_auth');
       if (mpAuth === 'success' && currentStoreSlug) {
-        const accountEmail = searchParams.get('accountEmail') || '';
-        const accountNickname = searchParams.get('accountNickname') || '';
-
-        setSettings((prev) => {
-          const updated = {
-            ...prev,
-            mercadoPago: {
-              ...prev.mercadoPago,
-              connected: true,
-              enabled: true,
-              accountEmail: accountEmail || prev.mercadoPago?.accountEmail || '',
-              accountNickname: accountNickname || prev.mercadoPago?.accountNickname || prev.storeName || 'Mercado Pago',
-              connectedAt: prev.mercadoPago?.connectedAt || new Date().toISOString(),
-              lastVerifiedAt: new Date().toISOString(),
-            },
-          };
-          updateStoreSettings(currentStoreSlug, updated, 'OAuth Mercado Pago').catch(console.warn);
-          return updated;
-        });
+        // Regla 1: Al volver de la vinculación, solo debe volver a LEER la configuración de la tienda desde Firestore
+        // y actualizar el estado local, SIN escribir ni sobrescribir el objeto en Firestore.
+        getStoreSettingsFromDb(currentStoreSlug).then((fresh) => {
+          if (fresh) {
+            setSettings(fresh);
+          }
+        }).catch(console.warn);
 
         const cleanUrl = window.location.pathname;
         window.history.replaceState({}, document.title, cleanUrl);
@@ -840,6 +829,10 @@ function MainContent() {
                   const updated = await updateStoreSettings(currentStoreSlug, newSettings, 'Administrador');
                   setSettings(updated);
                   return updated;
+                }}
+                onReloadSettings={async () => {
+                  const fresh = await getStoreSettingsFromDb(currentStoreSlug);
+                  if (fresh) setSettings(fresh);
                 }}
               />
             )}

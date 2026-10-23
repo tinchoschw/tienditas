@@ -10,7 +10,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Product, ProductVariant, Sale, StoreSettings, SalePayment, SaleItem, Store, StoreFeatureFlags, DEFAULT_FEATURE_FLAGS } from '../types';
+import { Product, ProductVariant, Sale, StoreSettings, MercadoPagoConfig, SalePayment, SaleItem, Store, StoreFeatureFlags, DEFAULT_FEATURE_FLAGS } from '../types';
 import { INITIAL_PRODUCTS, INITIAL_SALES, INITIAL_SETTINGS, DEFAULT_STORE, SANDBOX_STORE, INITIAL_STORES } from '../initialData';
 import { optimizeProductImages } from '../utils/imageOptimizer';
 
@@ -391,6 +391,26 @@ export function subscribeStoreSettings(
   }
 }
 
+// Helper to fetch fresh store settings directly from Firestore (Rule 1: read fresh settings after OAuth)
+export async function getStoreSettingsFromDb(storeId: string): Promise<StoreSettings | null> {
+  const normalized = normalizeStoreId(storeId);
+  try {
+    const snap = await getDoc(doc(db, 'stores', normalized, 'settings', 'current'));
+    if (snap.exists()) {
+      const data = snap.data() as StoreSettings;
+      const key = getSettingsKey(normalized);
+      setLocalItem(key, data);
+      if (normalized === 'apolo') {
+        setLocalItem('atelier_local_settings_apolo', data);
+      }
+      return data;
+    }
+  } catch (err) {
+    console.warn(`Error reading storeSettings from Firestore for ${normalized}:`, err);
+  }
+  return null;
+}
+
 export async function updateStoreSettings(
   storeIdOrSettings: string | Partial<StoreSettings>,
   settingsOrAuthor?: Partial<StoreSettings> | string,
@@ -411,9 +431,21 @@ export async function updateStoreSettings(
 
   const key = getSettingsKey(storeId);
   const current = getLocalItem<StoreSettings>(key, INITIAL_SETTINGS);
+
+  // Preservar accessToken y publicKey en la copia local si no vienen en la actualización
+  const preservedMp: MercadoPagoConfig | undefined = (settings.mercadoPago || current.mercadoPago) ? {
+    connected: false,
+    enabled: false,
+    ...(current.mercadoPago || {}),
+    ...(settings.mercadoPago || {}),
+    accessToken: settings.mercadoPago?.accessToken || current.mercadoPago?.accessToken || '',
+    publicKey: settings.mercadoPago?.publicKey || current.mercadoPago?.publicKey || '',
+  } : undefined;
+
   const updated: StoreSettings = {
     ...current,
     ...settings,
+    ...(preservedMp ? { mercadoPago: preservedMp } : {}),
     updatedAt: new Date().toISOString(),
     updatedBy: authorName
   };
@@ -424,6 +456,14 @@ export async function updateStoreSettings(
 
   try {
     const cleanUpdated = sanitizeForFirestore(updated);
+
+    // Reglas 2 y 3: Dejar que el servidor sea el único que escribe accessToken y publicKey en Firestore.
+    // Ningún guardado del frontend debe sobrescribir mercadoPago.accessToken o publicKey con un valor vacío.
+    if (cleanUpdated.mercadoPago) {
+      delete (cleanUpdated.mercadoPago as any).accessToken;
+      delete (cleanUpdated.mercadoPago as any).publicKey;
+    }
+
     const settingsDoc = doc(db, 'stores', storeId, 'settings', 'current');
     await setDoc(settingsDoc, cleanUpdated, { merge: true });
 

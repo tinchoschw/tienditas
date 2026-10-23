@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { StoreSettings, MercadoPagoConfig } from '../types';
+import { getStoreSettingsFromDb } from '../services/db';
 
 interface PaymentsConfigViewProps {
   storeSlug?: string;
   settings: StoreSettings;
   isSandboxStore?: boolean;
   onSaveSettings: (newSettings: StoreSettings) => Promise<StoreSettings>;
+  onReloadSettings?: () => Promise<void>;
 }
 
 export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
@@ -13,6 +15,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
   settings,
   isSandboxStore = false,
   onSaveSettings,
+  onReloadSettings,
 }) => {
   // Current store connection state
   const mpState: MercadoPagoConfig = settings.mercadoPago || {
@@ -63,27 +66,18 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
   useEffect(() => {
     let isHandled = false;
 
-    const handleSuccess = async (data: any) => {
+    const handleSuccess = async (_data: any) => {
       if (isHandled) return;
       isHandled = true;
 
-      const { accountEmail, accountNickname, isSandbox } = data;
       try {
-        const updatedConfig: MercadoPagoConfig = {
-          ...settings.mercadoPago,
-          connected: true,
-          enabled: true,
-          accountEmail: accountEmail || settings.mercadoPago?.accountEmail || '',
-          accountNickname: accountNickname || settings.mercadoPago?.accountNickname || settings.storeName || 'Mercado Pago',
-          sandboxMode: typeof isSandbox === 'boolean' ? isSandbox : Boolean(settings.mercadoPago?.sandboxMode),
-          connectedAt: settings.mercadoPago?.connectedAt || new Date().toISOString(),
-          lastVerifiedAt: new Date().toISOString(),
-        };
-
-        await onSaveSettings({
-          ...settings,
-          mercadoPago: updatedConfig,
-        });
+        // Regla 1: Al volver de la vinculación, solo debe volver a LEER la configuración de la tienda desde Firestore
+        // y actualizar el estado local, SIN sobrescribir el objeto completo en Firestore.
+        if (onReloadSettings) {
+          await onReloadSettings();
+        } else {
+          await getStoreSettingsFromDb(storeSlug || 'apolo');
+        }
 
         setConnectingStep('success');
         setEnabled(true);
@@ -95,7 +89,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
           setTimeout(() => setSaveSuccess(false), 3000);
         }, 1500);
       } catch (err) {
-        console.error('Error saving OAuth credentials:', err);
+        console.error('Error al sincronizar la cuenta con la tienda:', err);
         setAuthError('Error al sincronizar la cuenta con la tienda.');
         setConnectingStep('error');
       }
@@ -183,7 +177,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
         channel.close();
       }
     };
-  }, [settings, onSaveSettings]);
+  }, [storeSlug, onReloadSettings]);
 
   // Toggle payment method in store catalog
   const handleToggleEnabled = async (nextEnabled: boolean) => {
