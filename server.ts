@@ -835,11 +835,8 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
       grant_type: 'authorization_code',
       code: String(code),
       redirect_uri: redirectUri,
+      test_token: false,
     };
-
-    if (isSandbox) {
-      tokenPayload.test_token = 'true';
-    }
 
     const tokenRes = await fetch('https://api.mercadopago.com/oauth/token', {
       method: 'POST',
