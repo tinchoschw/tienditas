@@ -432,7 +432,7 @@ export async function updateStoreSettings(
   const key = getSettingsKey(storeId);
   const current = getLocalItem<StoreSettings>(key, INITIAL_SETTINGS);
 
-  // Preservar accessToken y publicKey en la copia local si no vienen en la actualización
+  // Preservar credenciales en la copia local si no vienen en la actualización
   const preservedMp: MercadoPagoConfig | undefined = (settings.mercadoPago || current.mercadoPago) ? {
     connected: false,
     enabled: false,
@@ -440,6 +440,9 @@ export async function updateStoreSettings(
     ...(settings.mercadoPago || {}),
     accessToken: settings.mercadoPago?.accessToken || current.mercadoPago?.accessToken || '',
     publicKey: settings.mercadoPago?.publicKey || current.mercadoPago?.publicKey || '',
+    refreshToken: settings.mercadoPago?.refreshToken || current.mercadoPago?.refreshToken || '',
+    expiresIn: settings.mercadoPago?.expiresIn ?? current.mercadoPago?.expiresIn,
+    expiresAt: settings.mercadoPago?.expiresAt || current.mercadoPago?.expiresAt || '',
   } : undefined;
 
   const updated: StoreSettings = {
@@ -457,11 +460,14 @@ export async function updateStoreSettings(
   try {
     const cleanUpdated = sanitizeForFirestore(updated);
 
-    // Reglas 2 y 3: Dejar que el servidor sea el único que escribe accessToken y publicKey en Firestore.
-    // Ningún guardado del frontend debe sobrescribir mercadoPago.accessToken o publicKey con un valor vacío.
+    // Reglas 2 y 3: Dejar que el servidor sea el único que escribe credenciales secretas en Firestore.
+    // Ningún guardado del frontend debe sobrescribir accessToken, publicKey ni refreshToken.
     if (cleanUpdated.mercadoPago) {
       delete (cleanUpdated.mercadoPago as any).accessToken;
       delete (cleanUpdated.mercadoPago as any).publicKey;
+      delete (cleanUpdated.mercadoPago as any).refreshToken;
+      delete (cleanUpdated.mercadoPago as any).expiresIn;
+      delete (cleanUpdated.mercadoPago as any).expiresAt;
     }
 
     const settingsDoc = doc(db, 'stores', storeId, 'settings', 'current');

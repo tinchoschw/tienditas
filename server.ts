@@ -896,6 +896,9 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
     const merchantAccessToken = tokenData.access_token;
     const merchantPublicKey = tokenData.public_key || '';
     const userId = tokenData.user_id || '';
+    const merchantRefreshToken = tokenData.refresh_token || '';
+    const expiresIn = Number(tokenData.expires_in) || 0;
+    const expiresAt = expiresIn > 0 ? new Date(Date.now() + expiresIn * 1000).toISOString() : '';
 
     // Fetch user details with the obtained token
     let nickname = `Comercio #${userId}`;
@@ -923,7 +926,47 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
     if (fsProjectId && fsDbId) {
       try {
         const keyParam = fsApiKey ? `&key=${encodeURIComponent(fsApiKey)}` : '';
-        const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${targetStore}/settings/current?updateMask.fieldPaths=mercadoPago.connected&updateMask.fieldPaths=mercadoPago.enabled&updateMask.fieldPaths=mercadoPago.accountEmail&updateMask.fieldPaths=mercadoPago.accountNickname&updateMask.fieldPaths=mercadoPago.connectedAt&updateMask.fieldPaths=mercadoPago.lastVerifiedAt&updateMask.fieldPaths=mercadoPago.accessToken&updateMask.fieldPaths=mercadoPago.publicKey&updateMask.fieldPaths=mercadoPago.sandboxMode&updateMask.fieldPaths=updatedAt${keyParam}`;
+        const maskFields = [
+          'mercadoPago.connected',
+          'mercadoPago.enabled',
+          'mercadoPago.accountEmail',
+          'mercadoPago.accountNickname',
+          'mercadoPago.connectedAt',
+          'mercadoPago.lastVerifiedAt',
+          'mercadoPago.accessToken',
+          'mercadoPago.publicKey',
+          'mercadoPago.sandboxMode',
+          'updatedAt',
+        ];
+        if (merchantRefreshToken) {
+          maskFields.push('mercadoPago.refreshToken');
+        }
+        if (expiresIn > 0) {
+          maskFields.push('mercadoPago.expiresIn');
+          maskFields.push('mercadoPago.expiresAt');
+        }
+
+        const maskQuery = maskFields.map((f) => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
+        const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${targetStore}/settings/current?${maskQuery}${keyParam}`;
+
+        const mpFields: Record<string, any> = {
+          connected: { booleanValue: true },
+          enabled: { booleanValue: true },
+          accountEmail: { stringValue: email },
+          accountNickname: { stringValue: nickname },
+          connectedAt: { stringValue: nowIso },
+          lastVerifiedAt: { stringValue: nowIso },
+          accessToken: { stringValue: merchantAccessToken },
+          publicKey: { stringValue: merchantPublicKey },
+          sandboxMode: { booleanValue: isSandbox },
+        };
+        if (merchantRefreshToken) {
+          mpFields.refreshToken = { stringValue: merchantRefreshToken };
+        }
+        if (expiresIn > 0) {
+          mpFields.expiresIn = { integerValue: String(expiresIn) };
+          mpFields.expiresAt = { stringValue: expiresAt };
+        }
 
         const patchRes = await fetch(firestoreUrl, {
           method: 'PATCH',
@@ -932,17 +975,7 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
             fields: {
               mercadoPago: {
                 mapValue: {
-                  fields: {
-                    connected: { booleanValue: true },
-                    enabled: { booleanValue: true },
-                    accountEmail: { stringValue: email },
-                    accountNickname: { stringValue: nickname },
-                    connectedAt: { stringValue: nowIso },
-                    lastVerifiedAt: { stringValue: nowIso },
-                    accessToken: { stringValue: merchantAccessToken },
-                    publicKey: { stringValue: merchantPublicKey },
-                    sandboxMode: { booleanValue: isSandbox },
-                  },
+                  fields: mpFields,
                 },
               },
               updatedAt: { stringValue: nowIso },
@@ -952,9 +985,14 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
 
         const patchStatus = patchRes.status;
         const patchText = await patchRes.text();
-        const sanitizedLog = patchText
+        let sanitizedLog = patchText
           .replace(new RegExp(merchantAccessToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '••••••••')
-          .replace(new RegExp(merchantPublicKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '••••••••')
+          .replace(new RegExp(merchantPublicKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '••••••••');
+        if (merchantRefreshToken) {
+          sanitizedLog = sanitizedLog.replace(new RegExp(merchantRefreshToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '••••••••');
+        }
+        sanitizedLog = sanitizedLog
+          .replace(/TG-[a-zA-Z0-9_-]+/g, 'TG-••••••••')
           .replace(/TEST-[a-zA-Z0-9_-]+/g, 'TEST-••••••••')
           .replace(/APP_USR-[a-zA-Z0-9_-]+/g, 'APP_USR-••••••••');
 
@@ -963,7 +1001,7 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
         if (!patchRes.ok) {
           console.error(`[Mercado Pago OAuth] Failed to update Firestore settings for store "${targetStore}". Status: ${patchStatus}`);
         } else {
-          console.log(`[Mercado Pago OAuth] Successfully updated Firestore settings for store "${targetStore}"!`);
+          console.log(`[Mercado Pago OAuth] Successfully updated Firestore settings for store "${targetStore}" with tokens!`);
         }
       } catch (fsErr: any) {
         console.warn('[Mercado Pago OAuth] Could not update Firestore directly, error:', fsErr?.message || fsErr);

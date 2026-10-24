@@ -117,6 +117,9 @@ export interface MercadoPagoConfig {
   sandboxMode?: boolean;
   publicKey?: string;
   accessToken?: string;
+  refreshToken?: string;
+  expiresIn?: number;
+  expiresAt?: string;
   lastVerifiedAt?: string;
 }
 
