@@ -78,7 +78,12 @@ export function useModalHistory({
           customPopRef.current();
         } else {
           try {
-            window.history.back();
+            // Only pop history if the current state is still the one pushed by this modal!
+            // If a navigation occurred in the meantime (e.g. exit admin or new page),
+            // do not pop backwards and destroy the new page navigation.
+            if (window.history.state?.stateId === stateId) {
+              window.history.back();
+            }
           } catch {
             // Safe fallback
           }

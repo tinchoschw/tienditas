@@ -1,6 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StoreSettings, StoreFeatureFlags } from '../types';
-import { useModalHistory } from '../hooks/useModalHistory';
 
 interface HeaderProps {
   isAdminView: boolean;
@@ -35,12 +34,17 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Close admin menu when user taps mobile back button
-  useModalHistory({
-    isOpen: isAdminView && mobileMenuOpen,
-    onClose: () => setMobileMenuOpen(false),
-    modalKey: 'admin-menu'
-  });
+  // Close admin menu when Escape key is pressed
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMobileMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mobileMenuOpen]);
   const scale = typeof settings.logoScale === 'number' && settings.logoScale > 0 ? settings.logoScale : 100;
   // Dynamic scale calculation: Base 48px at 100%. At 40% = 19px. At 250% = 120px. At 500% = 240px.
   const logoHeightPx = Math.max(16, Math.round(48 * (scale / 100)));
@@ -139,17 +143,177 @@ export const Header: React.FC<HeaderProps> = ({
               </span>
             </div>
 
-            {/* Menú Toggle Button */}
-            <button
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs font-semibold transition-all shadow-xs cursor-pointer active:scale-95"
-              title="Abrir menú de navegación y opciones"
-            >
-              <span className="material-symbols-outlined text-[18px]">
-                {mobileMenuOpen ? 'close' : 'menu'}
-              </span>
-              <span>{mobileMenuOpen ? 'Cerrar' : 'Menú'}</span>
-            </button>
+            {/* Menú Toggle Button Container with Dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs font-semibold transition-all shadow-xs cursor-pointer active:scale-95"
+                title="Abrir menú de navegación y opciones"
+                aria-expanded={mobileMenuOpen}
+              >
+                <span className="material-symbols-outlined text-[18px]">
+                  {mobileMenuOpen ? 'close' : 'menu'}
+                </span>
+                <span>{mobileMenuOpen ? 'Cerrar' : 'Menú'}</span>
+              </button>
+
+              {/* Admin Unified Menu (Compact floating card anchored right) */}
+              {mobileMenuOpen && (
+                <>
+                  {/* Dismiss Backdrop */}
+                  <div
+                    className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[2px] transition-opacity"
+                    onClick={() => setMobileMenuOpen(false)}
+                  />
+
+                  {/* Menu Floating Card */}
+                  <div 
+                    className="absolute right-0 top-full mt-2.5 z-50 w-[min(340px,calc(100vw-2rem))] bg-white rounded-2xl shadow-2xl border border-neutral-200/90 p-3.5 sm:p-4 animate-in fade-in zoom-in-95 duration-150"
+                    role="menu"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between pb-2 border-b border-neutral-100">
+                        <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">
+                          Navegación del Administrador
+                        </span>
+                        <span className="text-xs text-neutral-500 font-medium truncate max-w-[170px]">
+                          {settings.storeName || 'Mi Tienda'}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <button
+                          onClick={() => {
+                            setMobileMenuOpen(false);
+                            setCurrentTab('inventory');
+                          }}
+                          className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
+                            currentTab === 'inventory'
+                              ? 'bg-black text-white shadow-xs'
+                              : 'text-neutral-700 hover:bg-neutral-100 hover:text-black'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <span className="material-symbols-outlined text-[18px]">inventory_2</span>
+                            <span>Productos e Inventario</span>
+                          </div>
+                          {currentTab === 'inventory' && (
+                            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                          )}
+                        </button>
+
+                        {featureFlags?.salesModule !== false && (
+                          <button
+                            onClick={() => {
+                              setMobileMenuOpen(false);
+                              setCurrentTab('sales');
+                            }}
+                            className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
+                              currentTab === 'sales'
+                                ? 'bg-black text-white shadow-xs'
+                                : 'text-neutral-700 hover:bg-neutral-100 hover:text-black'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <span className="material-symbols-outlined text-[18px]">receipt_long</span>
+                              <span>Registro de Ventas</span>
+                            </div>
+                            {currentTab === 'sales' && (
+                              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                            )}
+                          </button>
+                        )}
+
+                        {featureFlags?.brandCustomizer !== false && (
+                          <button
+                            onClick={() => {
+                              setMobileMenuOpen(false);
+                              setCurrentTab('brand');
+                            }}
+                            className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
+                              currentTab === 'brand'
+                                ? 'bg-black text-white shadow-xs'
+                                : 'text-neutral-700 hover:bg-neutral-100 hover:text-black'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <span className="material-symbols-outlined text-[18px]">palette</span>
+                              <span>Diseño & Marca</span>
+                            </div>
+                            {currentTab === 'brand' && (
+                              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                            )}
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => {
+                            setMobileMenuOpen(false);
+                            setCurrentTab('payments');
+                          }}
+                          className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
+                            currentTab === 'payments'
+                              ? 'bg-[#009ee3] text-white shadow-xs'
+                              : 'text-neutral-700 hover:bg-[#009ee3]/10 hover:text-[#009ee3]'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <span className="material-symbols-outlined text-[18px]">credit_card</span>
+                            <span>Mercado Pago & Cobros</span>
+                          </div>
+                          {currentTab === 'payments' && (
+                            <span className="w-2 h-2 rounded-full bg-white" />
+                          )}
+                        </button>
+                      </div>
+
+                      {/* Bottom Action Group */}
+                      <div className="pt-3 border-t border-neutral-100 space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => {
+                              setMobileMenuOpen(false);
+                              onExitAdmin();
+                            }}
+                            className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-neutral-800 text-xs font-semibold transition-all cursor-pointer border border-neutral-200/70 shadow-xs"
+                            title="Ver la tienda como cliente"
+                          >
+                            <span className="material-symbols-outlined text-[17px]">visibility</span>
+                            <span>Ver Tienda</span>
+                          </button>
+
+                          {onOpenHelpAssistant && (
+                            <button
+                              onClick={() => {
+                                setMobileMenuOpen(false);
+                                onOpenHelpAssistant();
+                              }}
+                              className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-semibold transition-all cursor-pointer border border-amber-200 shadow-xs"
+                              title="Abrir Asistente de Ayuda"
+                            >
+                              <span className="text-[14px]">✨</span>
+                              <span>Ayuda</span>
+                            </button>
+                          )}
+                        </div>
+
+                        <button
+                          onClick={() => {
+                            setMobileMenuOpen(false);
+                            onLogoutAdmin();
+                          }}
+                          className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border border-red-200 bg-red-50/60 hover:bg-red-100/60 text-red-700 text-xs font-semibold transition-colors cursor-pointer"
+                          title="Cerrar sesión de administración"
+                        >
+                          <span className="material-symbols-outlined text-[17px]">logout</span>
+                          <span>Cerrar Sesión</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         ) : (
           /* CLIENT STOREFRONT VIEW (Icono del chango, numerito de cantidad y total acumulado) */
@@ -184,160 +348,6 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         )}
       </div>
-
-      {/* Admin Unified Menu (Visible on mobile & desktop to keep header clean) */}
-      {isAdminView && mobileMenuOpen && (
-        <>
-          {/* Dismiss Backdrop */}
-          <div
-            className="fixed inset-0 z-30 bg-black/25 backdrop-blur-2xs transition-opacity"
-            onClick={() => setMobileMenuOpen(false)}
-          />
-
-          {/* Menu Drawer / Dropdown */}
-          <div className="relative z-40 bg-white border-b border-neutral-200 shadow-xl px-4 py-3 sm:px-6 sm:py-4 animate-in fade-in slide-in-from-top-2 duration-150">
-            <div className="max-w-md mx-auto sm:mr-0 sm:ml-auto space-y-3">
-              <div className="flex items-center justify-between pb-2 border-b border-neutral-100">
-                <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">
-                  Navegación del Administrador
-                </span>
-                <span className="text-xs text-neutral-500 font-medium truncate max-w-[200px]">
-                  {settings.storeName || 'Mi Tienda'}
-                </span>
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <button
-                  onClick={() => {
-                    setCurrentTab('inventory');
-                    setMobileMenuOpen(false);
-                  }}
-                  className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
-                    currentTab === 'inventory'
-                      ? 'bg-black text-white shadow-xs'
-                      : 'text-neutral-700 hover:bg-neutral-100 hover:text-black'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <span className="material-symbols-outlined text-[18px]">inventory_2</span>
-                    <span>Productos e Inventario</span>
-                  </div>
-                  {currentTab === 'inventory' && (
-                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                  )}
-                </button>
-
-                {featureFlags?.salesModule !== false && (
-                  <button
-                    onClick={() => {
-                      setCurrentTab('sales');
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
-                      currentTab === 'sales'
-                        ? 'bg-black text-white shadow-xs'
-                        : 'text-neutral-700 hover:bg-neutral-100 hover:text-black'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <span className="material-symbols-outlined text-[18px]">receipt_long</span>
-                      <span>Registro de Ventas</span>
-                    </div>
-                    {currentTab === 'sales' && (
-                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                    )}
-                  </button>
-                )}
-
-                {featureFlags?.brandCustomizer !== false && (
-                  <button
-                    onClick={() => {
-                      setCurrentTab('brand');
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
-                      currentTab === 'brand'
-                        ? 'bg-black text-white shadow-xs'
-                        : 'text-neutral-700 hover:bg-neutral-100 hover:text-black'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <span className="material-symbols-outlined text-[18px]">palette</span>
-                      <span>Diseño & Marca</span>
-                    </div>
-                    {currentTab === 'brand' && (
-                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                    )}
-                  </button>
-                )}
-
-                <button
-                  onClick={() => {
-                    setCurrentTab('payments');
-                    setMobileMenuOpen(false);
-                  }}
-                  className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
-                    currentTab === 'payments'
-                      ? 'bg-[#009ee3] text-white shadow-xs'
-                      : 'text-neutral-700 hover:bg-[#009ee3]/10 hover:text-[#009ee3]'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <span className="material-symbols-outlined text-[18px]">credit_card</span>
-                    <span>Mercado Pago & Cobros</span>
-                  </div>
-                  {currentTab === 'payments' && (
-                    <span className="w-2 h-2 rounded-full bg-white" />
-                  )}
-                </button>
-              </div>
-
-              {/* Bottom Action Group */}
-              <div className="pt-3 border-t border-neutral-100 space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => {
-                      onExitAdmin();
-                      setMobileMenuOpen(false);
-                    }}
-                    className="flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-neutral-800 text-xs font-semibold transition-all cursor-pointer border border-neutral-200/70 shadow-xs"
-                    title="Ver la tienda como cliente"
-                  >
-                    <span className="material-symbols-outlined text-[17px]">visibility</span>
-                    <span>Ver Tienda</span>
-                  </button>
-
-                  {onOpenHelpAssistant && (
-                    <button
-                      onClick={() => {
-                        setMobileMenuOpen(false);
-                        onOpenHelpAssistant();
-                      }}
-                      className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-semibold transition-all cursor-pointer border border-amber-200 shadow-xs"
-                      title="Abrir Asistente de Ayuda"
-                    >
-                      <span className="text-[14px]">✨</span>
-                      <span>Ayuda</span>
-                    </button>
-                  )}
-                </div>
-
-                <button
-                  onClick={() => {
-                    onLogoutAdmin();
-                    setMobileMenuOpen(false);
-                  }}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border border-red-200 bg-red-50/60 hover:bg-red-100/60 text-red-700 text-xs font-semibold transition-colors cursor-pointer"
-                  title="Cerrar sesión de administración"
-                >
-                  <span className="material-symbols-outlined text-[17px]">logout</span>
-                  <span>Cerrar Sesión</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
     </header>
   );
 };
