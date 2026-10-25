@@ -1174,6 +1174,7 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       external_reference: String(externalReference || `order-${Date.now()}`),
       statement_descriptor: String(storeName || cleanStoreSlug || 'TIENDA').replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 16).toUpperCase(),
       binary_mode: false,
+      marketplace_fee: 0,
     };
 
     // Only attach payer if a real, valid email was explicitly typed by the customer (never inject fake fallback emails)
@@ -1208,11 +1209,9 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       });
     }
 
-    // Revertido punto 2 de Tarea 3: en modo sandbox se usa sandbox_init_point
+    // (1) Usar SIEMPRE data.init_point como URL de checkout, también en sandbox
     const isSandbox = Boolean(sandboxMode) || (typeof token === 'string' && token.startsWith('TEST-'));
-    const checkoutUrl = (isSandbox && data.sandbox_init_point)
-      ? data.sandbox_init_point
-      : data.init_point;
+    const checkoutUrl = data.init_point;
 
     // 3. Logueá el collector_id y el id de la preferencia creada, sin imprimir tokens
     console.log(`[Mercado Pago Preference Created] Preference ID: "${data.id}", Collector ID: "${data.collector_id}", Store: "${cleanStoreSlug}", External Reference: "${preferencePayload.external_reference}" | Sandbox: ${isSandbox}`);
@@ -1220,7 +1219,6 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
     return res.json({
       id: data.id,
       init_point: data.init_point,
-      sandbox_init_point: data.sandbox_init_point,
       checkout_url: checkoutUrl,
       external_reference: preferencePayload.external_reference,
     });

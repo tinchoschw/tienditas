@@ -14,7 +14,9 @@ export interface Product {
   category: string;
   description: string;
   tags: string[];
+  tagColors?: Record<string, string>;
   price: number;
+  discountPrice?: number;
   cost: number;
   enabledOnline: boolean;
   images: string[];

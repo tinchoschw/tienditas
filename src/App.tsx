@@ -13,6 +13,7 @@ import { SuperAdminView } from './components/SuperAdminView';
 import { PlatformLandingView } from './components/PlatformLandingView';
 import { DisabledStoreNotice } from './components/DisabledStoreNotice';
 import { AdminHelpAssistant } from './components/AdminHelpAssistant';
+import { useModalHistory } from './hooks/useModalHistory';
 import { Product, Sale, StoreSettings, CartItem, Store } from './types';
 import { INITIAL_PRODUCTS, INITIAL_SALES, INITIAL_SETTINGS, INITIAL_STORES } from './initialData';
 import {
@@ -197,6 +198,25 @@ function MainContent() {
 
   // Shop Owner AI Help Assistant
   const [isHelpAssistantOpen, setIsHelpAssistantOpen] = useState(false);
+
+  // Mobile Back Button / Gesture Handlers for App-level modals
+  useModalHistory({
+    isOpen: isSlideOverCartOpen,
+    onClose: () => setIsSlideOverCartOpen(false),
+    modalKey: 'cart-drawer'
+  });
+
+  useModalHistory({
+    isOpen: isHelpAssistantOpen,
+    onClose: () => setIsHelpAssistantOpen(false),
+    modalKey: 'help-assistant'
+  });
+
+  useModalHistory({
+    isOpen: Boolean(paymentModalInfo),
+    onClose: () => setPaymentModalInfo(null),
+    modalKey: 'payment-modal'
+  });
 
 
 

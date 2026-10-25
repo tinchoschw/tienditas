@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Product, CartItem, StoreSettings, StoreFeatureFlags } from '../types';
+import { useModalHistory } from '../hooks/useModalHistory';
 
 interface StorefrontViewProps {
   products: Product[];
@@ -326,6 +327,13 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedProductModal]);
 
+  // Intercept mobile device back button / swipe-back gesture to close product modal
+  useModalHistory({
+    isOpen: Boolean(selectedProductModal),
+    onClose: closeProductModal,
+    modalKey: 'storefront-product-modal'
+  });
+
   // High-fidelity Share handler (Web Share API on mobile, Clipboard + Toast on desktop)
   const handleShareProduct = async (product: Product, e?: React.MouseEvent) => {
     if (e) {
@@ -406,6 +414,13 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
     const qtyToAdd = Math.min(modalQuantity, remainingStock);
     const image = selectedProductModal.images[modalActiveImageIndex] || selectedProductModal.images[0];
+    const effectiveModalPrice = (
+      selectedProductModal.discountPrice &&
+      selectedProductModal.discountPrice > 0 &&
+      selectedProductModal.discountPrice < selectedProductModal.price
+    )
+      ? selectedProductModal.discountPrice
+      : selectedProductModal.price;
 
     onAddToCart({
       productId: selectedProductModal.id,
@@ -413,7 +428,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
       variantId: matchedVariant?.id || 'v-default',
       size,
       color,
-      price: selectedProductModal.price,
+      price: effectiveModalPrice,
       quantity: qtyToAdd,
       image
     });
@@ -462,6 +477,13 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     }
 
     const image = product.images[product.coverIndex || 0] || product.images[0];
+    const effectiveCardPrice = (
+      product.discountPrice &&
+      product.discountPrice > 0 &&
+      product.discountPrice < product.price
+    )
+      ? product.discountPrice
+      : product.price;
 
     onAddToCart({
       productId: product.id,
@@ -469,7 +491,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
       variantId: matchedVariant?.id || 'v-default',
       size,
       color,
-      price: product.price,
+      price: effectiveCardPrice,
       quantity: 1,
       image
     });
@@ -1065,6 +1087,29 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                 <span>{product.images.length}</span>
                               </div>
                             )}
+
+                            {/* Floating Product Tags (Bottom-Left) */}
+                            {product.tags && product.tags.length > 0 && (
+                              <div className="absolute bottom-2 left-2 right-14 z-10 flex flex-wrap items-center gap-1 pointer-events-none">
+                                {product.tags.slice(0, 3).map((tag) => {
+                                  const tagColor = product.tagColors?.[tag] || '#1f2937';
+                                  return (
+                                    <span
+                                      key={tag}
+                                      className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded-md text-white shadow-xs backdrop-blur-xs max-w-[100px] truncate"
+                                      style={{ backgroundColor: tagColor }}
+                                    >
+                                      {tag}
+                                    </span>
+                                  );
+                                })}
+                                {product.tags.length > 3 && (
+                                  <span className="text-[9px] font-bold px-1 py-0.5 rounded-md bg-black/75 text-white shadow-xs">
+                                    +{product.tags.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           {/* Content details */}
@@ -1116,12 +1161,26 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                             )}
 
                             {/* Price */}
-                            <div 
-                              className="text-sm sm:text-base font-bold mt-1.5"
-                              style={{ color: settings.primaryColor || '#1A1A1A' }}
-                            >
-                              ${product.price.toLocaleString('es-AR')}
-                            </div>
+                            {product.discountPrice && product.discountPrice > 0 && product.discountPrice < product.price ? (
+                              <div className="flex items-baseline flex-wrap gap-x-1.5 gap-y-0.5 mt-1.5">
+                                <span className="text-sm sm:text-base font-extrabold text-emerald-700">
+                                  ${product.discountPrice.toLocaleString('es-AR')}
+                                </span>
+                                <span className="text-[11px] sm:text-xs text-neutral-400 line-through font-medium">
+                                  ${product.price.toLocaleString('es-AR')}
+                                </span>
+                                <span className="text-[9px] sm:text-[10px] font-black text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded-md uppercase tracking-wider">
+                                  {Math.round(((product.price - product.discountPrice) / product.price) * 100)}% OFF
+                                </span>
+                              </div>
+                            ) : (
+                              <div 
+                                className="text-sm sm:text-base font-bold mt-1.5"
+                                style={{ color: settings.primaryColor || '#1A1A1A' }}
+                              >
+                                ${product.price.toLocaleString('es-AR')}
+                              </div>
+                            )}
 
                             {/* Color swatch dots if multiple colors available */}
                             {uniqueColors.length > 1 && (
@@ -1374,12 +1433,26 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     <h2 className="font-headline-lg text-2xl font-bold text-black tracking-tight leading-tight">
                       {product.name}
                     </h2>
-                    <div 
-                      className="text-2xl font-bold mt-1"
-                      style={{ color: settings.primaryColor || '#1A1A1A' }}
-                    >
-                      ${product.price.toLocaleString('es-AR')}
-                    </div>
+                    {product.discountPrice && product.discountPrice > 0 && product.discountPrice < product.price ? (
+                      <div className="flex items-baseline flex-wrap gap-x-2.5 gap-y-1 mt-1.5">
+                        <span className="text-2xl font-extrabold text-emerald-700">
+                          ${product.discountPrice.toLocaleString('es-AR')}
+                        </span>
+                        <span className="text-base text-neutral-400 line-through font-medium">
+                          ${product.price.toLocaleString('es-AR')}
+                        </span>
+                        <span className="text-xs font-black text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md uppercase tracking-wider">
+                          {Math.round(((product.price - product.discountPrice) / product.price) * 100)}% OFF
+                        </span>
+                      </div>
+                    ) : (
+                      <div 
+                        className="text-2xl font-bold mt-1"
+                        style={{ color: settings.primaryColor || '#1A1A1A' }}
+                      >
+                        ${product.price.toLocaleString('es-AR')}
+                      </div>
+                    )}
                   </div>
 
                   {/* Description */}
@@ -1390,11 +1463,18 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                   {/* Tags */}
                   {product.tags && product.tags.length > 0 && (
                     <div className="flex items-center gap-1.5 flex-wrap pt-1">
-                      {product.tags.map((tag) => (
-                        <span key={tag} className="text-[11px] text-neutral-500 bg-[#f5f3f3] px-2 py-0.5 rounded font-medium">
-                          #{tag}
-                        </span>
-                      ))}
+                      {product.tags.map((tag) => {
+                        const tagColor = product.tagColors?.[tag] || '#475569';
+                        return (
+                          <span
+                            key={tag}
+                            className="text-xs text-white font-semibold px-2.5 py-0.5 rounded-md shadow-2xs"
+                            style={{ backgroundColor: tagColor }}
+                          >
+                            {tag}
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
 

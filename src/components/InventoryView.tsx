@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Product, StoreSettings, MasterSize, MasterColor, StoreFeatureFlags } from '../types';
 import { ProductEditModal } from './ProductEditModal';
 import { AiProductModal } from './AiProductModal';
+import { useModalHistory } from '../hooks/useModalHistory';
 
 interface InventoryViewProps {
   products: Product[];
@@ -54,6 +55,43 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       setFlashMessage((prev) => (prev?.text === text ? null : prev));
     }, 4500);
   };
+
+  // Mobile Back Button / Gesture handlers for Inventory modals
+  useModalHistory({
+    isOpen: Boolean(editingProduct),
+    onClose: () => setEditingProduct(null),
+    modalKey: 'product-edit-modal'
+  });
+
+  useModalHistory({
+    isOpen: isAiModalOpen,
+    onClose: () => setIsAiModalOpen(false),
+    modalKey: 'ai-product-modal'
+  });
+
+  useModalHistory({
+    isOpen: Boolean(productToDelete),
+    onClose: () => setProductToDelete(null),
+    modalKey: 'confirm-delete-product'
+  });
+
+  useModalHistory({
+    isOpen: Boolean(categoryToDelete),
+    onClose: () => setCategoryToDelete(null),
+    modalKey: 'confirm-delete-category'
+  });
+
+  useModalHistory({
+    isOpen: Boolean(sizeToDelete),
+    onClose: () => setSizeToDelete(null),
+    modalKey: 'confirm-delete-size'
+  });
+
+  useModalHistory({
+    isOpen: Boolean(colorToDelete),
+    onClose: () => setColorToDelete(null),
+    modalKey: 'confirm-delete-color'
+  });
 
   // Filtered Products
   const filteredProducts = useMemo(() => {
@@ -110,6 +148,21 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     return map;
   }, [products]);
 
+  // Collect all unique tags and their assigned colors from products
+  const allExistingTags = useMemo(() => {
+    const map = new Map<string, string>();
+    products.forEach((p) => {
+      (p.tags || []).forEach((t) => {
+        if (!map.has(t)) {
+          map.set(t, p.tagColors?.[t] || '');
+        } else if (!map.get(t) && p.tagColors?.[t]) {
+          map.set(t, p.tagColors[t]);
+        }
+      });
+    });
+    return Array.from(map.entries()).map(([name, color]) => ({ name, color }));
+  }, [products]);
+
   const isMaxProductsReached =
     typeof featureFlags?.maxProducts === 'number' &&
     featureFlags.maxProducts > 0 &&
@@ -127,7 +180,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       category: defaultCategory,
       description: '',
       tags: [],
+      tagColors: {},
       price: 0,
+      discountPrice: undefined,
       cost: 0,
       enabledOnline: true,
       images: [],
@@ -1335,6 +1390,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           onSave={onSaveProduct}
           settings={settings}
           allowDevicePhotos={featureFlags?.uploadDevicePhotos !== false}
+          existingTags={allExistingTags}
         />
       )}
 

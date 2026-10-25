@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Product, ProductVariant, StoreSettings } from '../types';
-import { useAuth } from '../context/AuthContext';
 import { compressImageFile, optimizeProductImages } from '../utils/imageOptimizer';
 
 /**
@@ -21,6 +20,28 @@ export function convertDriveUrlToDirectLink(url: string): { directUrl: string; w
   return { directUrl: trimmed, wasConverted: false };
 }
 
+export const TAG_COLOR_PALETTE = [
+  { hex: '#ef4444', label: 'Rojo' },
+  { hex: '#f59e0b', label: 'Ámbar' },
+  { hex: '#10b981', label: 'Verde' },
+  { hex: '#6366f1', label: 'Índigo' },
+  { hex: '#8b5cf6', label: 'Púrpura' },
+  { hex: '#ec4899', label: 'Rosa' },
+  { hex: '#06b6d4', label: 'Cyan' },
+  { hex: '#475569', label: 'Grafito' },
+];
+
+export const QUICK_EMOJIS = ['🔥', '✨', '🌱', '🏷️', '⭐', '⚡', '❤️', '💎', '🎉', '🥐'];
+
+export const DEFAULT_SUGGESTED_TAGS = [
+  { name: '🔥 Hot Sale', color: '#ef4444' },
+  { name: '✨ Destacado', color: '#f59e0b' },
+  { name: '🏷️ Oferta', color: '#ec4899' },
+  { name: '🌱 Nuevo', color: '#10b981' },
+  { name: '⭐ Exclusivo', color: '#8b5cf6' },
+  { name: '🚚 Envío Gratis', color: '#6366f1' },
+];
+
 interface ProductEditModalProps {
   product: Product;
   isOpen: boolean;
@@ -28,6 +49,7 @@ interface ProductEditModalProps {
   onSave: (product: Product) => Promise<any>;
   settings: StoreSettings;
   allowDevicePhotos?: boolean;
+  existingTags?: { name: string; color?: string }[];
 }
 
 export const ProductEditModal: React.FC<ProductEditModalProps> = ({
@@ -36,11 +58,14 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
   onClose,
   onSave,
   settings,
-  allowDevicePhotos = true
+  allowDevicePhotos = true,
+  existingTags = []
 }) => {
-  const { managerProfile } = useAuth();
   const [product, setProduct] = useState<Product>({ ...initialProduct });
+  const [draggedImgIndex, setDraggedImgIndex] = useState<number | null>(null);
   const [newTagInput, setNewTagInput] = useState('');
+  const [selectedTagColor, setSelectedTagColor] = useState<string>(TAG_COLOR_PALETTE[0].hex);
+  const [activeColorPickerTag, setActiveColorPickerTag] = useState<string | null>(null);
   const [newImageUrl, setNewImageUrl] = useState('');
   const [saving, setSaving] = useState(false);
   const [driveNotice, setDriveNotice] = useState<string | null>(null);
@@ -63,6 +88,8 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
   useEffect(() => {
     setProduct({ ...initialProduct });
     setNewTagInput('');
+    setSelectedTagColor(TAG_COLOR_PALETTE[0].hex);
+    setActiveColorPickerTag(null);
     setNewImageUrl('');
 
     const fromVariantsSizes = Array.from(new Set(initialProduct.variants.map((v) => v.size)));
@@ -86,21 +113,80 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Margin calculation
-  const marginGross = product.price > 0 ? product.price - product.cost : 0;
-  const marginPercent = product.price > 0 ? ((marginGross / product.price) * 100).toFixed(1) : '0';
+  // Effective price (uses discountPrice if active and valid)
+  const hasDiscountPrice = Boolean(
+    product.discountPrice &&
+    product.discountPrice > 0 &&
+    product.discountPrice < product.price
+  );
+  const effectivePrice = hasDiscountPrice ? product.discountPrice! : product.price;
+
+  // Margin calculation based on effective selling price
+  const marginGross = effectivePrice > 0 ? effectivePrice - product.cost : 0;
+  const marginPercent = effectivePrice > 0 ? ((marginGross / effectivePrice) * 100).toFixed(1) : '0';
   const totalStock = product.variants.reduce((acc, v) => acc + ((v.enabled !== false && (v.enabled as any) !== 'false') ? Number(v.stock || 0) : 0), 0);
 
-  const handleAddTag = () => {
-    if (!newTagInput.trim()) return;
-    if (!product.tags.includes(newTagInput.trim())) {
-      setProduct({ ...product, tags: [...product.tags, newTagInput.trim()] });
+  // Tag helpers
+  const handleAddTag = (nameToAdd?: string, colorToAdd?: string) => {
+    const raw = (nameToAdd !== undefined ? nameToAdd : newTagInput).trim();
+    if (!raw) return;
+    const color = colorToAdd || selectedTagColor || TAG_COLOR_PALETTE[0].hex;
+    const currentTags = product.tags || [];
+    const currentColors = { ...(product.tagColors || {}) };
+
+    if (!currentTags.includes(raw)) {
+      setProduct({
+        ...product,
+        tags: [...currentTags, raw],
+        tagColors: {
+          ...currentColors,
+          [raw]: color
+        }
+      });
+    } else if (colorToAdd) {
+      setProduct({
+        ...product,
+        tagColors: {
+          ...currentColors,
+          [raw]: colorToAdd
+        }
+      });
     }
-    setNewTagInput('');
+
+    if (nameToAdd === undefined) {
+      setNewTagInput('');
+    }
+  };
+
+  const handleToggleExistingTag = (tagName: string, tagColor?: string) => {
+    const currentTags = product.tags || [];
+    if (currentTags.includes(tagName)) {
+      handleRemoveTag(tagName);
+    } else {
+      handleAddTag(tagName, tagColor || selectedTagColor);
+    }
   };
 
   const handleRemoveTag = (tagToRemove: string) => {
-    setProduct({ ...product, tags: product.tags.filter((t) => t !== tagToRemove) });
+    const nextTags = (product.tags || []).filter((t) => t !== tagToRemove);
+    const nextColors = { ...(product.tagColors || {}) };
+    delete nextColors[tagToRemove];
+    setProduct({
+      ...product,
+      tags: nextTags,
+      tagColors: nextColors
+    });
+  };
+
+  const handleUpdateTagColor = (tag: string, color: string) => {
+    setProduct({
+      ...product,
+      tagColors: {
+        ...(product.tagColors || {}),
+        [tag]: color
+      }
+    });
+    setActiveColorPickerTag(null);
   };
 
   const handleAddImage = (url: string) => {
@@ -152,16 +238,31 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
 
   const handleRemoveImage = (index: number) => {
     const updatedImages = product.images.filter((_, i) => i !== index);
-    const newCover = product.coverIndex >= updatedImages.length ? 0 : product.coverIndex;
     setProduct({
       ...product,
       images: updatedImages,
-      coverIndex: newCover
+      coverIndex: 0
     });
   };
 
-  const handleSetCover = (index: number) => {
-    setProduct({ ...product, coverIndex: index });
+  const handleReorderImages = (fromIndex: number, toIndex: number) => {
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= product.images.length ||
+      toIndex >= product.images.length
+    ) {
+      return;
+    }
+    const newImages = [...product.images];
+    const [moved] = newImages.splice(fromIndex, 1);
+    newImages.splice(toIndex, 0, moved);
+    setProduct({
+      ...product,
+      images: newImages,
+      coverIndex: 0
+    });
   };
 
   const handleVariantStockChange = (index: number, newStock: number) => {
@@ -289,26 +390,6 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
 
         {/* Scrollable Editorial Form Work Surface */}
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-8 bg-[#fbf9f8]">
-          {/* Banner informativo al duplicar producto */}
-          {!product.enabledOnline && product.name.startsWith('Copia de ') && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3 text-xs text-amber-900 shadow-2xs">
-              <span className="material-symbols-outlined text-amber-600 text-[20px] shrink-0 mt-0.5">
-                shield
-              </span>
-              <div className="space-y-1">
-                <div className="font-bold flex items-center gap-1.5 text-amber-950">
-                  <span>Producto Duplicado</span>
-                  <span className="text-[10px] font-semibold bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded-full">
-                    Oculto para Clientes
-                  </span>
-                </div>
-                <p className="leading-relaxed">
-                  Este producto se guardó como <strong>oculto/invisible</strong> para protegerlo y que los clientes no lo vean en el catálogo online hasta que esté listo. Podés modificar cualquier dato. Cuando quieras publicarlo, activá <strong>"Habilitado en Tienda Online"</strong>. Si cerrás esta ventana, el producto ya existe guardado con sus datos clonados.
-                </p>
-              </div>
-            </div>
-          )}
-
           {/* ================= SECCIÓN 1: DATOS GENERALES ================= */}
           <section className="bg-white p-5 rounded-xl border border-[#efeded] space-y-4 shadow-xs">
             <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
@@ -375,88 +456,276 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                 />
               </div>
 
-              {/* Multiselection Tags */}
-              <div className="md:col-span-12 flex flex-col gap-1.5">
-                <label className="text-xs font-semibold text-neutral-700">
-                  Colecciones y Etiquetas de Búsqueda
-                </label>
-                <div className="flex flex-wrap items-center gap-1.5 p-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg">
-                  {product.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#efeded] text-neutral-800 text-xs font-medium"
-                    >
-                      {tag}
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveTag(tag)}
-                        className="text-neutral-500 hover:text-red-600 focus:outline-none"
-                      >
-                        <span className="material-symbols-outlined text-[14px]">close</span>
-                      </button>
+              {/* Multiselection Tags & Color Tagging */}
+              <div className="md:col-span-12 flex flex-col gap-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-neutral-800 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-neutral-500">label</span>
+                    <span>Colecciones y Etiquetas de Búsqueda</span>
+                  </label>
+                  <span className="text-[11px] text-neutral-400">
+                    Aparecen flotando en la foto de tus productos y como filtros
+                  </span>
+                </div>
+
+                {/* Active tags on this product */}
+                <div className="min-h-[46px] p-2.5 bg-[#fbf9f8] border border-neutral-200 rounded-xl flex flex-wrap items-center gap-2">
+                  {product.tags && product.tags.length > 0 ? (
+                    product.tags.map((tag) => {
+                      const tagColor = product.tagColors?.[tag] || '#475569';
+                      const isColorPickerOpen = activeColorPickerTag === tag;
+                      return (
+                        <div key={tag} className="relative inline-flex items-center">
+                          <span
+                            className="inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-lg text-white text-xs font-semibold shadow-xs"
+                            style={{ backgroundColor: tagColor }}
+                          >
+                            <span>{tag}</span>
+                            {/* Color changer trigger */}
+                            <button
+                              type="button"
+                              onClick={() => setActiveColorPickerTag(isColorPickerOpen ? null : tag)}
+                              className="w-3.5 h-3.5 rounded-full border border-white/60 hover:scale-115 transition-transform cursor-pointer"
+                              style={{ backgroundColor: tagColor }}
+                              title="Cambiar color de etiqueta"
+                            />
+                            {/* Remove tag */}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveTag(tag)}
+                              className="text-white/80 hover:text-white hover:bg-black/20 rounded p-0.5 transition-colors focus:outline-none cursor-pointer"
+                              title="Quitar etiqueta"
+                            >
+                              <span className="material-symbols-outlined text-[13px] leading-none">close</span>
+                            </button>
+                          </span>
+
+                          {/* Mini inline color picker popover */}
+                          {isColorPickerOpen && (
+                            <div className="absolute top-full left-0 mt-1.5 z-30 p-2 bg-white rounded-xl shadow-xl border border-neutral-200 flex items-center gap-1.5 animate-in fade-in zoom-in-95">
+                              {TAG_COLOR_PALETTE.map((pal) => (
+                                <button
+                                  key={pal.hex}
+                                  type="button"
+                                  onClick={() => handleUpdateTagColor(tag, pal.hex)}
+                                  className={`w-5 h-5 rounded-full transition-transform hover:scale-115 cursor-pointer ${
+                                    tagColor === pal.hex ? 'ring-2 ring-black ring-offset-1' : ''
+                                  }`}
+                                  style={{ backgroundColor: pal.hex }}
+                                  title={pal.label}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <span className="text-xs text-neutral-400 italic">
+                      Sin etiquetas asignadas. Podés elegir existentes abajo o crear una nueva.
                     </span>
-                  ))}
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="text"
-                      placeholder="+ Agregar etiqueta..."
-                      value={newTagInput}
-                      onChange={(e) => setNewTagInput(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
-                      className="bg-transparent px-2 py-0.5 text-xs text-black focus:outline-none placeholder:text-neutral-400"
-                    />
-                    {newTagInput && (
-                      <button
-                        type="button"
-                        onClick={handleAddTag}
-                        className="text-xs text-black font-semibold hover:underline"
-                      >
-                        Añadir
-                      </button>
-                    )}
+                  )}
+                </div>
+
+                {/* Existing Tags in Store to Reuse */}
+                {(() => {
+                  const combined = Array.from(
+                    new Map(
+                      [...DEFAULT_SUGGESTED_TAGS, ...existingTags].map((t) => [t.name, t])
+                    ).values()
+                  );
+                  if (combined.length === 0) return null;
+                  return (
+                    <div className="flex flex-col gap-1.5 pt-1">
+                      <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">
+                        Reutilizar etiquetas existentes (click para asignar/desasignar):
+                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {combined.map((item) => {
+                          const isAssigned = (product.tags || []).includes(item.name);
+                          const color = item.color || TAG_COLOR_PALETTE[0].hex;
+                          return (
+                            <button
+                              key={item.name}
+                              type="button"
+                              onClick={() => handleToggleExistingTag(item.name, color)}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                                isAssigned
+                                  ? 'text-white shadow-xs ring-2 ring-offset-1 ring-neutral-900'
+                                  : 'bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-200 hover:border-neutral-300'
+                              }`}
+                              style={isAssigned ? { backgroundColor: color } : undefined}
+                            >
+                              <span
+                                className="w-2.5 h-2.5 rounded-full shrink-0"
+                                style={{ backgroundColor: color }}
+                              />
+                              <span>{item.name}</span>
+                              {isAssigned && (
+                                <span className="material-symbols-outlined text-[13px] leading-none">check</span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Creator for new tag with emojis and color selection */}
+                <div className="bg-[#f5f3f3] p-3 rounded-xl border border-neutral-200/80 flex flex-col gap-2.5 mt-1">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-neutral-800">
+                      Crear nueva etiqueta personalizada:
+                    </span>
+                    {/* Quick Emojis */}
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <span className="text-[10px] text-neutral-500 font-semibold mr-1">Emojis:</span>
+                      {QUICK_EMOJIS.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => setNewTagInput((prev) => `${prev}${emoji} `)}
+                          className="px-1.5 py-0.5 rounded-md bg-white hover:bg-neutral-200 text-xs shadow-2xs transition-transform hover:scale-110 cursor-pointer"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Color palette selector for the new tag */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-medium text-neutral-600">Color:</span>
+                    <div className="flex items-center gap-1.5">
+                      {TAG_COLOR_PALETTE.map((pal) => (
+                        <button
+                          key={pal.hex}
+                          type="button"
+                          onClick={() => setSelectedTagColor(pal.hex)}
+                          className={`w-5 h-5 rounded-full transition-transform hover:scale-115 cursor-pointer ${
+                            selectedTagColor === pal.hex ? 'ring-2 ring-black ring-offset-1 scale-110' : 'opacity-85'
+                          }`}
+                          style={{ backgroundColor: pal.hex }}
+                          title={pal.label}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Input field + Add button */}
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <span
+                        className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full shrink-0"
+                        style={{ backgroundColor: selectedTagColor }}
+                      />
+                      <input
+                        type="text"
+                        placeholder="Ej: 🔥 Edición Limitada o 🌱 100% Algodón..."
+                        value={newTagInput}
+                        onChange={(e) => setNewTagInput(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
+                        className="w-full pl-8 pr-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs font-medium text-black focus:outline-none focus:ring-1 focus:ring-black placeholder:text-neutral-400"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleAddTag()}
+                      disabled={!newTagInput.trim()}
+                      className="px-4 py-2 bg-neutral-900 hover:bg-black disabled:opacity-40 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer shrink-0"
+                    >
+                      Añadir Etiqueta
+                    </button>
                   </div>
                 </div>
               </div>
 
-              {/* Pricing Structure */}
-              <div className="md:col-span-6 flex flex-col gap-1">
-                <label className="text-xs font-semibold text-neutral-700">
-                  Precio de Venta al Público (ARS)
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-500 font-semibold">
-                    $
+              {/* Pricing Structure: 3 Columns on the same line */}
+              <div className="md:col-span-12 grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-2">
+                {/* 1. Precio Regular */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-neutral-700">
+                    Precio Regular / Lista (ARS)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-500 font-semibold">
+                      $
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={product.price || ''}
+                      onChange={(e) => setProduct({ ...product, price: Number(e.target.value) })}
+                      className="w-full pl-8 pr-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-base font-bold text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
+                    />
+                  </div>
+                  <span className="text-[11px] text-neutral-500">
+                    Precio base de venta en catálogo
                   </span>
-                  <input
-                    type="number"
-                    value={product.price}
-                    onChange={(e) => setProduct({ ...product, price: Number(e.target.value) })}
-                    className="w-full pl-8 pr-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-base font-bold text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
-                  />
                 </div>
-                <span className="text-[11px] text-neutral-500">
-                  Margen bruto proyectado: <strong className="text-black">{marginPercent}%</strong> (${marginGross.toLocaleString('es-AR')})
-                </span>
-              </div>
 
-              <div className="md:col-span-6 flex flex-col gap-1">
-                <label className="text-xs font-semibold text-neutral-700">
-                  Precio de Costo de Producción (ARS)
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-500 font-semibold">
-                    $
-                  </span>
-                  <input
-                    type="number"
-                    value={product.cost}
-                    onChange={(e) => setProduct({ ...product, cost: Number(e.target.value) })}
-                    className="w-full pl-8 pr-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-base font-medium text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
-                  />
+                {/* 2. Precio c/Descuento */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-neutral-700 flex items-center justify-between">
+                    <span>Precio c/Descuento (ARS)</span>
+                    <span className="text-[10px] text-neutral-400 font-normal">Opcional</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-emerald-600 font-semibold">
+                      $
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="Ej: 18500"
+                      value={product.discountPrice !== undefined && product.discountPrice !== null && product.discountPrice > 0 ? product.discountPrice : ''}
+                      onChange={(e) => {
+                        const val = e.target.value ? Number(e.target.value) : undefined;
+                        setProduct({ ...product, discountPrice: val });
+                      }}
+                      className="w-full pl-8 pr-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-base font-bold text-emerald-700 focus:outline-none focus:bg-white focus:ring-1 focus:ring-emerald-600"
+                    />
+                  </div>
+                  {product.discountPrice && product.discountPrice > 0 && product.price > 0 ? (
+                    product.discountPrice < product.price ? (
+                      <span className="text-[11px] font-semibold text-emerald-600 flex items-center gap-1">
+                        <span>🔥</span>
+                        <span>Activo: {Math.round(((product.price - product.discountPrice) / product.price) * 100)}% OFF en tienda</span>
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-amber-600 font-medium">
+                        ⚠️ Debe ser menor al precio regular
+                      </span>
+                    )
+                  ) : (
+                    <span className="text-[11px] text-neutral-400">
+                      Si se completa, será el precio final en el catálogo
+                    </span>
+                  )}
                 </div>
-                <span className="text-[11px] text-neutral-500">
-                  Materia prima, confección y botones incluidos
-                </span>
+
+                {/* 3. Costo de Producción */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-neutral-700">
+                    Precio de Costo de Producción (ARS)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-500 font-semibold">
+                      $
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={product.cost || ''}
+                      onChange={(e) => setProduct({ ...product, cost: Number(e.target.value) })}
+                      className="w-full pl-8 pr-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-base font-medium text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
+                    />
+                  </div>
+                  <span className="text-[11px] text-neutral-500">
+                    Margen neto proyectado: <strong className="text-black">{marginPercent}%</strong> (${marginGross.toLocaleString('es-AR')})
+                  </span>
+                </div>
               </div>
             </div>
           </section>
@@ -478,20 +747,6 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
               <span className="px-2.5 py-1 rounded bg-[#f5f3f3] text-xs font-medium text-black self-start sm:self-center">
                 {product.images.length} fotos cargadas
               </span>
-            </div>
-
-            {/* Official Safety Guarantee Alert */}
-            <div className="p-3.5 rounded-xl bg-[#efeded] flex items-start gap-3">
-              <span className="material-symbols-outlined text-[22px] text-black shrink-0 mt-0.5">
-                verified_user
-              </span>
-              <div className="space-y-0.5">
-                <h4 className="text-xs font-bold text-black">Sistema de Respaldo Visual Atelier</h4>
-                <p className="text-xs text-[#444748] leading-relaxed">
-                  Si no se adjunta foto o se encuentra en proceso de producción, el sistema asignará
-                  automáticamente la <strong className="text-black">imagen genérica oficial de la prenda</strong> para preservar la armonía arquitectónica y estética de la tienda online sin espacios vacíos.
-                </p>
-              </div>
             </div>
 
             {/* Drag & Drop / Image Link Box */}
@@ -583,89 +838,143 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
               </div>
             </div>
 
-            {/* Photo Gallery & Reordering */}
-            <div className="space-y-2">
-              <span className="text-xs font-semibold text-black">
-                Secuencia de Galería
-              </span>
-              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-3">
-                {product.images.map((imgUrl, idx) => {
-                  const isCover = idx === product.coverIndex;
-                  return (
-                    <div
-                      key={imgUrl + idx}
-                      className="relative group rounded-lg overflow-hidden bg-[#efeded] aspect-[3/4] shadow-xs border border-neutral-200"
-                    >
-                      <img src={imgUrl} alt="Lookbook" className="w-full h-full object-cover" />
-                      {isCover && (
-                        <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black text-white text-[9px] font-bold tracking-wider uppercase">
-                          Portada
-                        </span>
-                      )}
-                      {!isCover && (
-                        <button
-                          type="button"
-                          onClick={() => handleSetCover(idx)}
-                          className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-white/90 hover:bg-white text-black text-[9px] font-semibold opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          Hacer Portada
-                        </button>
-                      )}
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveImage(idx)}
-                          className="p-1.5 bg-white rounded-full text-red-600 hover:bg-red-50"
-                          title="Eliminar foto"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">delete</span>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {/* Visual Comparison Module: How fallback looks vs with image */}
-                <div className="col-span-2 rounded-lg bg-[#fbf9f8] p-3 border border-neutral-200 flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center gap-1 text-black text-xs font-bold">
-                      <span className="material-symbols-outlined text-[16px]">compare</span>
-                      <span>Respaldo Automático Activo</span>
-                    </div>
-                    <p className="text-[11px] text-neutral-500 mt-1">
-                      Comparación en directo entre tarjeta con producción fotográfica y modo respaldo.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 mt-2 pt-2 border-t border-neutral-200">
-                    {/* Case A: With photo */}
-                    <div className="flex-1 flex flex-col items-center">
-                      <div className="w-12 h-16 rounded bg-[#efeded] overflow-hidden relative">
-                        {product.images[0] ? (
-                          <img
-                            src={product.images[0]}
-                            alt="Miniature"
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full bg-neutral-200"></div>
-                        )}
-                      </div>
-                      <span className="text-[9px] text-neutral-600 mt-1 font-medium">Con Foto</span>
-                    </div>
-                    <span className="material-symbols-outlined text-neutral-400 text-[14px]">
-                      sync_alt
-                    </span>
-                    {/* Case B: Generic Placeholder Silhouette */}
-                    <div className="flex-1 flex flex-col items-center">
-                      <div className="w-12 h-16 rounded bg-[#efeded] flex flex-col items-center justify-center text-neutral-500">
-                        <span className="material-symbols-outlined text-[18px]">checkroom</span>
-                        <span className="text-[7px] uppercase tracking-wider">Silueta</span>
-                      </div>
-                      <span className="text-[9px] text-neutral-600 mt-1 font-medium">Modo Silueta</span>
-                    </div>
-                  </div>
-                </div>
+            {/* Photo Gallery & Drag-and-Drop Reordering */}
+            <div className="space-y-2.5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                <span className="text-xs font-semibold text-black flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px] text-neutral-600">collections</span>
+                  <span>Secuencia de Galería</span>
+                </span>
+                {product.images.length > 1 && (
+                  <span className="text-[11px] text-neutral-500 flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[14px]">swap_horiz</span>
+                    <span>Arrastrá las fotos para ordenarlas. La 1ª foto es siempre la <strong>PORTADA</strong>.</span>
+                  </span>
+                )}
               </div>
+
+              {product.images.length === 0 ? (
+                <div className="p-6 rounded-xl bg-[#fbf9f8] border border-neutral-200 text-center text-xs text-neutral-400">
+                  Aún no has agregado fotos. Podés subir desde tu dispositivo o pegar un enlace arriba.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
+                  {product.images.map((imgUrl, idx) => {
+                    const isCover = idx === 0;
+                    const isBeingDragged = draggedImgIndex === idx;
+
+                    return (
+                      <div
+                        key={imgUrl + idx}
+                        draggable
+                        onDragStart={(e) => {
+                          setDraggedImgIndex(idx);
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', String(idx));
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = 'move';
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (draggedImgIndex !== null && draggedImgIndex !== idx) {
+                            handleReorderImages(draggedImgIndex, idx);
+                          }
+                          setDraggedImgIndex(null);
+                        }}
+                        onDragEnd={() => setDraggedImgIndex(null)}
+                        className={`relative group rounded-xl overflow-hidden bg-[#efeded] aspect-[3/4] shadow-xs border transition-all cursor-grab active:cursor-grabbing select-none ${
+                          isBeingDragged
+                            ? 'opacity-40 border-dashed border-neutral-600 scale-95'
+                            : isCover
+                            ? 'border-neutral-900 ring-2 ring-neutral-900/10'
+                            : 'border-neutral-200 hover:border-neutral-400'
+                        }`}
+                        title="Arrastrá para reordenar"
+                      >
+                        <img
+                          src={imgUrl}
+                          alt={`Foto ${idx + 1}`}
+                          className="w-full h-full object-cover pointer-events-none"
+                        />
+
+                        {/* Cover Tag on position 0 */}
+                        {isCover && (
+                          <div className="absolute top-2 left-2 z-10 pointer-events-none">
+                            <span className="px-2 py-0.5 rounded-md bg-black/90 backdrop-blur-xs text-white text-[9px] font-bold tracking-wider uppercase shadow-xs flex items-center gap-1">
+                              <span className="material-symbols-outlined text-[12px] text-amber-400">star</span>
+                              <span>Portada</span>
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Order index pill */}
+                        <span className="absolute bottom-2 left-2 z-10 w-5 h-5 rounded-md bg-black/60 backdrop-blur-xs text-white text-[10px] font-bold flex items-center justify-center pointer-events-none shadow-xs">
+                          {idx + 1}
+                        </span>
+
+                        {/* Drag Handle Indicator (Top-Right) */}
+                        <div className="absolute top-2 right-2 z-10 opacity-70 group-hover:opacity-100 transition-opacity pointer-events-none">
+                          <span className="p-1 rounded-md bg-black/60 text-white flex items-center justify-center shadow-xs">
+                            <span className="material-symbols-outlined text-[15px] leading-none">drag_indicator</span>
+                          </span>
+                        </div>
+
+                        {/* Hover Overlay with Reorder Arrows & Delete Button */}
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-between p-2">
+                          <div className="h-6" /> {/* Spacer */}
+
+                          {/* Center: Shift Left / Shift Right buttons */}
+                          <div className="flex items-center justify-center gap-2">
+                            {idx > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleReorderImages(idx, idx - 1);
+                                }}
+                                className="w-7 h-7 bg-white/95 hover:bg-white rounded-lg text-black shadow-xs flex items-center justify-center transition-transform hover:scale-110 cursor-pointer"
+                                title="Mover a la izquierda"
+                              >
+                                <span className="material-symbols-outlined text-[16px] leading-none">arrow_back</span>
+                              </button>
+                            )}
+                            {idx < product.images.length - 1 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleReorderImages(idx, idx + 1);
+                                }}
+                                className="w-7 h-7 bg-white/95 hover:bg-white rounded-lg text-black shadow-xs flex items-center justify-center transition-transform hover:scale-110 cursor-pointer"
+                                title="Mover a la derecha"
+                              >
+                                <span className="material-symbols-outlined text-[16px] leading-none">arrow_forward</span>
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Bottom Right: Delete Photo */}
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoveImage(idx);
+                              }}
+                              className="p-1.5 bg-white/95 hover:bg-red-50 text-red-600 rounded-lg shadow-xs transition-transform hover:scale-110 cursor-pointer"
+                              title="Eliminar foto"
+                            >
+                              <span className="material-symbols-outlined text-[16px] leading-none">delete</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </section>
 
@@ -981,12 +1290,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
         )}
 
         {/* Action Footer Bar */}
-        <div className="px-6 py-4 bg-[#fbf9f8] border-t border-[#efeded] flex flex-col sm:flex-row items-center justify-between gap-3 z-10">
-          <div className="flex items-center gap-1.5 text-neutral-500 text-xs">
-            <span className="material-symbols-outlined text-[16px]">schedule</span>
-            <span>Última modificación por {managerProfile.name}</span>
-          </div>
-
+        <div className="px-6 py-4 bg-[#fbf9f8] border-t border-[#efeded] flex items-center justify-end gap-3 z-10">
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <button
               type="button"
