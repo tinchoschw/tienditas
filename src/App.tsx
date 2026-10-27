@@ -8,17 +8,19 @@ import { SalesView } from './components/SalesView';
 import { BrandCustomizerView } from './components/BrandCustomizerView';
 import { PaymentsConfigView } from './components/PaymentsConfigView';
 import { AdminLoginView } from './components/AdminLoginView';
+import { MyAccountView } from './components/MyAccountView';
 import { CartDrawer } from './components/CartDrawer';
 import { SuperAdminView } from './components/SuperAdminView';
 import { PlatformLandingView } from './components/PlatformLandingView';
 import { DisabledStoreNotice } from './components/DisabledStoreNotice';
 import { AdminHelpAssistant } from './components/AdminHelpAssistant';
 import { useModalHistory } from './hooks/useModalHistory';
-import { Product, Sale, StoreSettings, CartItem, Store } from './types';
+import { Product, Sale, StoreSettings, CartItem, Store, PlatformConfig } from './types';
 import { INITIAL_PRODUCTS, INITIAL_SALES, INITIAL_SETTINGS, INITIAL_STORES } from './initialData';
 import {
   subscribeStores,
   updateStoreMeta,
+  subscribePlatformConfig,
   subscribeStoreSettings,
   updateStoreSettings,
   subscribeProducts,
@@ -158,6 +160,19 @@ function MainContent() {
     return () => unsub();
   }, []);
 
+  // Platform Config (Base price, Support WhatsApp)
+  const [platformConfig, setPlatformConfig] = useState<PlatformConfig>({
+    basePrice: 24900,
+    supportWhatsApp: '5491122334455'
+  });
+
+  useEffect(() => {
+    const unsub = subscribePlatformConfig((cfg) => {
+      setPlatformConfig(cfg);
+    });
+    return () => unsub();
+  }, []);
+
   // Admin Authenticated Session per store
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
     if (!currentStoreSlug) return false;
@@ -185,7 +200,7 @@ function MainContent() {
   }, [currentStoreSlug]);
 
   // Admin Sub-Tab
-  const [adminTab, setAdminTab] = useState<'inventory' | 'sales' | 'brand' | 'payments'>('inventory');
+  const [adminTab, setAdminTab] = useState<'inventory' | 'sales' | 'brand' | 'payments' | 'account'>('inventory');
 
   // Customer Slide-Over Cart
   const [isSlideOverCartOpen, setIsSlideOverCartOpen] = useState(false);
@@ -574,9 +589,16 @@ function MainContent() {
     );
   }
 
-  // 3. STORE NOT FOUND OR DISABLED CHECKS
+  // 3. STORE NOT FOUND OR EXPIRATION / SUSPENSION CHECKS
   const activeStore = stores.find((s) => s.slug === currentStoreSlug || s.id === currentStoreSlug);
-  const isStoreDisabled = activeStore ? activeStore.active === false : false;
+  
+  // Single expiration rule: si planEndsAt existe y ya pasó (o status es 'suspended'/'closed' o active === false)
+  const isStoreExpiredOrSuspended = activeStore ? Boolean(
+    activeStore.status === 'suspended' ||
+    activeStore.status === 'closed' ||
+    activeStore.active === false ||
+    (activeStore.planEndsAt && new Date(activeStore.planEndsAt).getTime() < Date.now())
+  ) : false;
 
   // Initial loading state while store registry is resolving
   if (!storesLoaded && currentStoreSlug) {
@@ -588,9 +610,8 @@ function MainContent() {
     );
   }
 
-  // 3A. PUBLIC CATALOG FOR A DISABLED STORE (or non-existent store):
-  // "Si un comercio esta deshabilitado, el catalogo publico es como si no existiera."
-  if (storesLoaded && currentStoreSlug && (!activeStore || (routeInfo.route === 'storefront' && isStoreDisabled))) {
+  // 3A. STORE NOT FOUND:
+  if (storesLoaded && currentStoreSlug && !activeStore) {
     return (
       <div className="min-h-screen bg-[#F8F9FA] flex flex-col items-center justify-center p-4 text-center">
         <div className="w-16 h-16 bg-neutral-200 text-neutral-600 rounded-2xl flex items-center justify-center mb-4">
@@ -598,7 +619,7 @@ function MainContent() {
         </div>
         <h1 className="text-2xl font-bold text-neutral-900 mb-2">Comercio no encontrado</h1>
         <p className="text-sm text-neutral-600 max-w-md mb-6 leading-relaxed">
-          No encontramos ninguna tienda activa con la dirección web <code className="bg-neutral-200 px-2 py-0.5 rounded font-mono text-neutral-900">/{currentStoreSlug}</code>.
+          No encontramos ninguna tienda registrada con la dirección web <code className="bg-neutral-200 px-2 py-0.5 rounded font-mono text-neutral-900">/{currentStoreSlug}</code>.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-3">
           <button
@@ -618,9 +639,9 @@ function MainContent() {
     );
   }
 
-  // 3B. ADMIN PANEL FOR A DISABLED STORE:
-  // "Si un comercio esta deshabilitado, el panel de administracion del comercio debe mostrar un aviso que esta deshabilitado y que se pongan en contacto con el administrador de la plataforma y mostrar informacion de contacto(ugmartin@hotmail.com), similar al contacto de la landing pero con un mensaje claro que el sitio se encuentra deshabilitado."
-  if (storesLoaded && activeStore && isStoreDisabled && routeInfo.route === 'admin') {
+  // 3B. PUBLIC STOREFRONT FOR AN EXPIRED OR SUSPENDED STORE:
+  // "el catálogo público muestra 'Tienda temporalmente fuera de servicio' y el admin muestra un banner explicando cómo reactivarla."
+  if (storesLoaded && activeStore && isStoreExpiredOrSuspended && routeInfo.route === 'storefront') {
     return (
       <DisabledStoreNotice
         store={activeStore}
@@ -628,7 +649,7 @@ function MainContent() {
         onExitToLanding={() => navigateTo('/')}
         onOpenSuperAdmin={handleOpenSuperAdmin}
         onReenableStore={async () => {
-          await updateStoreMeta(activeStore.id, { active: true });
+          await updateStoreMeta(activeStore.id, { active: true, status: 'active' });
         }}
       />
     );
@@ -639,7 +660,7 @@ function MainContent() {
   if (
     storesLoaded &&
     activeStore &&
-    !isStoreDisabled &&
+    !isStoreExpiredOrSuspended &&
     activeStore.featureFlags?.publicCatalog === false &&
     routeInfo.route === 'storefront'
   ) {
@@ -706,7 +727,7 @@ function MainContent() {
         currentTab={routeInfo.route === 'admin' ? effectiveAdminTab : 'storefront'}
         setCurrentTab={(tab) => {
           if (tab !== 'storefront') {
-            setAdminTab(tab as 'inventory' | 'sales' | 'brand' | 'payments');
+            setAdminTab(tab as 'inventory' | 'sales' | 'brand' | 'payments' | 'account');
           }
         }}
         cartCount={totalCartUnits}
@@ -719,6 +740,8 @@ function MainContent() {
         onExitAdmin={handleExitAdmin}
         onLogoutAdmin={handleLogoutAdmin}
         onOpenHelpAssistant={() => setIsHelpAssistantOpen(true)}
+        store={activeStore}
+        supportWhatsApp={platformConfig.supportWhatsApp}
       />
 
       {/* Main View Router */}
@@ -853,6 +876,16 @@ function MainContent() {
                 onReloadSettings={async () => {
                   const fresh = await getStoreSettingsFromDb(currentStoreSlug);
                   if (fresh) setSettings(fresh);
+                }}
+              />
+            )}
+
+            {effectiveAdminTab === 'account' && activeStore && (
+              <MyAccountView
+                store={activeStore}
+                supportWhatsApp={platformConfig.supportWhatsApp}
+                onStoreUpdated={(updatedStore) => {
+                  setStores((prev) => prev.map((s) => (s.id === updatedStore.id ? updatedStore : s)));
                 }}
               />
             )}

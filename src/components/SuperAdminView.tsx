@@ -1,6 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Store, StoreFeatureFlags, DEFAULT_FEATURE_FLAGS } from '../types';
-import { createNewStore, updateStoreMeta, deleteStoreRecord, resetStoreToFactory } from '../services/db';
+import { Store, StoreFeatureFlags, DEFAULT_FEATURE_FLAGS, PlatformConfig } from '../types';
+import { 
+  createNewStore, 
+  updateStoreMeta, 
+  deleteStoreRecord, 
+  resetStoreToFactory,
+  subscribePlatformConfig,
+  updatePlatformConfig
+} from '../services/db';
+import { StoreSubscriptionManagerModal } from './StoreSubscriptionManagerModal';
+import { FeedbackViewerModal } from './FeedbackViewerModal';
 
 interface SuperAdminViewProps {
   stores: Store[];
@@ -65,6 +74,56 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  // Subscription Manager & Feedback Modals
+  const [subscriptionManagerStore, setSubscriptionManagerStore] = useState<Store | null>(null);
+  const [isFeedbackViewerOpen, setIsFeedbackViewerOpen] = useState(false);
+
+  // Platform Configuration (Global Base Price $24.900, Support WhatsApp)
+  const [platformConfig, setPlatformConfig] = useState<PlatformConfig>({
+    basePrice: 24900,
+    baseSubscriptionPrice: 24900,
+    supportWhatsApp: '5491100000000',
+    trialDays: 14
+  });
+  const [isBasePriceModalOpen, setIsBasePriceModalOpen] = useState(false);
+  const [tempBasePrice, setTempBasePrice] = useState(24900);
+  const [tempSupportWhatsApp, setTempSupportWhatsApp] = useState('5491100000000');
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
+
+  // Store Filter and View Mode
+  const [storeFilter, setStoreFilter] = useState<'all' | 'expiring' | 'trial' | 'active' | 'suspended'>('all');
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
+
+  useEffect(() => {
+    const unsub = subscribePlatformConfig((cfg) => {
+      setPlatformConfig(cfg);
+      const price = cfg.basePrice || cfg.baseSubscriptionPrice || 24900;
+      setTempBasePrice(price);
+      setTempSupportWhatsApp(cfg.supportWhatsApp);
+    });
+    return () => unsub();
+  }, []);
+
+  const handleSavePlatformConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingConfig(true);
+    try {
+      const priceVal = Number(tempBasePrice) || 24900;
+      await updatePlatformConfig({
+        basePrice: priceVal,
+        baseSubscriptionPrice: priceVal,
+        supportWhatsApp: tempSupportWhatsApp.trim() || '5491100000000'
+      });
+      showToast('¡Configuración global de la plataforma actualizada!');
+      setIsBasePriceModalOpen(false);
+    } catch (err) {
+      console.error(err);
+      showToast('Error al guardar configuración global');
+    } finally {
+      setIsSavingConfig(false);
+    }
   };
 
   // Platform Mercado Pago Master Settings Modal
@@ -504,61 +563,119 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
       {/* Main Container */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* KPI Summary Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-          <div className="bg-white p-5 rounded-2xl border border-neutral-200/80 shadow-xs flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-              <span className="material-symbols-outlined text-2xl">store</span>
-            </div>
-            <div>
-              <div className="text-2xl font-bold tracking-tight text-neutral-900">{localStores.length}</div>
-              <div className="text-xs text-neutral-500 font-medium">Tiendas Registradas</div>
-            </div>
-          </div>
+        {(() => {
+          const now = Date.now();
+          const expiringSoonCount = localStores.filter((s) => {
+            if (!s.planEndsAt || s.status === 'suspended' || s.status === 'closed') return false;
+            const days = Math.ceil((new Date(s.planEndsAt).getTime() - now) / (1000 * 60 * 60 * 24));
+            return days <= 7 && days > 0;
+          }).length;
 
-          <div className="bg-white p-5 rounded-2xl border border-neutral-200/80 shadow-xs flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-              <span className="material-symbols-outlined text-2xl">check_circle</span>
-            </div>
-            <div>
-              <div className="text-2xl font-bold tracking-tight text-neutral-900">{activeCount}</div>
-              <div className="text-xs text-neutral-500 font-medium">Tiendas Habilitadas Online</div>
-            </div>
-          </div>
+          const expiredCount = localStores.filter((s) => {
+            if (s.status === 'suspended' || s.status === 'closed') return true;
+            if (!s.planEndsAt) return false;
+            const days = Math.ceil((new Date(s.planEndsAt).getTime() - now) / (1000 * 60 * 60 * 24));
+            return days <= 0;
+          }).length;
 
-          <div className="bg-white p-5 rounded-2xl border border-neutral-200/80 shadow-xs flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-              <span className="material-symbols-outlined text-2xl">pause_circle</span>
+          const trialCount = localStores.filter((s) => s.plan === 'trial').length;
+
+          return (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+              <div className="bg-white p-5 rounded-2xl border border-neutral-200/80 shadow-xs flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-2xl">store</span>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold tracking-tight text-neutral-900">{localStores.length}</div>
+                  <div className="text-xs text-neutral-500 font-medium">Tiendas Totales</div>
+                </div>
+              </div>
+
+              <div className="bg-white p-5 rounded-2xl border border-neutral-200/80 shadow-xs flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-2xl">notification_important</span>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold tracking-tight text-amber-900">{expiringSoonCount}</div>
+                  <div className="text-xs text-neutral-500 font-medium">Vencen en ≤ 7 días</div>
+                </div>
+              </div>
+
+              <div className="bg-white p-5 rounded-2xl border border-neutral-200/80 shadow-xs flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-2xl">new_releases</span>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold tracking-tight text-indigo-900">{trialCount}</div>
+                  <div className="text-xs text-neutral-500 font-medium">Prueba (Trial 14d)</div>
+                </div>
+              </div>
+
+              <div className="bg-white p-5 rounded-2xl border border-neutral-200/80 shadow-xs flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-2xl">pause_circle</span>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold tracking-tight text-rose-900">{expiredCount}</div>
+                  <div className="text-xs text-neutral-500 font-medium">Vencidas o Pausadas</div>
+                </div>
+              </div>
             </div>
-            <div>
-              <div className="text-2xl font-bold tracking-tight text-neutral-900">{localStores.length - activeCount}</div>
-              <div className="text-xs text-neutral-500 font-medium">Tiendas Deshabilitadas</div>
-            </div>
-          </div>
-        </div>
+          );
+        })()}
 
         {/* Section Header with Actions */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
           <div>
-            <h2 className="text-xl font-bold tracking-tight text-neutral-900">Listado de Tiendas</h2>
+            <h2 className="text-xl font-bold tracking-tight text-neutral-900 flex items-center gap-2">
+              <span>Gestión de Tiendas & Suscripciones</span>
+              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-neutral-100 text-neutral-700">
+                {localStores.length}
+              </span>
+            </h2>
             <p className="text-xs text-neutral-500 mt-0.5">
-              Administra cada comercio, accede a su panel de gestión o genera nuevas tiendas independientes.
+              Control de vencimientos, seguimiento de cobros por período, extensiones de cortesía y comunicación directa.
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Global Base Price Button */}
             <button
-              onClick={() => setIsPlatformMpModalOpen(true)}
-              className="px-4 py-2.5 bg-white hover:bg-neutral-50 text-neutral-800 text-xs font-semibold rounded-xl flex items-center justify-center gap-2 border border-neutral-300 shadow-2xs transition-all cursor-pointer"
+              onClick={() => setIsBasePriceModalOpen(true)}
+              className="px-3.5 py-2 bg-white hover:bg-neutral-50 text-neutral-800 text-xs font-semibold rounded-xl flex items-center gap-1.5 border border-neutral-300 shadow-2xs transition-all cursor-pointer"
+              title="Configurar precio base mensual por defecto"
             >
-              <div className="w-5 h-5 rounded-md bg-[#009EE3] text-white flex items-center justify-center text-[10px] font-black">
-                MP
-              </div>
-              <span>Pasarela Mercado Pago (Global)</span>
+              <span className="material-symbols-outlined text-[17px] text-emerald-600">payments</span>
+              <span>Precio Base: ${(platformConfig.basePrice || platformConfig.baseSubscriptionPrice || 24900).toLocaleString('es-AR')}</span>
             </button>
 
+            {/* View Feedback Button */}
+            <button
+              onClick={() => setIsFeedbackViewerOpen(true)}
+              className="px-3.5 py-2 bg-white hover:bg-neutral-50 text-neutral-800 text-xs font-semibold rounded-xl flex items-center gap-1.5 border border-neutral-300 shadow-2xs transition-all cursor-pointer"
+              title="Ver motivos de cierre y feedback de Friends & Family"
+            >
+              <span className="material-symbols-outlined text-[17px] text-purple-600">rate_review</span>
+              <span>Ver Feedback</span>
+            </button>
+
+            {/* Mercado Pago Master Button */}
+            <button
+              onClick={() => setIsPlatformMpModalOpen(true)}
+              className="px-3 py-2 bg-white hover:bg-neutral-50 text-neutral-800 text-xs font-semibold rounded-xl flex items-center gap-1.5 border border-neutral-300 shadow-2xs transition-all cursor-pointer"
+              title="Configurar credenciales globales de Mercado Pago"
+            >
+              <div className="w-4 h-4 rounded-xs bg-[#009EE3] text-white flex items-center justify-center text-[8px] font-black">
+                MP
+              </div>
+              <span className="hidden sm:inline">Mercado Pago</span>
+            </button>
+
+            {/* Create Store */}
             <button
               onClick={() => setIsCreateModalOpen(true)}
-              className="px-4 py-2.5 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer shrink-0"
+              className="px-4 py-2 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 shadow-xs transition-all cursor-pointer shrink-0"
             >
               <span className="material-symbols-outlined text-[18px]">add</span>
               <span>Nueva Tienda</span>
@@ -566,333 +683,622 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
           </div>
         </div>
 
-        {/* Stores Grid / Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {localStores.map((store) => {
-            const isActive = store.active !== false;
-
-            return (
-              <div
-                key={store.id}
-                className="bg-white rounded-2xl border border-neutral-200/80 shadow-xs hover:shadow-md transition-all flex flex-col justify-between overflow-hidden group"
+        {/* Filter Pills and View Mode Toggle */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {[
+              { id: 'all', label: 'Todas las Tiendas', count: localStores.length },
+              {
+                id: 'expiring',
+                label: '⚠️ Por Vencer (≤ 7d)',
+                count: localStores.filter((s) => {
+                  if (!s.planEndsAt || s.status === 'suspended' || s.status === 'closed') return false;
+                  const days = Math.ceil((new Date(s.planEndsAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                  return days <= 7 && days > 0;
+                }).length
+              },
+              {
+                id: 'trial',
+                label: '✨ Nuevas (Trial)',
+                count: localStores.filter((s) => s.plan === 'trial').length
+              },
+              {
+                id: 'active',
+                label: '🟢 Activas',
+                count: localStores.filter((s) => s.status !== 'suspended' && s.status !== 'closed' && s.active !== false).length
+              },
+              {
+                id: 'suspended',
+                label: '🔴 Vencidas / Pausadas',
+                count: localStores.filter((s) => {
+                  if (s.status === 'suspended' || s.status === 'closed' || s.active === false) return true;
+                  if (!s.planEndsAt) return false;
+                  return new Date(s.planEndsAt).getTime() < Date.now();
+                }).length
+              }
+            ].map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setStoreFilter(f.id as any)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  storeFilter === f.id
+                    ? 'bg-neutral-900 text-white shadow-2xs'
+                    : 'bg-white text-neutral-600 hover:text-black hover:bg-neutral-100 border border-neutral-200'
+                }`}
               >
-                {/* Card Top */}
-                <div className="p-5">
-                  <div className="flex items-start justify-between gap-3 mb-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      {store.logoUrl ? (
-                        <div className="w-12 h-12 rounded-xl bg-neutral-50 border border-neutral-100 p-1 flex items-center justify-center shrink-0 overflow-hidden">
-                          <img
-                            src={store.logoUrl}
-                            alt={store.name}
-                            className="max-h-full max-w-full object-contain"
-                          />
-                        </div>
-                      ) : (
-                        <div
-                          className="w-12 h-12 rounded-xl text-white flex items-center justify-center font-bold text-lg shrink-0 shadow-xs uppercase"
-                          style={{ backgroundColor: store.primaryColor || '#1A1A1A' }}
-                        >
-                          {store.name.substring(0, 2)}
-                        </div>
-                      )}
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-bold text-neutral-900 text-base truncate tracking-tight">
-                            {store.name}
-                          </h3>
-                          {store.isSandbox && (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
-                              🧪 Sandbox
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5 text-xs text-neutral-500 font-mono mt-0.5 truncate">
-                          <span>url:</span>
-                          <span className="bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-700 font-semibold">
-                            /{store.slug}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
+                <span>{f.label}</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                  storeFilter === f.id ? 'bg-white/20 text-white' : 'bg-neutral-100 text-neutral-600'
+                }`}>
+                  {f.count}
+                </span>
+              </button>
+            ))}
+          </div>
 
-                    {/* Status badge toggle */}
-                    <button
-                      type="button"
-                      onClick={() => handleToggleActive(store)}
-                      className={`px-2.5 py-1 rounded-full text-[11px] font-semibold transition-all flex items-center gap-1.5 cursor-pointer border shadow-2xs ${
-                        isActive
-                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200/80 hover:bg-emerald-100'
-                          : 'bg-rose-50 text-rose-800 border-rose-200/80 hover:bg-rose-100'
-                      }`}
-                      title={isActive ? 'Click para deshabilitar este comercio' : 'Click para habilitar este comercio'}
-                    >
-                      <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                      <span>{isActive ? 'Habilitado' : 'Deshabilitado'}</span>
-                    </button>
-                  </div>
+          <div className="flex items-center gap-1 bg-white border border-neutral-200 rounded-xl p-1 self-start sm:self-auto shrink-0">
+            <button
+              onClick={() => setViewMode('table')}
+              className={`p-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
+                viewMode === 'table' ? 'bg-neutral-900 text-white shadow-2xs' : 'text-neutral-500 hover:text-black'
+              }`}
+              title="Vista de Tabla Detallada"
+            >
+              <span className="material-symbols-outlined text-[16px]">table_rows</span>
+              <span className="text-[11px] pr-1">Tabla</span>
+            </button>
+            <button
+              onClick={() => setViewMode('cards')}
+              className={`p-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
+                viewMode === 'cards' ? 'bg-neutral-900 text-white shadow-2xs' : 'text-neutral-500 hover:text-black'
+              }`}
+              title="Vista de Tarjetas"
+            >
+              <span className="material-symbols-outlined text-[16px]">grid_view</span>
+              <span className="text-[11px] pr-1">Tarjetas</span>
+            </button>
+          </div>
+        </div>
 
-                  {/* Store Details */}
-                  <div className="space-y-1.5 text-xs text-neutral-600 mt-3 pt-2.5 border-t border-neutral-100">
-                    {store.whatsappNumber && (
-                      <div className="flex items-center gap-2">
-                        <span className="material-symbols-outlined text-[15px] text-emerald-600">chat</span>
-                        <span className="truncate">{store.whatsappNumber}</span>
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 text-neutral-400">
-                      <span className="material-symbols-outlined text-[15px]">schedule</span>
-                      <span>Creada: {new Date(store.createdAt || Date.now()).toLocaleDateString()}</span>
-                    </div>
+        {/* Process and sort stores by expiration date */}
+        {(() => {
+          const now = Date.now();
 
-                    {!isActive && (
-                      <div className="mt-2.5 py-1.5 px-2.5 rounded-xl bg-amber-50/90 border border-amber-200/80 text-amber-900 text-xs font-medium flex items-center gap-2">
-                        <span className="material-symbols-outlined text-[16px] text-amber-600">pause_circle</span>
-                        <span>Comercio pausado para los clientes</span>
-                      </div>
-                    )}
-                  </div>
+          const processedStores = localStores.map((store) => {
+            const plan = store.plan || 'internal';
+            const status = store.status || (store.active === false ? 'suspended' : 'active');
+            const endsAt = store.planEndsAt ? new Date(store.planEndsAt) : null;
+            
+            let daysRemaining: number | null = null;
+            if (endsAt) {
+              daysRemaining = Math.ceil((endsAt.getTime() - now) / (1000 * 60 * 60 * 24));
+            }
 
-                  {/* Feature Flags Quick Bar */}
-                  <div className="mt-3 pt-2.5 border-t border-neutral-100">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[11px] uppercase tracking-wider font-bold text-neutral-500 flex items-center gap-1">
-                        <span className="material-symbols-outlined text-[14px]">tune</span>
-                        Feature Flags
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setFeatureFlagsStore(store)}
-                        className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer flex items-center gap-0.5"
-                        title="Abrir panel completo de feature flags y límites"
-                      >
-                        <span>Configurar</span>
-                        <span className="material-symbols-outlined text-[12px]">chevron_right</span>
-                      </button>
-                    </div>
+            const isExpired = Boolean(
+              status === 'suspended' ||
+              status === 'closed' ||
+              (daysRemaining !== null && daysRemaining <= 0)
+            );
 
-                    {/* Capacidad Numérica de Prendas */}
-                    <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-neutral-50 border border-neutral-200/70 flex items-center justify-between text-[11px]">
-                      <span className="text-neutral-600 flex items-center gap-1">
-                        <span className="material-symbols-outlined text-[14px] text-neutral-500">inventory_2</span>
-                        <span>Cupo de Prendas:</span>
-                      </span>
-                      <span className="font-bold font-mono text-neutral-900">
-                        {store.featureFlags?.maxProducts && store.featureFlags.maxProducts > 0
-                          ? `${store.productCount || 0} / ${store.featureFlags.maxProducts}`
-                          : 'Ilimitado'}
-                      </span>
-                    </div>
+            const isExpiringSoon = Boolean(
+              !isExpired &&
+              daysRemaining !== null &&
+              daysRemaining <= 7 &&
+              daysRemaining > 0
+            );
 
-                    <div className="grid grid-cols-3 gap-1 text-[10px]">
-                      {/* Catálogo */}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleFeatureFlag(store, 'publicCatalog')}
-                        className={`px-1.5 py-1 rounded-md border flex items-center justify-between text-left transition-colors cursor-pointer ${
-                          store.featureFlags?.publicCatalog !== false
-                            ? 'bg-emerald-50/70 border-emerald-200 text-emerald-800'
-                            : 'bg-neutral-100 border-neutral-200 text-neutral-400'
-                        }`}
-                        title="Catálogo público visible a clientes"
-                      >
-                        <span className="truncate">🌐 Catálogo</span>
-                        <span className="font-bold text-[9px] ml-0.5">{store.featureFlags?.publicCatalog !== false ? 'ON' : 'OFF'}</span>
-                      </button>
+            const isTrial = plan === 'trial';
 
-                      {/* Asistente IA */}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleFeatureFlag(store, 'aiAssistant')}
-                        className={`px-1.5 py-1 rounded-md border flex items-center justify-between text-left transition-colors cursor-pointer ${
-                          store.featureFlags?.aiAssistant !== false
-                            ? 'bg-amber-50/70 border-amber-200 text-amber-900'
-                            : 'bg-neutral-100 border-neutral-200 text-neutral-400'
-                        }`}
-                        title="Carga de productos con IA desde fotos"
-                      >
-                        <span className="truncate">⚡ IA</span>
-                        <span className="font-bold text-[9px] ml-0.5">{store.featureFlags?.aiAssistant !== false ? 'ON' : 'OFF'}</span>
-                      </button>
+            return {
+              store,
+              plan,
+              status,
+              endsAt,
+              daysRemaining,
+              isExpired,
+              isExpiringSoon,
+              isTrial
+            };
+          });
 
-                      {/* Módulo Ventas */}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleFeatureFlag(store, 'salesModule')}
-                        className={`px-1.5 py-1 rounded-md border flex items-center justify-between text-left transition-colors cursor-pointer ${
-                          store.featureFlags?.salesModule !== false
-                            ? 'bg-purple-50/70 border-purple-200 text-purple-800'
-                            : 'bg-neutral-100 border-neutral-200 text-neutral-400'
-                        }`}
-                        title="Módulo de Ventas y Cobros"
-                      >
-                        <span className="truncate">💰 Ventas</span>
-                        <span className="font-bold text-[9px] ml-0.5">{store.featureFlags?.salesModule !== false ? 'ON' : 'OFF'}</span>
-                      </button>
+          // Sort by expiration: soonest to expire first (weight: daysRemaining or 9999)
+          const sorted = processedStores.sort((a, b) => {
+            const weightA = a.daysRemaining !== null ? a.daysRemaining : 9999;
+            const weightB = b.daysRemaining !== null ? b.daysRemaining : 9999;
+            return weightA - weightB;
+          });
 
-                      {/* Diseño & Marca */}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleFeatureFlag(store, 'brandCustomizer')}
-                        className={`px-1.5 py-1 rounded-md border flex items-center justify-between text-left transition-colors cursor-pointer ${
-                          store.featureFlags?.brandCustomizer !== false
-                            ? 'bg-pink-50/70 border-pink-200 text-pink-800'
-                            : 'bg-neutral-100 border-neutral-200 text-neutral-400'
-                        }`}
-                        title="Personalizador de Marca y colores"
-                      >
-                        <span className="truncate">🎨 Marca</span>
-                        <span className="font-bold text-[9px] ml-0.5">{store.featureFlags?.brandCustomizer !== false ? 'ON' : 'OFF'}</span>
-                      </button>
+          // Apply filter
+          const filtered = sorted.filter((item) => {
+            if (storeFilter === 'expiring') return item.isExpiringSoon;
+            if (storeFilter === 'trial') return item.isTrial;
+            if (storeFilter === 'active') return item.status === 'active' && !item.isExpired;
+            if (storeFilter === 'suspended') return item.isExpired || item.status === 'suspended' || item.status === 'closed';
+            return true;
+          });
 
-                      {/* WhatsApp Checkout */}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleFeatureFlag(store, 'whatsappCheckout')}
-                        className={`px-1.5 py-1 rounded-md border flex items-center justify-between text-left transition-colors cursor-pointer ${
-                          store.featureFlags?.whatsappCheckout !== false
-                            ? 'bg-green-50/70 border-green-200 text-green-800'
-                            : 'bg-neutral-100 border-neutral-200 text-neutral-400'
-                        }`}
-                        title="Checkout directo por WhatsApp"
-                      >
-                        <span className="truncate">🛒 WApp</span>
-                        <span className="font-bold text-[9px] ml-0.5">{store.featureFlags?.whatsappCheckout !== false ? 'ON' : 'OFF'}</span>
-                      </button>
+          const getPlanBadge = (plan: string) => {
+            switch (plan) {
+              case 'trial':
+                return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">Prueba (14d)</span>;
+              case 'friends_family':
+                return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 text-purple-800 border border-purple-200">Friends & Family</span>;
+              case 'paid':
+                return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">Suscripción</span>;
+              default:
+                return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-neutral-100 text-neutral-700 border border-neutral-200">Sin Vencimiento</span>;
+            }
+          };
 
-                      {/* Mercado Pago Checkout */}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleFeatureFlag(store, 'mercadoPagoCheckout')}
-                        className={`px-1.5 py-1 rounded-md border flex items-center justify-between text-left transition-colors cursor-pointer ${
-                          store.featureFlags?.mercadoPagoCheckout !== false
-                            ? 'bg-[#009ee3]/10 border-[#009ee3]/30 text-[#009ee3] font-semibold'
-                            : 'bg-neutral-100 border-neutral-200 text-neutral-400'
-                        }`}
-                        title="Cobro online con Mercado Pago"
-                      >
-                        <span className="truncate">💳 MP</span>
-                        <span className="font-bold text-[9px] ml-0.5">{store.featureFlags?.mercadoPagoCheckout !== false ? 'ON' : 'OFF'}</span>
-                      </button>
+          const getStatusBadge = (status: string, isExpired: boolean) => {
+            if (status === 'closed') {
+              return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-neutral-200 text-neutral-700">Cerrada</span>;
+            }
+            if (status === 'suspended' || isExpired) {
+              return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">Fuera de servicio</span>;
+            }
+            return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">Activa</span>;
+          };
 
-                      {/* Fotos Dispositivo */}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleFeatureFlag(store, 'uploadDevicePhotos')}
-                        className={`px-1.5 py-1 rounded-md border flex items-center justify-between text-left transition-colors cursor-pointer ${
-                          store.featureFlags?.uploadDevicePhotos !== false
-                            ? 'bg-teal-50/70 border-teal-200 text-teal-800'
-                            : 'bg-neutral-100 border-neutral-200 text-neutral-400'
-                        }`}
-                        title="Subir fotos desde archivos del dispositivo"
-                      >
-                        <span className="truncate">📱 Fotos</span>
-                        <span className="font-bold text-[9px] ml-0.5">{store.featureFlags?.uploadDevicePhotos !== false ? 'ON' : 'OFF'}</span>
-                      </button>
-                    </div>
+          const getWhatsAppHref = (store: Store, isTrial: boolean, isExpiringSoon: boolean, isExpired: boolean, days: number | null) => {
+            const phone = (store.ownerPhone || store.whatsappNumber || '').replace(/[^0-9]/g, '');
+            if (!phone) return null;
+            const ownerName = store.ownerFirstName || store.name;
+            let msg = '';
+            if (isTrial) {
+              msg = `¡Hola ${ownerName}! Te doy la bienvenida a la plataforma. Vi que creaste tu tienda ${store.name}. Contame si tenés alguna duda para armar tu catálogo o configurar tus cobros, ¡estoy para ayudarte!`;
+            } else if (isExpired) {
+              msg = `¡Hola ${ownerName}! Te escribo de la plataforma sobre tu tienda ${store.name}. Vemos que tu período finalizó. ¿Querés renovar la suscripción o necesitás que te habilitemos unos días de prórroga? ¡Avisame y lo coordinamos!`;
+            } else if (isExpiringSoon) {
+              msg = `¡Hola ${ownerName}! Te escribo de la plataforma sobre tu tienda ${store.name}. Te quedan ${days} días de suscripción. ¿Querés coordinar la renovación del período para seguir operando sin cortes?`;
+            } else {
+              msg = `¡Hola ${ownerName}! Te escribo de la plataforma por tu tienda ${store.name}. ¿Cómo viene todo con tu catálogo y ventas?`;
+            }
+            return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+          };
 
-                  </div>
-                </div>
+          if (filtered.length === 0) {
+            return (
+              <div className="bg-white rounded-2xl border border-neutral-200 p-12 text-center">
+                <span className="material-symbols-outlined text-4xl text-neutral-400 mb-2">filter_alt_off</span>
+                <p className="text-sm font-semibold text-neutral-800">No hay tiendas para este filtro.</p>
+                <button
+                  onClick={() => setStoreFilter('all')}
+                  className="mt-3 px-4 py-2 bg-neutral-900 text-white text-xs font-semibold rounded-xl cursor-pointer"
+                >
+                  Ver todas las tiendas
+                </button>
+              </div>
+            );
+          }
 
-                {/* Card Actions Bottom */}
-                <div className="bg-neutral-50/80 px-5 py-3.5 border-t border-neutral-100 flex flex-col gap-2.5">
-                  {/* Botón Principal para Habilitar / Deshabilitar Comercio */}
-                  <button
-                    type="button"
-                    onClick={() => handleToggleActive(store)}
-                    className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer border shadow-2xs active:scale-[0.99] ${
-                      isActive
-                        ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-200/90 hover:border-amber-300'
-                        : 'bg-emerald-600 hover:bg-emerald-700 text-white border-transparent shadow-xs hover:shadow'
-                    }`}
-                    title={isActive ? 'Deshabilitar comercio' : 'Habilitar comercio'}
-                  >
-                    <span className="material-symbols-outlined text-[17px]">
-                      {isActive ? 'pause_circle' : 'check_circle'}
-                    </span>
-                    <span>{isActive ? 'Deshabilitar comercio' : 'Habilitar comercio'}</span>
-                  </button>
+          if (viewMode === 'table') {
+            return (
+              <div className="bg-white rounded-2xl border border-neutral-200/90 shadow-xs overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-neutral-50/80 text-neutral-700 font-semibold border-b border-neutral-200 text-[11px] uppercase tracking-wider">
+                      <tr>
+                        <th className="py-3.5 px-4">Comercio & Rubro</th>
+                        <th className="py-3.5 px-4">Dueño & Celular</th>
+                        <th className="py-3.5 px-4">Alta</th>
+                        <th className="py-3.5 px-4">Plan</th>
+                        <th className="py-3.5 px-4">Vencimiento / Días</th>
+                        <th className="py-3.5 px-4">Estado</th>
+                        <th className="py-3.5 px-4 text-right">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-200/70">
+                      {filtered.map(({ store, plan, status, endsAt, daysRemaining, isExpired, isExpiringSoon, isTrial }) => {
+                        const ownerName = [store.ownerFirstName, store.ownerLastName].filter(Boolean).join(' ') || 'Sin nombre';
+                        const waHref = getWhatsAppHref(store, isTrial, isExpiringSoon, isExpired, daysRemaining);
 
-                  {/* Botón de Reset Sandbox exclusivo para tiendas de prueba */}
-                  {store.isSandbox && (
-                    <button
-                      type="button"
-                      onClick={() => setSandboxResetStore(store)}
-                      className="w-full py-2 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200/90 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
-                      title="Restaurar productos, ventas y configuraciones de muestra a valores limpios de fábrica"
-                    >
-                      <span className="material-symbols-outlined text-[16px] text-indigo-600">restart_alt</span>
-                      <span>Resetear datos de fábrica (Sandbox)</span>
-                    </button>
-                  )}
+                        return (
+                          <tr
+                            key={store.id}
+                            className={`transition-colors hover:bg-neutral-50/60 ${
+                              isExpiringSoon
+                                ? 'bg-amber-50/40'
+                                : isExpired
+                                ? 'bg-rose-50/30'
+                                : isTrial
+                                ? 'bg-indigo-50/20'
+                                : ''
+                            }`}
+                          >
+                            {/* Comercio & Rubro */}
+                            <td className="py-3.5 px-4">
+                              <div className="flex items-center gap-3">
+                                {store.logoUrl ? (
+                                  <img
+                                    src={store.logoUrl}
+                                    alt={store.name}
+                                    className="w-9 h-9 rounded-lg object-contain bg-neutral-50 border border-neutral-100 shrink-0"
+                                  />
+                                ) : (
+                                  <div
+                                    className="w-9 h-9 rounded-lg text-white font-bold text-xs flex items-center justify-center shrink-0 uppercase"
+                                    style={{ backgroundColor: store.primaryColor || '#1A1A1A' }}
+                                  >
+                                    {store.name.substring(0, 2)}
+                                  </div>
+                                )}
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-bold text-neutral-900 text-sm truncate">{store.name}</span>
+                                    {isTrial && (
+                                      <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase bg-indigo-600 text-white tracking-wider">
+                                        NUEVA
+                                      </span>
+                                    )}
+                                    {store.isSandbox && (
+                                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
+                                        🧪 Sandbox
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[11px] text-neutral-500 flex items-center gap-2 mt-0.5">
+                                    <span className="font-medium text-neutral-700">/{store.slug}</span>
+                                    <span>·</span>
+                                    <span className="bg-neutral-100 px-1.5 py-0.2 rounded text-neutral-600 font-medium">
+                                      {store.rubro || 'Indumentaria'}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => onSelectStore(store.slug, 'storefront')}
-                      className="py-2 px-3 bg-white hover:bg-neutral-100 text-neutral-900 border border-neutral-200 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
-                    >
-                      <span className="material-symbols-outlined text-[16px] text-neutral-500">storefront</span>
-                      <span>Catálogo</span>
-                    </button>
-                    <button
-                      onClick={() => onSelectStore(store.slug, 'admin')}
-                      className="py-2 px-3 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
-                    >
-                      <span className="material-symbols-outlined text-[16px] text-neutral-300">settings</span>
-                      <span>Admin</span>
-                    </button>
-                  </div>
+                            {/* Dueño & Celular */}
+                            <td className="py-3.5 px-4">
+                              <div className="space-y-0.5">
+                                <div className="font-semibold text-neutral-900">{ownerName}</div>
+                                <div className="text-[11px] text-neutral-500 truncate max-w-[170px]" title={store.ownerEmail}>
+                                  {store.ownerEmail || 'Sin email'}
+                                </div>
+                                {(store.ownerPhone || store.whatsappNumber) && (
+                                  <div className="text-[11px] font-mono text-emerald-700 flex items-center gap-1">
+                                    <span className="material-symbols-outlined text-[13px]">call</span>
+                                    <span>{store.ownerPhone || store.whatsappNumber}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
 
-                  {/* Secondary actions: copy link, edit, delete */}
-                  <div className="flex items-center justify-between pt-1 text-xs text-neutral-500">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => copyStoreLink(store.slug, 'catalog')}
-                        className="hover:text-neutral-900 flex items-center gap-1 cursor-pointer transition-colors"
-                        title="Copiar enlace directo al catálogo"
-                      >
-                        <span className="material-symbols-outlined text-[14px]">link</span>
-                        <span>Link Catálogo</span>
-                      </button>
-                      <span className="text-neutral-300">|</span>
-                      <button
-                        onClick={() => copyStoreLink(store.slug, 'admin')}
-                        className="hover:text-neutral-900 flex items-center gap-1 cursor-pointer transition-colors"
-                        title="Copiar enlace directo al panel admin"
-                      >
-                        <span className="material-symbols-outlined text-[14px]">key</span>
-                        <span>Link Admin</span>
-                      </button>
-                    </div>
+                            {/* Fecha de Alta */}
+                            <td className="py-3.5 px-4 text-neutral-600 whitespace-nowrap text-[11px]">
+                              {new Date(store.createdAt || Date.now()).toLocaleDateString('es-AR')}
+                            </td>
 
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          setEditingStore(store);
-                          setEditName(store.name);
-                          setEditWhatsApp(store.whatsappNumber || '');
-                          setEditPassword(store.adminPassword || 'admin');
-                          setEditIsSandbox(!!store.isSandbox);
-                        }}
-                        className="p-1 hover:text-neutral-900 rounded transition-colors cursor-pointer"
-                        title="Editar datos de la tienda"
-                      >
-                        <span className="material-symbols-outlined text-[16px]">edit</span>
-                      </button>
-                      <button
-                        onClick={() => setStoreToDelete(store)}
-                        className="p-1 hover:text-rose-600 rounded transition-colors cursor-pointer"
-                        title="Eliminar tienda"
-                      >
-                        <span className="material-symbols-outlined text-[16px]">delete</span>
-                      </button>
-                    </div>
-                  </div>
+                            {/* Plan */}
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              {getPlanBadge(plan)}
+                            </td>
+
+                            {/* Vencimiento & Días Restantes */}
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              {endsAt ? (
+                                <div className="space-y-1">
+                                  <div className="font-medium text-neutral-900 text-xs">
+                                    {endsAt.toLocaleDateString('es-AR')}
+                                  </div>
+                                  {isExpired ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200 flex items-center gap-1 w-max">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                                      <span>Vencida hace {Math.abs(daysRemaining || 0)}d</span>
+                                    </span>
+                                  ) : isExpiringSoon ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1 w-max animate-pulse">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                      <span>⚠️ Quedan {daysRemaining} días</span>
+                                    </span>
+                                  ) : (
+                                    <span className="text-[11px] text-neutral-500 font-medium">
+                                      Quedan {daysRemaining} días
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-neutral-400 text-xs">Sin vencimiento</span>
+                              )}
+                            </td>
+
+                            {/* Estado */}
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              {getStatusBadge(status, isExpired)}
+                            </td>
+
+                            {/* Acciones */}
+                            <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-1.5">
+                                {/* Direct WhatsApp with pre-filled message */}
+                                {waHref && (
+                                  <a
+                                    href={waHref}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className={`p-2 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
+                                      isTrial
+                                        ? 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700 shadow-2xs'
+                                        : isExpiringSoon
+                                        ? 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600 shadow-2xs'
+                                        : 'bg-white text-emerald-700 border-neutral-200 hover:bg-emerald-50'
+                                    }`}
+                                    title={isTrial ? 'Enviar WhatsApp de bienvenida' : isExpiringSoon ? 'Enviar recordatorio de vencimiento' : 'Contactar por WhatsApp'}
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">chat</span>
+                                  </a>
+                                )}
+
+                                {/* Manage Subscription Button */}
+                                <button
+                                  onClick={() => setSubscriptionManagerStore(store)}
+                                  className="px-2.5 py-1.5 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                                  title="Gestionar plan, vencimiento, prórrogas y pagos"
+                                >
+                                  <span className="material-symbols-outlined text-[15px]">event_repeat</span>
+                                  <span>Suscripción</span>
+                                </button>
+
+                                {/* Direct Access Buttons */}
+                                <button
+                                  onClick={() => onSelectStore(store.slug, 'storefront')}
+                                  className="p-1.5 bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-200 rounded-lg cursor-pointer transition-colors"
+                                  title="Ver catálogo público"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">storefront</span>
+                                </button>
+
+                                <button
+                                  onClick={() => onSelectStore(store.slug, 'admin')}
+                                  className="p-1.5 bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-200 rounded-lg cursor-pointer transition-colors"
+                                  title="Entrar al panel admin de la tienda"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">admin_panel_settings</span>
+                                </button>
+
+                                {/* Edit Store Info */}
+                                <button
+                                  onClick={() => {
+                                    setEditingStore(store);
+                                    setEditName(store.name);
+                                    setEditWhatsApp(store.whatsappNumber || store.ownerPhone || '');
+                                    setEditPassword(store.adminPassword || 'admin');
+                                    setEditIsSandbox(!!store.isSandbox);
+                                  }}
+                                  className="p-1.5 text-neutral-400 hover:text-black rounded-lg cursor-pointer transition-colors"
+                                  title="Editar comercio"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">edit</span>
+                                </button>
+
+                                {/* Delete Store */}
+                                <button
+                                  onClick={() => setStoreToDelete(store)}
+                                  className="p-1.5 text-neutral-400 hover:text-rose-600 rounded-lg cursor-pointer transition-colors"
+                                  title="Eliminar tienda"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">delete</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             );
-          })}
-        </div>
+          }
+
+          // Cards View
+          return (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {filtered.map(({ store, plan, status, endsAt, daysRemaining, isExpired, isExpiringSoon, isTrial }) => {
+                const ownerName = [store.ownerFirstName, store.ownerLastName].filter(Boolean).join(' ') || 'Sin nombre';
+                const waHref = getWhatsAppHref(store, isTrial, isExpiringSoon, isExpired, daysRemaining);
+
+                return (
+                  <div
+                    key={store.id}
+                    className={`bg-white rounded-2xl border shadow-xs hover:shadow-md transition-all flex flex-col justify-between overflow-hidden ${
+                      isExpiringSoon
+                        ? 'border-amber-400 ring-2 ring-amber-300/40'
+                        : isExpired
+                        ? 'border-rose-300'
+                        : isTrial
+                        ? 'border-indigo-300'
+                        : 'border-neutral-200/80'
+                    }`}
+                  >
+                    <div className="p-5">
+                      {/* Top Header */}
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          {store.logoUrl ? (
+                            <img
+                              src={store.logoUrl}
+                              alt={store.name}
+                              className="w-12 h-12 rounded-xl object-contain bg-neutral-50 border border-neutral-100 p-1 shrink-0"
+                            />
+                          ) : (
+                            <div
+                              className="w-12 h-12 rounded-xl text-white flex items-center justify-center font-bold text-lg shrink-0 uppercase shadow-xs"
+                              style={{ backgroundColor: store.primaryColor || '#1A1A1A' }}
+                            >
+                              {store.name.substring(0, 2)}
+                            </div>
+                          )}
+
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <h3 className="font-bold text-neutral-900 text-base truncate">{store.name}</h3>
+                              {isTrial && (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase bg-indigo-600 text-white tracking-wider">
+                                  TRIAL
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 text-xs text-neutral-500 font-mono mt-0.5 truncate">
+                              <span>/{store.slug}</span>
+                              <span>·</span>
+                              <span className="text-neutral-700 font-sans font-medium">{store.rubro || 'Indumentaria'}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {getStatusBadge(status, isExpired)}
+                      </div>
+
+                      {/* Expiration Banner */}
+                      <div className="mt-3 pt-3 border-t border-neutral-100 flex items-center justify-between">
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-neutral-400">Plan & Vencimiento</div>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            {getPlanBadge(plan)}
+                            {endsAt && (
+                              <span className="text-xs font-semibold text-neutral-800">
+                                {endsAt.toLocaleDateString('es-AR')}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div>
+                          {isExpired ? (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                              Vencida ({Math.abs(daysRemaining || 0)}d)
+                            </span>
+                          ) : isExpiringSoon ? (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300 animate-pulse">
+                              ⚠️ Quedan {daysRemaining} días
+                            </span>
+                          ) : daysRemaining !== null ? (
+                            <span className="text-xs text-neutral-600 font-semibold">
+                              Quedan {daysRemaining} días
+                            </span>
+                          ) : (
+                            <span className="text-xs text-neutral-400">Sin vencimiento</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Owner Details */}
+                      <div className="mt-3 pt-2.5 border-t border-neutral-100 space-y-1 text-xs text-neutral-600">
+                        <div className="flex items-center gap-1.5 font-medium text-neutral-800">
+                          <span className="material-symbols-outlined text-[15px] text-neutral-400">person</span>
+                          <span>{ownerName}</span>
+                          {store.ownerEmail && (
+                            <span className="text-neutral-400 font-normal truncate max-w-[150px]">({store.ownerEmail})</span>
+                          )}
+                        </div>
+                        {(store.ownerPhone || store.whatsappNumber) && (
+                          <div className="flex items-center gap-1.5 text-emerald-700 font-mono">
+                            <span className="material-symbols-outlined text-[15px] text-emerald-600">chat</span>
+                            <span>{store.ownerPhone || store.whatsappNumber}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-1.5 text-neutral-400 text-[11px]">
+                          <span className="material-symbols-outlined text-[14px]">calendar_today</span>
+                          <span>Alta: {new Date(store.createdAt || Date.now()).toLocaleDateString('es-AR')}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Bottom Actions */}
+                    <div className="bg-neutral-50/80 px-5 py-3 border-t border-neutral-100 space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => setSubscriptionManagerStore(store)}
+                          className="w-full py-2 px-3 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">event_repeat</span>
+                          <span>Suscripción</span>
+                        </button>
+
+                        {waHref ? (
+                          <a
+                            href={waHref}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={`w-full py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs ${
+                              isTrial
+                                ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                                : isExpiringSoon
+                                ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                                : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                            }`}
+                          >
+                            <span className="material-symbols-outlined text-[16px]">chat</span>
+                            <span>WhatsApp</span>
+                          </a>
+                        ) : (
+                          <button
+                            onClick={() => onSelectStore(store.slug, 'admin')}
+                            className="w-full py-2 px-3 bg-white hover:bg-neutral-100 text-neutral-800 border border-neutral-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+                          >
+                            <span className="material-symbols-outlined text-[16px]">admin_panel_settings</span>
+                            <span>Admin</span>
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1 text-xs text-neutral-500">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => copyStoreLink(store.slug, 'catalog')}
+                            className="hover:text-neutral-900 flex items-center gap-1 cursor-pointer transition-colors"
+                          >
+                            <span className="material-symbols-outlined text-[13px]">link</span>
+                            <span>Catálogo</span>
+                          </button>
+                          <span>·</span>
+                          <button
+                            onClick={() => copyStoreLink(store.slug, 'admin')}
+                            className="hover:text-neutral-900 flex items-center gap-1 cursor-pointer transition-colors"
+                          >
+                            <span className="material-symbols-outlined text-[13px]">key</span>
+                            <span>Admin</span>
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setFeatureFlagsStore(store)}
+                            className="p-1 hover:text-indigo-600 cursor-pointer"
+                            title="Feature Flags"
+                          >
+                            <span className="material-symbols-outlined text-[16px]">tune</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setEditingStore(store);
+                              setEditName(store.name);
+                              setEditWhatsApp(store.whatsappNumber || store.ownerPhone || '');
+                              setEditPassword(store.adminPassword || 'admin');
+                              setEditIsSandbox(!!store.isSandbox);
+                            }}
+                            className="p-1 hover:text-black cursor-pointer"
+                            title="Editar datos"
+                          >
+                            <span className="material-symbols-outlined text-[16px]">edit</span>
+                          </button>
+                          <button
+                            onClick={() => setStoreToDelete(store)}
+                            className="p-1 hover:text-rose-600 cursor-pointer"
+                            title="Eliminar tienda"
+                          >
+                            <span className="material-symbols-outlined text-[16px]">delete</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
       </div>
 
       {/* CREATE NEW STORE MODAL */}
@@ -2055,6 +2461,117 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 Eliminar Definitivamente
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* STORE SUBSCRIPTION MANAGER MODAL */}
+      {subscriptionManagerStore && (
+        <StoreSubscriptionManagerModal
+          store={subscriptionManagerStore}
+          basePrice={platformConfig.basePrice || platformConfig.baseSubscriptionPrice || 24900}
+          isOpen={Boolean(subscriptionManagerStore)}
+          onClose={() => setSubscriptionManagerStore(null)}
+          onStoreUpdated={(updatedStore) => {
+            setLocalStores((prev) => prev.map((s) => (s.id === updatedStore.id ? updatedStore : s)));
+            setSubscriptionManagerStore(updatedStore);
+          }}
+          showToast={showToast}
+        />
+      )}
+
+      {/* FEEDBACK VIEWER MODAL (CLOSURE REASONS & FRIENDS/FAMILY) */}
+      {isFeedbackViewerOpen && (
+        <FeedbackViewerModal
+          isOpen={isFeedbackViewerOpen}
+          onClose={() => setIsFeedbackViewerOpen(false)}
+        />
+      )}
+
+      {/* GLOBAL BASE PRICE & SUPPORT WHATSAPP MODAL */}
+      {isBasePriceModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-neutral-200 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between pb-4 border-b border-neutral-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-xl">payments</span>
+                </div>
+                <div>
+                  <h3 className="font-bold text-neutral-900 text-base">Precio Base Global</h3>
+                  <p className="text-xs text-neutral-500">Configuración global de suscripciones</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsBasePriceModalOpen(false)}
+                className="text-neutral-400 hover:text-black rounded-lg p-1 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleSavePlatformConfig} className="py-4 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-600 mb-1.5">
+                  Precio Base Mensual ($ ARS) *
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-500 font-bold">$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    required
+                    value={tempBasePrice}
+                    onChange={(e) => setTempBasePrice(Number(e.target.value) || 0)}
+                    className="w-full pl-8 pr-4 py-2.5 bg-neutral-50 border border-neutral-300 rounded-xl text-neutral-900 font-bold text-base focus:bg-white focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                    placeholder="24900"
+                  />
+                </div>
+                <p className="text-[11px] text-neutral-500 mt-1">
+                  Este monto se tomará por defecto para nuevos períodos de 30 días de todas las tiendas (luego cada período individual puede editarse a mano).
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-600 mb-1.5">
+                  WhatsApp Oficial de Soporte y Renovaciones *
+                </label>
+                <div className="relative">
+                  <span className="material-symbols-outlined text-emerald-600 text-lg absolute left-3.5 top-1/2 -translate-y-1/2">
+                    chat
+                  </span>
+                  <input
+                    type="tel"
+                    required
+                    value={tempSupportWhatsApp}
+                    onChange={(e) => setTempSupportWhatsApp(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2.5 bg-neutral-50 border border-neutral-300 rounded-xl text-neutral-900 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                    placeholder="5491122334455"
+                  />
+                </div>
+                <p className="text-[11px] text-neutral-500 mt-1">
+                  Número al cual serán dirigidos los dueños de tiendas al presionar "Quiero renovar / consultar por mi plan".
+                </p>
+              </div>
+
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-neutral-100">
+                <button
+                  type="button"
+                  onClick={() => setIsBasePriceModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:text-black rounded-xl cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingConfig}
+                  className="px-5 py-2.5 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingConfig ? 'Guardando...' : 'Guardar Configuración'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

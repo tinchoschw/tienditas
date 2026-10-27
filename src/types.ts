@@ -151,11 +151,65 @@ export const DEFAULT_FEATURE_FLAGS: StoreFeatureFlags = {
   mercadoPagoCheckout: true
 };
 
+export type StoreStatus = 'active' | 'suspended' | 'closed';
+export type StorePlan = 'trial' | 'friends_family' | 'paid' | 'internal';
+
+export interface StorePeriod {
+  id: string;
+  startDate: string; // ISO date or YYYY-MM-DD
+  dueDate: string;   // ISO date or YYYY-MM-DD
+  amount: number;    // Monto a pagar
+  paidAmount: number;// Monto pagado
+  lastPaymentDate?: string;
+  note?: string;
+  status: 'paid' | 'pending';
+  createdAt?: string;
+}
+
+export interface StoreExtension {
+  id: string;
+  date: string;
+  days: number;
+  reason: string;
+}
+
+export interface StoreFeedback {
+  id?: string;
+  storeId: string;
+  storeName?: string;
+  userEmail?: string;
+  userName?: string;
+  motivos?: string[];
+  text: string;
+  date: string;
+  type: 'closure' | 'friends_family';
+}
+
+export interface PlatformConfig {
+  basePrice: number;                 // Default $24.900
+  baseSubscriptionPrice?: number;   // Alias for basePrice
+  supportWhatsApp: string;           // WhatsApp de soporte del superadmin
+  trialDays?: number;
+  updatedAt?: string;
+}
+
 export interface Store {
   id: string;
   slug: string;
   name: string;
   active: boolean;
+  status?: StoreStatus;       // 'active' | 'suspended' | 'closed'
+  plan?: StorePlan;           // 'trial' | 'friends_family' | 'paid' | 'internal'
+  planEndsAt?: string;        // ISO date string; vacio o inexistente = no vence
+  ownerEmail?: string;        // Email de Google del dueño
+  ownerUid?: string;          // UID de Firebase Auth
+  ownerFirstName?: string;
+  ownerLastName?: string;
+  ownerPhone?: string;        // Celular / WhatsApp
+  rubro?: string;             // Rubro del comercio
+  termsAcceptedAt?: string;   // Fecha de aceptacion de TyC
+  extensions?: StoreExtension[];
+  currentPeriod?: StorePeriod;
   isSandbox?: boolean;
   featureFlags?: StoreFeatureFlags;
   logoUrl?: string;

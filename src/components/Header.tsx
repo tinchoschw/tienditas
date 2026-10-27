@@ -1,14 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { StoreSettings, StoreFeatureFlags } from '../types';
+import { StoreSettings, StoreFeatureFlags, Store } from '../types';
 
 interface HeaderProps {
   isAdminView: boolean;
-  currentTab: 'storefront' | 'inventory' | 'sales' | 'brand' | 'payments';
-  setCurrentTab: (tab: 'storefront' | 'inventory' | 'sales' | 'brand' | 'payments') => void;
+  currentTab: 'storefront' | 'inventory' | 'sales' | 'brand' | 'payments' | 'account';
+  setCurrentTab: (tab: 'storefront' | 'inventory' | 'sales' | 'brand' | 'payments' | 'account') => void;
   cartCount: number;
   cartTotal?: number;
   onOpenCart: () => void;
   settings: StoreSettings;
+  store?: Store;
+  supportWhatsApp?: string;
   isSettingsLoaded?: boolean;
   isSandbox?: boolean;
   featureFlags?: StoreFeatureFlags;
@@ -25,6 +27,8 @@ export const Header: React.FC<HeaderProps> = ({
   cartTotal = 0,
   onOpenCart,
   settings,
+  store,
+  supportWhatsApp = '5491122334455',
   isSettingsLoaded = true,
   isSandbox = false,
   featureFlags,
@@ -45,6 +49,21 @@ export const Header: React.FC<HeaderProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mobileMenuOpen]);
+  const daysRemaining = (() => {
+    if (!store?.planEndsAt) return null;
+    const diff = new Date(store.planEndsAt).getTime() - Date.now();
+    return Math.ceil(diff / (1000 * 60 * 60 * 24));
+  })();
+
+  const isExpired = store?.status === 'suspended' || store?.status === 'closed' || (daysRemaining !== null && daysRemaining <= 0);
+  const isExpiringSoon = !isExpired && daysRemaining !== null && daysRemaining > 0 && daysRemaining <= 7;
+  const hasAccountAlert = isExpired || isExpiringSoon;
+
+  const cleanSupportPhone = (supportWhatsApp || '5491122334455').replace(/[^0-9]/g, '');
+  const renewalWhatsappUrl = `https://wa.me/${cleanSupportPhone}?text=${encodeURIComponent(
+    `Hola! Quiero renovar / consultar por mi plan para la tienda "${store?.name || settings.storeName}" (/${store?.slug || 'tienda'}).`
+  )}`;
+
   const scale = typeof settings.logoScale === 'number' && settings.logoScale > 0 ? settings.logoScale : 100;
   // Dynamic scale calculation: Base 48px at 100%. At 40% = 19px. At 250% = 120px. At 500% = 240px.
   const logoHeightPx = Math.max(16, Math.round(48 * (scale / 100)));
@@ -130,7 +149,9 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'receipt_long'
                   : currentTab === 'brand'
                   ? 'palette'
-                  : 'credit_card'}
+                  : currentTab === 'payments'
+                  ? 'credit_card'
+                  : 'manage_accounts'}
               </span>
               <span>
                 {currentTab === 'inventory'
@@ -139,7 +160,9 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'Registro de Ventas'
                   : currentTab === 'brand'
                   ? 'Diseño & Marca'
-                  : 'Mercado Pago'}
+                  : currentTab === 'payments'
+                  ? 'Mercado Pago'
+                  : 'Mi Cuenta'}
               </span>
             </div>
 
@@ -155,6 +178,9 @@ export const Header: React.FC<HeaderProps> = ({
                   {mobileMenuOpen ? 'close' : 'menu'}
                 </span>
                 <span>{mobileMenuOpen ? 'Cerrar' : 'Menú'}</span>
+                {hasAccountAlert && (
+                  <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0 animate-pulse" />
+                )}
               </button>
 
               {/* Admin Unified Menu (Compact floating card anchored right) */}
@@ -180,6 +206,37 @@ export const Header: React.FC<HeaderProps> = ({
                           {settings.storeName || 'Mi Tienda'}
                         </span>
                       </div>
+
+                      {/* Expiration / Plan Alert Banner */}
+                      {(isExpired || isExpiringSoon) && (
+                        <div className={`p-3 rounded-2xl border text-xs flex flex-col gap-2 ${
+                          isExpired 
+                            ? 'bg-rose-50 border-rose-200 text-rose-950' 
+                            : 'bg-amber-50 border-amber-200 text-amber-950'
+                        }`}>
+                          <div className="flex items-center gap-1.5 font-bold">
+                            <span className="material-symbols-outlined text-[16px]">
+                              {isExpired ? 'error' : 'warning'}
+                            </span>
+                            <span>
+                              {isExpired ? 'Tienda pausada o vencida' : `Tu plan vence en ${daysRemaining} días`}
+                            </span>
+                          </div>
+                          <p className="text-[11px] leading-snug text-neutral-600">
+                            {isExpired 
+                              ? 'Tu período de servicio ha finalizado. Comunicate para reactivar tu catálogo.' 
+                              : 'Renová tu suscripción para seguir recibiendo pedidos online sin interrupciones.'}
+                          </p>
+                          <a
+                            href={renewalWhatsappUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="py-1.5 px-3 bg-[#25D366] hover:bg-[#1EBE5D] text-white text-[11px] font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-2xs"
+                          >
+                            <span>Quiero renovar / consultar por mi plan</span>
+                          </a>
+                        </div>
+                      )}
 
                       <div className="flex flex-col gap-1.5">
                         <button
@@ -264,6 +321,32 @@ export const Header: React.FC<HeaderProps> = ({
                           {currentTab === 'payments' && (
                             <span className="w-2 h-2 rounded-full bg-white" />
                           )}
+                        </button>
+
+                        {/* Mi Cuenta Navigation Item */}
+                        <button
+                          onClick={() => {
+                            setMobileMenuOpen(false);
+                            setCurrentTab('account');
+                          }}
+                          className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
+                            currentTab === 'account'
+                              ? 'bg-black text-white shadow-xs'
+                              : 'text-neutral-700 hover:bg-neutral-100 hover:text-black'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <span className="material-symbols-outlined text-[18px]">manage_accounts</span>
+                            <span>Mi Cuenta</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            {hasAccountAlert && (
+                              <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" title="Atención requerida" />
+                            )}
+                            {currentTab === 'account' && (
+                              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                            )}
+                          </div>
                         </button>
                       </div>
 

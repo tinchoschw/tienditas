@@ -1,5 +1,9 @@
-import React, { useState } from 'react';
-import { Store } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Store, PlatformConfig } from '../types';
+import { useAuth } from '../context/AuthContext';
+import { subscribePlatformConfig } from '../services/db';
+import { StoreOnboardingModal } from './StoreOnboardingModal';
+import { StoreSelectorModal } from './StoreSelectorModal';
 
 interface PlatformLandingViewProps {
   stores: Store[];
@@ -12,13 +16,78 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
   onSelectStore,
   onOpenSuperAdmin
 }) => {
+  const { user, loginWithGoogle } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [slugInput, setSlugInput] = useState('');
   const [copiedEmail, setCopiedEmail] = useState(false);
 
+  // Modals for Google Onboarding & Store Selection
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [isStoreSelectorOpen, setIsStoreSelectorOpen] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Platform Config (Base Price $24.900, Support WhatsApp)
+  const [platformConfig, setPlatformConfig] = useState<PlatformConfig>({
+    basePrice: 24900,
+    baseSubscriptionPrice: 24900,
+    supportWhatsApp: '5491122334455',
+    trialDays: 14
+  });
+
+  useEffect(() => {
+    const unsub = subscribePlatformConfig((cfg) => {
+      setPlatformConfig(cfg);
+    });
+    return () => unsub();
+  }, []);
+
+  // Filter user's stores if logged in
+  const userStores = user?.email
+    ? stores.filter((s) => s.ownerEmail?.toLowerCase() === user.email?.toLowerCase())
+    : [];
+
+  // When clicking "Crear mi tienda con Google" or "Ingresar a mi tienda"
+  const handleGoogleAction = async () => {
+    setIsLoggingIn(true);
+    try {
+      if (!user) {
+        await loginWithGoogle();
+        // The auth state change will be picked up
+      } else {
+        // Already logged in
+        if (userStores.length === 0) {
+          setIsOnboardingOpen(true);
+        } else if (userStores.length === 1) {
+          onSelectStore(userStores[0].slug, 'admin');
+        } else {
+          setIsStoreSelectorOpen(true);
+        }
+      }
+    } catch (err) {
+      console.error('Google sign in error:', err);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // If user just logged in and triggered an action
+  useEffect(() => {
+    if (user && isLoggingIn) {
+      setIsLoggingIn(false);
+      const myStores = stores.filter((s) => s.ownerEmail?.toLowerCase() === user.email?.toLowerCase());
+      if (myStores.length === 0) {
+        setIsOnboardingOpen(true);
+      } else if (myStores.length === 1) {
+        onSelectStore(myStores[0].slug, 'admin');
+      } else {
+        setIsStoreSelectorOpen(true);
+      }
+    }
+  }, [user, stores, isLoggingIn, onSelectStore]);
+
   // Only active stores with public catalog enabled appear in the public platform directory
   const activeStores = stores.filter(
-    (s) => s.active !== false && s.featureFlags?.publicCatalog !== false
+    (s) => s.active !== false && s.featureFlags?.publicCatalog !== false && s.status !== 'closed'
   );
 
   const filteredStores = activeStores.filter((s) => {
@@ -70,9 +139,11 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
       'Aguardo su contacto para coordinar los detalles. ¡Muchas gracias!'
   )}`;
 
+  const currentPriceFormatted = (platformConfig.basePrice || platformConfig.baseSubscriptionPrice || 24900).toLocaleString('es-AR');
+
   return (
     <div className="min-h-screen bg-[#FDFCFB] text-neutral-900 flex flex-col justify-between font-sans selection:bg-neutral-900 selection:text-white scroll-smooth">
-      {/* Platform Header with One-Page Smooth Navigation */}
+      {/* Platform Header */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-neutral-200/80 shadow-xs">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -92,18 +163,18 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
           {/* Smooth Scroll Links */}
           <nav className="hidden md:flex items-center gap-6 text-xs font-semibold text-neutral-600">
             <a
+              href="#suscripcion"
+              onClick={(e) => scrollToSection(e, 'suscripcion')}
+              className="hover:text-black transition-colors"
+            >
+              Planes & Precios
+            </a>
+            <a
               href="#funcionalidades"
               onClick={(e) => scrollToSection(e, 'funcionalidades')}
               className="hover:text-black transition-colors"
             >
               Funcionalidades
-            </a>
-            <a
-              href="#tiempos"
-              onClick={(e) => scrollToSection(e, 'tiempos')}
-              className="hover:text-black transition-colors"
-            >
-              Puesta en Marcha
             </a>
             <a
               href="#comercios"
@@ -122,20 +193,39 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
           </nav>
 
           <div className="flex items-center gap-2.5">
-            <a
-              href="#contacto"
-              onClick={(e) => scrollToSection(e, 'contacto')}
-              className="hidden sm:inline-flex px-3.5 py-2 text-xs font-semibold text-white bg-neutral-900 hover:bg-black rounded-xl transition-all shadow-xs"
+            {/* Google Sign In / Create Store Button */}
+            <button
+              onClick={handleGoogleAction}
+              disabled={isLoggingIn}
+              className="px-4 py-2 text-xs font-semibold text-white bg-neutral-900 hover:bg-black rounded-xl transition-all shadow-xs flex items-center gap-2 cursor-pointer disabled:opacity-50"
             >
-              Solicitar Mi Tienda
-            </a>
+              <svg className="w-4 h-4" viewBox="0 0 24 24">
+                <path
+                  fill="#4285F4"
+                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                />
+                <path
+                  fill="#34A853"
+                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                />
+                <path
+                  fill="#FBBC05"
+                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                />
+                <path
+                  fill="#EA4335"
+                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                />
+              </svg>
+              <span>{user ? (userStores.length > 0 ? 'Mi Tienda' : 'Crear Mi Tienda') : 'Crear mi tienda con Google'}</span>
+            </button>
+
             <button
               onClick={onOpenSuperAdmin}
-              className="px-3 py-2 text-xs font-semibold text-neutral-700 hover:text-black bg-neutral-100 hover:bg-neutral-200/80 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer border border-neutral-200/80"
+              className="p-2 text-neutral-500 hover:text-black hover:bg-neutral-100 rounded-xl transition-all cursor-pointer border border-neutral-200"
               title="Panel de Super Administrador"
             >
-              <span className="material-symbols-outlined text-[16px]">admin_panel_settings</span>
-              <span className="hidden sm:inline">Super Admin</span>
+              <span className="material-symbols-outlined text-[18px]">admin_panel_settings</span>
             </button>
           </div>
         </div>
@@ -143,35 +233,56 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
 
       {/* Main One-Page Content */}
       <main className="flex-1 max-w-6xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8 sm:py-14 space-y-16">
+        
         {/* HERO SECTION */}
-        <section className="text-center max-w-3xl mx-auto space-y-5 pt-4">
+        <section className="text-center max-w-3xl mx-auto space-y-6 pt-4">
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-50 text-emerald-800 text-xs font-semibold border border-emerald-200/70 shadow-2xs">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Puesta en Marcha Ágil · Sin Comisiones por Venta</span>
+            <span>14 Días de Prueba Gratis · Sin Tarjeta de Crédito</span>
           </div>
 
           <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-neutral-900 leading-tight sm:leading-[1.15]">
-            Tu Catálogo Online y Ventas por WhatsApp en Tiempo Récord
+            Tu Catálogo Online y Ventas por WhatsApp para tu Comercio
           </h1>
 
           <p className="text-sm sm:text-base text-neutral-600 leading-relaxed max-w-2xl mx-auto">
-            La plataforma diseñada para marcas de moda, calzado y comercios independientes. 
-            Mostrá tu stock real por talles y colores, recibí pedidos ordenados directo al chat y gestioná tus ventas sin intermediarios.
+            La plataforma diseñada para marcas de moda, indumentaria, calzado y comercios independientes. 
+            Mostrá tu stock real por talles y colores, recibí pedidos ordenados directo al chat y cobrá con Mercado Pago a tu propia cuenta.
           </p>
 
           <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3">
-            <a
-              href="#contacto"
-              onClick={(e) => scrollToSection(e, 'contacto')}
-              className="w-full sm:w-auto px-6 py-3 bg-neutral-900 hover:bg-black text-white text-xs sm:text-sm font-semibold rounded-xl transition-all shadow-md flex items-center justify-center gap-2"
+            {/* Primary Google Sign In Button */}
+            <button
+              onClick={handleGoogleAction}
+              disabled={isLoggingIn}
+              className="w-full sm:w-auto px-6 py-3.5 bg-neutral-900 hover:bg-black text-white text-xs sm:text-sm font-semibold rounded-xl transition-all shadow-md flex items-center justify-center gap-2.5 cursor-pointer active:scale-[0.99] disabled:opacity-50"
             >
-              <span>Quiero Mi Catálogo Online</span>
+              <svg className="w-4 h-4" viewBox="0 0 24 24">
+                <path
+                  fill="#4285F4"
+                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                />
+                <path
+                  fill="#34A853"
+                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                />
+                <path
+                  fill="#FBBC05"
+                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                />
+                <path
+                  fill="#EA4335"
+                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                />
+              </svg>
+              <span>Crear mi tienda con Google</span>
               <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
-            </a>
+            </button>
+
             <a
               href="#comercios"
               onClick={(e) => scrollToSection(e, 'comercios')}
-              className="w-full sm:w-auto px-5 py-3 bg-white hover:bg-neutral-100 text-neutral-800 text-xs sm:text-sm font-semibold rounded-xl border border-neutral-200 transition-all flex items-center justify-center gap-2 shadow-2xs"
+              className="w-full sm:w-auto px-5 py-3.5 bg-white hover:bg-neutral-100 text-neutral-800 text-xs sm:text-sm font-semibold rounded-xl border border-neutral-200 transition-all flex items-center justify-center gap-2 shadow-2xs"
             >
               <span className="material-symbols-outlined text-[18px] text-neutral-500">storefront</span>
               <span>Explorar Comercios de Ejemplo</span>
@@ -206,91 +317,106 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
           </form>
         </section>
 
-        {/* TIMELINE & OPERATIONAL NUMBERS BANNER */}
-        <section id="tiempos" className="scroll-mt-20">
-          <div className="bg-gradient-to-br from-neutral-900 via-neutral-900 to-neutral-800 text-white rounded-3xl p-6 sm:p-10 shadow-xl border border-neutral-800">
-            <div className="text-center max-w-xl mx-auto mb-8 space-y-2">
-              <span className="text-[11px] uppercase tracking-widest font-bold text-neutral-400">
-                Velocidad de Implementación
+        {/* SUBSCRIPTION & PRICING SECTION (New Section 6) */}
+        <section id="suscripcion" className="scroll-mt-20">
+          <div className="bg-gradient-to-br from-neutral-900 via-neutral-900 to-neutral-800 text-white rounded-3xl p-6 sm:p-12 shadow-2xl border border-neutral-800 relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+
+            <div className="text-center max-w-2xl mx-auto mb-10 space-y-3 relative z-10">
+              <span className="text-[11px] uppercase tracking-widest font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/20">
+                Plan Único y Transparente
               </span>
-              <h2 className="text-xl sm:text-2xl font-bold tracking-tight">
-                ¿Cuánto tiempo lleva tener tu sitio online funcionando?
+              <h2 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-white">
+                Todo lo que tu marca necesita, sin sorpresas
               </h2>
-              <p className="text-xs sm:text-sm text-neutral-300">
-                Olvidate de semanas de desarrollo web o integraciones costosas. La plataforma está lista para usar.
+              <p className="text-xs sm:text-sm text-neutral-300 leading-relaxed">
+                Olvidate de comisiones por venta. Un solo abono mensual con acceso total a todas las herramientas de catálogo, cobro y stock.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-xs flex flex-col justify-between">
+            {/* Price Highlight Card */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 sm:p-8 backdrop-blur-md max-w-3xl mx-auto mb-8 relative z-10">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 pb-6 border-b border-white/10">
                 <div>
-                  <div className="text-3xl sm:text-4xl font-extrabold text-emerald-400 mb-1">
-                    15 min
+                  <div className="text-xs font-bold uppercase tracking-wider text-neutral-400 mb-1">
+                    Suscripción Mensual Plataforma
                   </div>
-                  <div className="text-sm font-bold text-white mb-1">
-                    Carga Inicial de Productos
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl sm:text-5xl font-black text-white">
+                      ${currentPriceFormatted}
+                    </span>
+                    <span className="text-sm font-medium text-neutral-400">/ mes</span>
                   </div>
-                  <p className="text-xs text-neutral-300 leading-relaxed">
-                    Subí tus fotos, asigná talles, colores y precios con una matriz ultra intuitiva sin manuales.
-                  </p>
+                  <div className="text-xs text-emerald-400 font-semibold mt-1 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px]">verified</span>
+                    <span>14 días de prueba gratis · Sin costo de alta</span>
+                  </div>
                 </div>
-                <div className="mt-4 pt-3 border-t border-white/10 flex items-center gap-1.5 text-[11px] text-neutral-400">
-                  <span className="material-symbols-outlined text-[15px] text-emerald-400">bolt</span>
-                  <span>Sin conocimientos técnicos</span>
-                </div>
+
+                <button
+                  onClick={handleGoogleAction}
+                  disabled={isLoggingIn}
+                  className="px-6 py-3.5 bg-emerald-500 hover:bg-emerald-600 text-neutral-950 text-xs sm:text-sm font-bold rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99] shrink-0"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24">
+                    <path
+                      fill="#1E293B"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="#1E293B"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="#1E293B"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                    />
+                    <path
+                      fill="#1E293B"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                    />
+                  </svg>
+                  <span>Empezar Gratis con Google</span>
+                </button>
               </div>
 
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-xs flex flex-col justify-between">
-                <div>
-                  <div className="text-3xl sm:text-4xl font-extrabold text-sky-400 mb-1">
-                    0%
-                  </div>
-                  <div className="text-sm font-bold text-white mb-1">
-                    Comisión por Venta
-                  </div>
-                  <p className="text-xs text-neutral-300 leading-relaxed">
-                    El 100% de la venta es tuya. El cliente te abona directo por transferencia, Mercado Pago o efectivo.
-                  </p>
+              {/* 9 Features Included List */}
+              <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-neutral-200">
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Carga ilimitada de productos</strong> sin topes artificiales.</span>
                 </div>
-                <div className="mt-4 pt-3 border-t border-white/10 flex items-center gap-1.5 text-[11px] text-neutral-400">
-                  <span className="material-symbols-outlined text-[15px] text-sky-400">savings</span>
-                  <span>Directo a tu cuenta bancaria</span>
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Catálogo público exclusivo</strong> con link propio para tu bio de redes.</span>
                 </div>
-              </div>
-
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-xs flex flex-col justify-between">
-                <div>
-                  <div className="text-3xl sm:text-4xl font-extrabold text-amber-400 mb-1">
-                    24 hs
-                  </div>
-                  <div className="text-sm font-bold text-white mb-1">
-                    Puesta en Marcha Garantizada
-                  </div>
-                  <p className="text-xs text-neutral-300 leading-relaxed">
-                    Recibís tu dirección web propia (<code className="bg-white/10 px-1 py-0.5 rounded text-amber-300 font-mono text-[10px]">/tu-tienda</code>) y soporte personalizado de inicio.
-                  </p>
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Armado de carrito</strong> con pedido detallado directo a WhatsApp.</span>
                 </div>
-                <div className="mt-4 pt-3 border-t border-white/10 flex items-center gap-1.5 text-[11px] text-neutral-400">
-                  <span className="material-symbols-outlined text-[15px] text-amber-400">verified</span>
-                  <span>Acompañamiento en el lanzamiento</span>
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Pagos directos por Mercado Pago</strong> acreditados en tu propia cuenta.</span>
                 </div>
-              </div>
-
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5 backdrop-blur-xs flex flex-col justify-between">
-                <div>
-                  <div className="text-3xl sm:text-4xl font-extrabold text-rose-400 mb-1">
-                    3x
-                  </div>
-                  <div className="text-sm font-bold text-white mb-1">
-                    Conversión en WhatsApp
-                  </div>
-                  <p className="text-xs text-neutral-300 leading-relaxed">
-                    Chau responder 20 veces "¿qué talles tenés en stock?". El cliente te envía el carrito listo para confirmar.
-                  </p>
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Gestión de stock automático</strong> con matriz dimensional talle x color.</span>
                 </div>
-                <div className="mt-4 pt-3 border-t border-white/10 flex items-center gap-1.5 text-[11px] text-neutral-400">
-                  <span className="material-symbols-outlined text-[15px] text-rose-400">chat</span>
-                  <span>Mensaje ordenado con fotos y totales</span>
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Administración de ventas</strong> por catálogo, mostrador y otros canales.</span>
+                </div>
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Creación de productos smart</strong> con IA desde fotos en segundos.</span>
+                </div>
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Personalización total de tienda:</strong> logo, colores oficiales y tipografía.</span>
+                </div>
+                <div className="flex items-start gap-2.5 sm:col-span-2">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Soporte humano directo por WhatsApp</strong> para resolver dudas operativas y acompañarte.</span>
                 </div>
               </div>
             </div>
@@ -321,7 +447,7 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
                 Cargás tus Productos y Stock
               </h3>
               <p className="text-xs text-neutral-600 leading-relaxed">
-                Asigná variantes dimensionales por Talle (S, M, L, XL, etc.) y Color (Negro, Beige, Blanco...). Si una variante se agota, el sistema la deshabilita automáticamente.
+                Asigná variantes dimensionales por Talle y Color. Si una variante se agota, el sistema la deshabilita automáticamente para evitar pedidos sin stock.
               </p>
             </div>
 
@@ -406,9 +532,9 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
               <div className="w-10 h-10 rounded-xl bg-neutral-100 text-neutral-800 flex items-center justify-center">
                 <span className="material-symbols-outlined text-xl">shield</span>
               </div>
-              <h4 className="text-sm font-bold text-neutral-900">Acceso Seguro para Administradores</h4>
+              <h4 className="text-sm font-bold text-neutral-900">Acceso Seguro con Google</h4>
               <p className="text-xs text-neutral-600 leading-relaxed">
-                Cada comercio cuenta con su contraseña individual protegida para gestionar precios y datos confidenciales.
+                Ingresá de forma segura con tu cuenta de Google. Sin contraseñas débiles y con control de acceso garantizado por Firestore.
               </p>
             </div>
           </div>
@@ -458,7 +584,7 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {filteredStores.map((store) => {
-                const isActive = store.active !== false;
+                const isActive = store.active !== false && store.status !== 'suspended' && store.status !== 'closed';
 
                 return (
                   <div
@@ -522,7 +648,7 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
                       )}
                     </div>
 
-                    {/* Action button: ONLY Catalog access (Admin button removed) */}
+                    {/* Action button: Ver Catálogo */}
                     <div className="bg-neutral-50/80 p-4 border-t border-neutral-100">
                       <button
                         onClick={() => onSelectStore(store.slug, 'storefront')}
@@ -540,29 +666,86 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
           )}
         </section>
 
-        {/* CONTACT & CLIENT ONBOARDING SECTION (Direct info only, no form) */}
+        {/* CONTACT & DIRECT ONBOARDING SECTION */}
         <section id="contacto" className="scroll-mt-20">
           <div className="bg-white rounded-3xl border border-neutral-200/90 shadow-lg p-6 sm:p-10">
             <div className="max-w-3xl mx-auto text-center space-y-4 mb-8">
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-neutral-100 text-neutral-800 text-xs font-semibold">
                 <span className="material-symbols-outlined text-[15px]">mail</span>
-                <span>Contacto Directo para Nuevos Comercios</span>
+                <span>Contacto Directo & Asesoramiento</span>
               </div>
               <h2 className="text-2xl sm:text-3xl font-extrabold text-neutral-900 tracking-tight leading-tight">
-                ¿Querés sumar tu comercio a la plataforma?
+                ¿Tenés consultas antes de comenzar?
               </h2>
               <p className="text-sm sm:text-base text-neutral-600 max-w-xl mx-auto leading-relaxed">
-                Envianos un mail a nuestra casilla oficial <strong className="text-neutral-900">ugmartin@hotmail.com</strong> con el nombre de tu marca y nos pondremos en contacto a la brevedad para coordinar la activación de tu catálogo online.
+                Podés crear tu tienda ahora mismo con Google o escribirnos directamente a nuestra casilla oficial <strong className="text-neutral-900">ugmartin@hotmail.com</strong> para coordinar la puesta en marcha de tu catálogo.
               </p>
             </div>
 
             {/* Direct Contact Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
-              {/* Email Official Box */}
+              {/* Google Self-Registration Box */}
               <div className="p-6 rounded-2xl bg-neutral-50 border border-neutral-200 flex flex-col justify-between space-y-5">
                 <div className="space-y-3">
                   <div className="flex items-center gap-3">
                     <div className="w-12 h-12 rounded-xl bg-neutral-900 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <span className="material-symbols-outlined text-[24px]">rocket_launch</span>
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-wider text-neutral-500">
+                        Alta Inmediata
+                      </div>
+                      <div className="text-base sm:text-lg font-extrabold text-neutral-900">
+                        Creá tu Tienda con Google
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-neutral-600 leading-relaxed pt-1">
+                    Iniciá sesión con tu cuenta de Google, elegí el nombre de tu marca y comenzá tu período de 14 días gratis sin compromiso.
+                  </p>
+                </div>
+
+                <div className="space-y-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleGoogleAction}
+                    disabled={isLoggingIn}
+                    className="w-full py-3 px-4 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 text-center shadow-xs cursor-pointer active:scale-[0.99] disabled:opacity-50"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path
+                        fill="#4285F4"
+                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                      />
+                      <path
+                        fill="#EA4335"
+                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                      />
+                    </svg>
+                    <span>Crear Mi Tienda Ahora</span>
+                  </button>
+
+                  <div className="flex items-center gap-2 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200/60 rounded-xl px-3 py-1.5">
+                    <span className="material-symbols-outlined text-[15px] text-emerald-600">verified</span>
+                    <span>14 días de prueba gratuita incluidos.</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Email Official Box */}
+              <div className="p-6 rounded-2xl bg-white border border-neutral-200 flex flex-col justify-between space-y-4">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-xl bg-neutral-100 text-neutral-800 flex items-center justify-center shrink-0">
                       <span className="material-symbols-outlined text-[24px]">alternate_email</span>
                     </div>
                     <div>
@@ -575,12 +758,12 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
                     </div>
                   </div>
 
-                  <p className="text-xs text-neutral-600 leading-relaxed pt-1">
-                    Atención personalizada para dar de alta tu tienda, resolver consultas técnicas o coordinar la carga de catálogo.
+                  <p className="text-xs text-neutral-600 leading-relaxed">
+                    Atención personalizada para despejar consultas técnicas, coordinar altas o solicitar soporte comercial.
                   </p>
                 </div>
 
-                <div className="space-y-2.5 pt-2">
+                <div className="space-y-2 pt-2">
                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                     <a
                       href={mailtoHref}
@@ -602,67 +785,10 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
                     </button>
                   </div>
 
-                  <div className="flex items-center gap-2 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200/60 rounded-xl px-3 py-1.5">
-                    <span className="material-symbols-outlined text-[15px] text-emerald-600">schedule</span>
-                    <span>Respuesta garantizada en menos de 24 horas hábiles.</span>
+                  <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+                    <span className="material-symbols-outlined text-[15px] text-neutral-400">schedule</span>
+                    <span>Respuesta en menos de 24 horas hábiles.</span>
                   </div>
-                </div>
-              </div>
-
-              {/* What's Included Card */}
-              <div className="p-6 rounded-2xl bg-white border border-neutral-200 flex flex-col justify-between space-y-4">
-                <div>
-                  <div className="font-bold text-neutral-900 text-sm mb-3 flex items-center gap-2">
-                    <span className="material-symbols-outlined text-neutral-700 text-[18px]">verified</span>
-                    <span>Todo lo que incluye tu tienda al activarla:</span>
-                  </div>
-
-                  <div className="space-y-2.5 text-xs text-neutral-700">
-                    <div className="flex items-start gap-2">
-                      <span className="material-symbols-outlined text-emerald-600 text-[18px] shrink-0 mt-0.5">
-                        check_circle
-                      </span>
-                      <span>
-                        <strong>URL directa exclusiva</strong> (ej: <code className="font-mono text-neutral-900 bg-neutral-100 px-1 py-0.5 rounded">/tu-marca</code>) lista para tu biografía de redes sociales.
-                      </span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="material-symbols-outlined text-emerald-600 text-[18px] shrink-0 mt-0.5">
-                        check_circle
-                      </span>
-                      <span>
-                        <strong>Catálogo interactivo con variantes</strong> de Talle y Color con control de stock en tiempo real.
-                      </span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="material-symbols-outlined text-emerald-600 text-[18px] shrink-0 mt-0.5">
-                        check_circle
-                      </span>
-                      <span>
-                        <strong>Carrito de pedidos por WhatsApp</strong> con desglose detallado de prendas y precio total.
-                      </span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="material-symbols-outlined text-emerald-600 text-[18px] shrink-0 mt-0.5">
-                        check_circle
-                      </span>
-                      <span>
-                        <strong>Panel de control administrativo</strong> protegido para gestionar stock, precios y asentar ventas.
-                      </span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      <span className="material-symbols-outlined text-emerald-600 text-[18px] shrink-0 mt-0.5">
-                        check_circle
-                      </span>
-                      <span>
-                        <strong>Sin comisiones por venta</strong>: cobrás directo a tu cuenta bancaria o billetera digital.
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t border-neutral-100 text-[11px] text-neutral-500">
-                  Escribinos a <a href="mailto:ugmartin@hotmail.com" className="font-semibold text-neutral-900 underline">ugmartin@hotmail.com</a> detallando tu rubro y te respondemos de inmediato.
                 </div>
               </div>
             </div>
@@ -695,6 +821,38 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
           </div>
         </div>
       </footer>
+
+      {/* MODAL: ONBOARDING WITH GOOGLE FOR FIRST-TIME OWNERS */}
+      {user && (
+        <StoreOnboardingModal
+          user={user}
+          existingStores={stores}
+          isOpen={isOnboardingOpen}
+          onClose={() => setIsOnboardingOpen(false)}
+          onStoreCreated={(createdStore) => {
+            setIsOnboardingOpen(false);
+            onSelectStore(createdStore.slug, 'admin');
+          }}
+        />
+      )}
+
+      {/* MODAL: STORE SELECTOR FOR USERS WITH MULTIPLE STORES */}
+      {user && (
+        <StoreSelectorModal
+          user={user}
+          stores={userStores}
+          isOpen={isStoreSelectorOpen}
+          onClose={() => setIsStoreSelectorOpen(false)}
+          onSelectStore={(selectedStore) => {
+            setIsStoreSelectorOpen(false);
+            onSelectStore(selectedStore.slug, 'admin');
+          }}
+          onCreateNewStore={() => {
+            setIsStoreSelectorOpen(false);
+            setIsOnboardingOpen(true);
+          }}
+        />
+      )}
     </div>
   );
 };

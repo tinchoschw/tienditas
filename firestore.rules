@@ -1,31 +1,110 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isSuperAdmin() {
+      return isSignedIn() && 
+        request.auth.token.email != null && 
+        request.auth.token.email.lower() == 'yunior@gmail.com';
+    }
+
+    function isStoreOwner(storeData) {
+      return isSignedIn() && 
+        request.auth.token.email != null && 
+        storeData.ownerEmail != null && 
+        request.auth.token.email.lower() == storeData.ownerEmail.lower();
+    }
+
+    // STORES COLLECTION
     match /stores/{storeId} {
-      allow read, write: if true;
+      // Public storefront can read store profile
+      allow read: if true;
+      
+      // Store registration: signed-in users can create their own trial store
+      allow create: if isSuperAdmin() || (
+        isSignedIn() && 
+        request.resource.data.ownerEmail != null &&
+        request.auth.token.email != null &&
+        request.resource.data.ownerEmail.lower() == request.auth.token.email.lower() &&
+        request.resource.data.plan == 'trial' &&
+        request.resource.data.status == 'active'
+      );
+      
+      // Store update: Superadmin can update anything.
+      // Store Owner CANNOT modify plan, planEndsAt, extensions, ownerEmail.
+      allow update: if isSuperAdmin() || (
+        isStoreOwner(resource.data) &&
+        request.resource.data.plan == resource.data.plan &&
+        request.resource.data.planEndsAt == resource.data.planEndsAt &&
+        request.resource.data.ownerEmail == resource.data.ownerEmail &&
+        (
+          request.resource.data.status == resource.data.status ||
+          request.resource.data.status == 'closed'
+        )
+      );
+      
+      allow delete: if isSuperAdmin();
+      
+      // PERIODS SUBCOLLECTION:
+      // Only Superadmin can write/update periods.
+      // Store owner or Superadmin can read periods.
+      match /periods/{periodId} {
+        allow read: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
+        allow write: if isSuperAdmin();
+      }
+
+      // Store settings subcollection
+      match /settings/{docId} {
+        allow read: if true;
+        allow write: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
+      }
+      
+      // Store products subcollection
+      match /products/{productId} {
+        allow read: if true;
+        allow write: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
+      }
+      
+      // Store sales subcollection
+      match /sales/{saleId} {
+        allow create: if true;
+        allow read, update, delete: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
+      }
     }
-    match /stores/{storeId}/{document=**} {
-      allow read, write: if true;
+
+    // GLOBAL PLATFORM CONFIG (PRICING & SUPPORT)
+    match /platformConfig/{docId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
     }
+
+    // FEEDBACK COLLECTION (Closure & Friends and Family)
+    match /feedback/{feedbackId} {
+      allow create: if isSignedIn();
+      allow read, delete, update: if isSuperAdmin();
+    }
+
+    // Legacy collections fallback
     match /storeSettings/{docId} {
       allow read: if true;
-      allow write: if true;
+      allow write: if isSuperAdmin();
     }
     match /products/{productId} {
       allow read: if true;
-      allow write: if true;
+      allow write: if isSuperAdmin();
     }
     match /sales/{saleId} {
-      allow read: if true;
-      allow write: if true;
+      allow read, write: if isSuperAdmin();
     }
     match /users/{userId} {
-      allow read: if true;
-      allow write: if true;
+      allow read, write: if isSignedIn();
     }
     match /test/{docId} {
-      allow read: if true;
-      allow write: if true;
+      allow read, write: if true;
     }
   }
 }

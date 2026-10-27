@@ -10,7 +10,24 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Product, ProductVariant, Sale, StoreSettings, MercadoPagoConfig, SalePayment, SaleItem, Store, StoreFeatureFlags, DEFAULT_FEATURE_FLAGS } from '../types';
+import { 
+  Product, 
+  ProductVariant, 
+  Sale, 
+  StoreSettings, 
+  MercadoPagoConfig, 
+  SalePayment, 
+  SaleItem, 
+  Store, 
+  StoreFeatureFlags, 
+  DEFAULT_FEATURE_FLAGS,
+  StoreStatus,
+  StorePlan,
+  StorePeriod,
+  StoreExtension,
+  StoreFeedback,
+  PlatformConfig
+} from '../types';
 import { INITIAL_PRODUCTS, INITIAL_SALES, INITIAL_SETTINGS, DEFAULT_STORE, SANDBOX_STORE, INITIAL_STORES } from '../initialData';
 import { optimizeProductImages } from '../utils/imageOptimizer';
 
@@ -61,8 +78,50 @@ export function sanitizeForFirestore<T>(data: T): T {
 // ------------------- STORES MANAGEMENT -------------------
 // ========================================================
 
+// Helper to normalize and migrate store records with subscription fields
+export const normalizeStoreData = (data: any, id: string): Store => {
+  return {
+    id,
+    ...data,
+    name: data.name || id,
+    slug: data.slug || id,
+    active: data.active !== false && data.status !== 'suspended' && data.status !== 'closed',
+    status: (data.status as StoreStatus) || (data.active === false ? 'suspended' : 'active'),
+    plan: (data.plan as StorePlan) || 'internal',
+    planEndsAt: data.planEndsAt || '',
+    ownerEmail: data.ownerEmail ? String(data.ownerEmail).trim().toLowerCase() : 'yunior@gmail.com',
+    ownerFirstName: data.ownerFirstName || '',
+    ownerLastName: data.ownerLastName || '',
+    ownerPhone: data.ownerPhone || data.whatsappNumber || '',
+    rubro: data.rubro || 'Indumentaria y Calzado',
+    termsAcceptedAt: data.termsAcceptedAt || data.createdAt || '2026-09-28T00:00:00.000Z',
+    extensions: Array.isArray(data.extensions) ? data.extensions : [],
+    featureFlags: data.featureFlags
+      ? { ...DEFAULT_FEATURE_FLAGS, ...data.featureFlags }
+      : { ...DEFAULT_FEATURE_FLAGS }
+  };
+};
+
+export function generateUniqueSlug(rawName: string, existingStores: Store[]): string {
+  const base = rawName
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'tienda';
+  
+  const existingSlugs = new Set(existingStores.map((s) => s.slug.toLowerCase()));
+  if (!existingSlugs.has(base)) return base;
+
+  let counter = 2;
+  while (existingSlugs.has(`${base}-${counter}`)) {
+    counter++;
+  }
+  return `${base}-${counter}`;
+}
+
 export const subscribeStores = (onData: (stores: Store[]) => void) => {
-  const cached = getLocalItem<Store[]>(LOCAL_STORAGE_STORES_KEY, INITIAL_STORES);
+  const cached = getLocalItem<Store[]>(LOCAL_STORAGE_STORES_KEY, INITIAL_STORES).map((s) => normalizeStoreData(s, s.id));
   if (cached && cached.length > 0) {
     onData(cached);
   }
@@ -86,20 +145,13 @@ export const subscribeStores = (onData: (stores: Store[]) => void) => {
         } else {
           const list: Store[] = [];
           snapshot.forEach((sSnap) => {
-            const data = sSnap.data() as Omit<Store, 'id'>;
-            list.push({
-              id: sSnap.id,
-              ...data,
-              featureFlags: data.featureFlags
-                ? { ...DEFAULT_FEATURE_FLAGS, ...data.featureFlags }
-                : { ...DEFAULT_FEATURE_FLAGS }
-            });
+            const data = sSnap.data();
+            list.push(normalizeStoreData(data, sSnap.id));
           });
 
           // Ensure sandbox store is available if not in Firestore yet
           if (!list.some((s) => s.id === 'sandbox' || s.slug === 'sandbox')) {
             list.push(SANDBOX_STORE);
-            // Optionally persist sandbox to firestore in background
             try {
               setDoc(doc(db, 'stores', SANDBOX_STORE.id), SANDBOX_STORE);
             } catch (e) {
@@ -125,24 +177,44 @@ export const subscribeStores = (onData: (stores: Store[]) => void) => {
 
 export const createNewStore = async (data: {
   name: string;
-  slug: string;
+  slug?: string;
+  ownerEmail?: string;
+  ownerFirstName?: string;
+  ownerLastName?: string;
+  ownerPhone?: string;
+  rubro?: string;
+  termsAcceptedAt?: string;
   adminPassword?: string;
   whatsappNumber?: string;
   isSandbox?: boolean;
   featureFlags?: StoreFeatureFlags;
 }): Promise<Store> => {
-  const slug = (data.slug || data.name.toLowerCase().replace(/[^a-z0-9]/g, '-')).replace(/^-+|-+$/g, '') || `tienda-${Date.now()}`;
+  const currentStores = getLocalItem<Store[]>(LOCAL_STORAGE_STORES_KEY, INITIAL_STORES);
+  const slug = data.slug?.trim() || generateUniqueSlug(data.name, currentStores);
   const storeId = slug;
+
+  // Rule: Al registrarse: status 'active', plan 'trial', planEndsAt = hoy + 14 días.
+  const trialEnds = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
 
   const newStore: Store = {
     id: storeId,
     slug: slug,
     name: data.name.trim(),
     active: true,
+    status: 'active',
+    plan: 'trial',
+    planEndsAt: trialEnds,
+    ownerEmail: (data.ownerEmail || 'yunior@gmail.com').trim().toLowerCase(),
+    ownerFirstName: data.ownerFirstName?.trim() || '',
+    ownerLastName: data.ownerLastName?.trim() || '',
+    ownerPhone: data.ownerPhone?.trim() || data.whatsappNumber?.trim() || '',
+    rubro: data.rubro?.trim() || 'Indumentaria y Moda',
+    termsAcceptedAt: data.termsAcceptedAt || new Date().toISOString(),
+    extensions: [],
     isSandbox: !!data.isSandbox,
     featureFlags: data.featureFlags ? { ...DEFAULT_FEATURE_FLAGS, ...data.featureFlags } : { ...DEFAULT_FEATURE_FLAGS },
     adminPassword: data.adminPassword?.trim() || 'AdminApolo2026!',
-    whatsappNumber: data.whatsappNumber?.trim() || '',
+    whatsappNumber: data.whatsappNumber?.trim() || data.ownerPhone?.trim() || '',
     primaryColor: data.isSandbox ? '#4F46E5' : '#1A1A1A',
     logoUrl: '',
     createdAt: new Date().toISOString(),
@@ -150,7 +222,6 @@ export const createNewStore = async (data: {
   };
 
   // Local save
-  const currentStores = getLocalItem<Store[]>(LOCAL_STORAGE_STORES_KEY, INITIAL_STORES);
   const updatedStores = [...currentStores.filter((s) => s.id !== storeId), newStore];
   setLocalItem(LOCAL_STORAGE_STORES_KEY, updatedStores);
 
@@ -167,7 +238,7 @@ export const createNewStore = async (data: {
     secondaryPresets: INITIAL_SETTINGS.secondaryPresets,
     backgroundPresets: INITIAL_SETTINGS.backgroundPresets,
     whatsappEnabled: true,
-    whatsappNumber: data.whatsappNumber?.trim() || '',
+    whatsappNumber: data.whatsappNumber?.trim() || data.ownerPhone?.trim() || '',
     categories: ['Todas', 'Ropa', 'Calzado', 'Accesorios'],
     masterSizes: INITIAL_SETTINGS.masterSizes,
     masterColors: INITIAL_SETTINGS.masterColors,
@@ -306,6 +377,295 @@ export const deleteStoreRecord = async (storeId: string): Promise<boolean> => {
   }
 
   return true;
+};
+
+// ========================================================
+// ----------------- PLATFORM CONFIG & PRICING -------------
+// ========================================================
+
+const LOCAL_PLATFORM_CONFIG_KEY = 'atelier_platform_config';
+export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
+  basePrice: 24900,
+  supportWhatsApp: '5491122334455',
+  updatedAt: new Date().toISOString()
+};
+
+export const subscribePlatformConfig = (onData: (config: PlatformConfig) => void) => {
+  const cached = getLocalItem<PlatformConfig>(LOCAL_PLATFORM_CONFIG_KEY, DEFAULT_PLATFORM_CONFIG);
+  onData(cached);
+
+  try {
+    const configDoc = doc(db, 'platformConfig', 'global');
+    return onSnapshot(
+      configDoc,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as PlatformConfig;
+          const merged: PlatformConfig = {
+            basePrice: typeof data.basePrice === 'number' ? data.basePrice : 24900,
+            supportWhatsApp: data.supportWhatsApp || '5491122334455',
+            updatedAt: data.updatedAt || new Date().toISOString()
+          };
+          setLocalItem(LOCAL_PLATFORM_CONFIG_KEY, merged);
+          onData(merged);
+        } else {
+          setDoc(configDoc, DEFAULT_PLATFORM_CONFIG).catch(() => {});
+          onData(cached);
+        }
+      },
+      (err) => {
+        console.warn('Firestore platformConfig error, using cached:', err);
+        onData(cached);
+      }
+    );
+  } catch (e) {
+    console.warn('subscribePlatformConfig error:', e);
+    return () => {};
+  }
+};
+
+export const updatePlatformConfig = async (patch: Partial<PlatformConfig>): Promise<PlatformConfig> => {
+  const current = getLocalItem<PlatformConfig>(LOCAL_PLATFORM_CONFIG_KEY, DEFAULT_PLATFORM_CONFIG);
+  const updated: PlatformConfig = {
+    ...current,
+    ...patch,
+    updatedAt: new Date().toISOString()
+  };
+  setLocalItem(LOCAL_PLATFORM_CONFIG_KEY, updated);
+
+  try {
+    await setDoc(doc(db, 'platformConfig', 'global'), updated, { merge: true });
+  } catch (e) {
+    console.warn('Could not update platformConfig in Firestore:', e);
+  }
+  return updated;
+};
+
+// ========================================================
+// ----------------- STORE PERIODS (30 DAYS) --------------
+// ========================================================
+
+export const subscribeStorePeriods = (storeId: string, onData: (periods: StorePeriod[]) => void) => {
+  const localKey = `atelier_store_periods_${storeId}`;
+  const cached = getLocalItem<StorePeriod[]>(localKey, []);
+  onData(cached);
+
+  try {
+    const periodsCol = collection(db, 'stores', storeId, 'periods');
+    return onSnapshot(
+      periodsCol,
+      (snapshot) => {
+        const list: StorePeriod[] = [];
+        snapshot.forEach((snap) => {
+          list.push({ id: snap.id, ...snap.data() } as StorePeriod);
+        });
+        list.sort((a, b) => new Date(b.dueDate).getTime() - new Date(a.dueDate).getTime());
+        setLocalItem(localKey, list);
+        onData(list);
+      },
+      (err) => {
+        console.warn('subscribeStorePeriods error:', err);
+        onData(cached);
+      }
+    );
+  } catch (e) {
+    console.warn('subscribeStorePeriods exception:', e);
+    return () => {};
+  }
+};
+
+export const createStorePeriod = async (
+  storeId: string, 
+  data: Omit<StorePeriod, 'id'>
+): Promise<StorePeriod> => {
+  const periodId = `period_${Date.now()}`;
+  const newPeriod: StorePeriod = {
+    id: periodId,
+    ...data,
+    createdAt: new Date().toISOString()
+  };
+
+  const localKey = `atelier_store_periods_${storeId}`;
+  const current = getLocalItem<StorePeriod[]>(localKey, []);
+  const updated = [newPeriod, ...current];
+  setLocalItem(localKey, updated);
+
+  try {
+    await setDoc(doc(db, 'stores', storeId, 'periods', periodId), newPeriod);
+  } catch (e) {
+    console.warn('Could not create store period in Firestore:', e);
+  }
+
+  return newPeriod;
+};
+
+export const updateStorePeriod = async (
+  storeId: string,
+  periodId: string,
+  patch: Partial<StorePeriod>
+): Promise<void> => {
+  const localKey = `atelier_store_periods_${storeId}`;
+  const current = getLocalItem<StorePeriod[]>(localKey, []);
+  const updated = current.map((p) => (p.id === periodId ? { ...p, ...patch } : p));
+  setLocalItem(localKey, updated);
+
+  try {
+    await setDoc(doc(db, 'stores', storeId, 'periods', periodId), patch, { merge: true });
+  } catch (e) {
+    console.warn('Could not update store period in Firestore:', e);
+  }
+};
+
+// ========================================================
+// ----------------- STORE EXTENSIONS ---------------------
+// ========================================================
+
+export const addStoreExtension = async (
+  storeId: string,
+  extension: { days: number; reason: string; date?: string }
+): Promise<Store | null> => {
+  const currentStores = getLocalItem<Store[]>(LOCAL_STORAGE_STORES_KEY, INITIAL_STORES);
+  const target = currentStores.find((s) => s.id === storeId || s.slug === storeId);
+  if (!target) return null;
+
+  const now = new Date();
+  let baseDate = now;
+  if (target.planEndsAt) {
+    const existingDate = new Date(target.planEndsAt);
+    if (!isNaN(existingDate.getTime()) && existingDate > now) {
+      baseDate = existingDate;
+    }
+  }
+
+  const newEndsAt = new Date(baseDate.getTime() + extension.days * 24 * 60 * 60 * 1000).toISOString();
+  const newExtensionItem: StoreExtension = {
+    id: `ext_${Date.now()}`,
+    date: extension.date || now.toISOString().split('T')[0],
+    days: extension.days,
+    reason: extension.reason.trim()
+  };
+
+  const updatedExtensions = [...(target.extensions || []), newExtensionItem];
+  const updatedStore: Store = {
+    ...target,
+    planEndsAt: newEndsAt,
+    status: target.status === 'suspended' ? 'active' : target.status,
+    active: true,
+    extensions: updatedExtensions,
+    updatedAt: now.toISOString()
+  };
+
+  const newStores = currentStores.map((s) => (s.id === target.id ? updatedStore : s));
+  setLocalItem(LOCAL_STORAGE_STORES_KEY, newStores);
+
+  try {
+    await setDoc(doc(db, 'stores', target.id), {
+      planEndsAt: newEndsAt,
+      status: updatedStore.status,
+      active: true,
+      extensions: updatedExtensions,
+      updatedAt: updatedStore.updatedAt
+    }, { merge: true });
+  } catch (e) {
+    console.warn('Could not save store extension in Firestore:', e);
+  }
+
+  return updatedStore;
+};
+
+// ========================================================
+// ----------------- FEEDBACK (CLOSURE & F&F) --------------
+// ========================================================
+
+export const saveStoreFeedback = async (data: Omit<StoreFeedback, 'id' | 'date'> & { date?: string }): Promise<void> => {
+  const feedbackDoc: StoreFeedback = {
+    ...data,
+    date: data.date || new Date().toISOString()
+  };
+
+  try {
+    const feedbackCol = collection(db, 'feedback');
+    const docRef = doc(feedbackCol);
+    await setDoc(docRef, feedbackDoc);
+  } catch (e) {
+    console.warn('Could not save store feedback to Firestore:', e);
+  }
+};
+
+export const subscribeStoreFeedback = (onData: (list: StoreFeedback[]) => void) => {
+  try {
+    const feedbackCol = collection(db, 'feedback');
+    return onSnapshot(
+      feedbackCol,
+      (snapshot) => {
+        const list: StoreFeedback[] = [];
+        snapshot.forEach((snap) => {
+          list.push({ id: snap.id, ...snap.data() } as StoreFeedback);
+        });
+        list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        onData(list);
+      },
+      (err) => {
+        console.warn('subscribeStoreFeedback error:', err);
+        onData([]);
+      }
+    );
+  } catch (e) {
+    console.warn('subscribeStoreFeedback exception:', e);
+    return () => {};
+  }
+};
+
+// ========================================================
+// ----------- STORE OWNER & SUBSCRIPTION ACTIONS ----------
+// ========================================================
+
+export const updateStoreOwnerInfo = async (
+  storeId: string,
+  data: { ownerFirstName?: string; ownerLastName?: string; ownerPhone?: string }
+): Promise<Store | null> => {
+  return updateStoreMeta(storeId, {
+    ownerFirstName: data.ownerFirstName?.trim(),
+    ownerLastName: data.ownerLastName?.trim(),
+    ownerPhone: data.ownerPhone?.trim(),
+    whatsappNumber: data.ownerPhone?.trim()
+  });
+};
+
+export const closeStoreByOwner = async (
+  storeId: string,
+  feedback: { motivos: string[]; text: string; storeName: string; userEmail: string; userName: string }
+): Promise<void> => {
+  await updateStoreMeta(storeId, {
+    status: 'closed',
+    active: false
+  });
+  await saveStoreFeedback({
+    storeId,
+    storeName: feedback.storeName,
+    userEmail: feedback.userEmail,
+    userName: feedback.userName,
+    motivos: feedback.motivos,
+    text: feedback.text,
+    type: 'closure'
+  });
+};
+
+export const updateStorePlanAndStatus = async (
+  storeId: string,
+  data: {
+    plan?: StorePlan;
+    status?: StoreStatus;
+    planEndsAt?: string;
+    ownerEmail?: string;
+    rubro?: string;
+    name?: string;
+  }
+): Promise<Store | null> => {
+  return updateStoreMeta(storeId, {
+    ...data,
+    active: data.status ? data.status === 'active' : undefined
+  });
 };
 
 // ========================================================
