@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { StoreSettings, MercadoPagoConfig } from '../types';
-import { getStoreSettingsFromDb } from '../services/db';
+import React, { useState, useEffect, useCallback } from 'react';
+import { StoreSettings, MercadoPagoConfig, MercadoPagoStatusResponse } from '../types';
+import { auth } from '../firebase';
 
 interface PaymentsConfigViewProps {
   storeSlug?: string;
@@ -17,7 +17,14 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
   onSaveSettings,
   onReloadSettings,
 }) => {
-  // Current store connection state
+  // Server-verified status state
+  const [status, setStatus] = useState<MercadoPagoStatusResponse | null>(null);
+  const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(true);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Fallback to settings if status hasn't loaded yet
   const mpState: MercadoPagoConfig = settings.mercadoPago || {
     connected: false,
     enabled: false,
@@ -26,41 +33,57 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
     sandboxMode: false
   };
 
-  // A store is connected if connected is true AND it has an email or nickname or accessToken
-  const isConnected = Boolean(mpState.connected && (mpState.accountEmail || mpState.accountNickname || mpState.accessToken));
-  const isPaymentEnabled = isConnected && mpState.enabled !== false;
+  const isConnected = Boolean(status?.connected ?? (mpState.connected && (mpState.accountEmail || mpState.accountNickname)));
+  const isPaymentEnabled = Boolean(status?.enabled ?? (isConnected && mpState.enabled !== false));
+  const currentNickname = status?.accountNickname || mpState.accountNickname || settings.storeName || 'Mi Tienda';
+  const currentEmail = status?.accountEmail || mpState.accountEmail || '';
+  const currentExpiresAt = status?.expiresAt || mpState.expiresAt || '';
+  const isCurrentSandbox = Boolean(status?.sandboxMode ?? mpState.sandboxMode);
 
-  // Local state for toggling payment availability
+  // Local state for catalog switch
   const [enabled, setEnabled] = useState<boolean>(isPaymentEnabled);
-  const [isSaving, setIsSaving] = useState<boolean>(false);
-  const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
 
   // Official OAuth Connect Modal state
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
   const [connectingStep, setConnectingStep] = useState<'form' | 'opening' | 'authorizing' | 'success' | 'error'>('form');
-  const [connectSandbox, setConnectSandbox] = useState<boolean>(isSandboxStore ? Boolean(mpState.sandboxMode) : false);
+  const [connectSandbox, setConnectSandbox] = useState<boolean>(isSandboxStore ? isCurrentSandbox : false);
   const [authUrl, setAuthUrl] = useState<string>('');
   const [authError, setAuthError] = useState<string | null>(null);
-  const [copiedUrl, setCopiedUrl] = useState(false);
 
   // Disconnect confirmation modal
   const [isDisconnectModalOpen, setIsDisconnectModalOpen] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
 
   // Quick verify feedback
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyMessage, setVerifyMessage] = useState<string | null>(null);
 
-  // Advanced developer settings accordion (hidden by default)
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [customAccessToken, setCustomAccessToken] = useState('');
-  const [customPublicKey, setCustomPublicKey] = useState(mpState.publicKey || '');
+  // Fetch status from server endpoint (no secret tokens are ever exposed)
+  const fetchStatus = useCallback(async () => {
+    if (!storeSlug) return;
+    try {
+      setIsLoadingStatus(true);
+      const res = await fetch(`/api/mercadopago/status?storeSlug=${encodeURIComponent(storeSlug)}`);
+      if (res.ok) {
+        const data: MercadoPagoStatusResponse = await res.json();
+        setStatus(data);
+        setEnabled(data.enabled && data.connected);
+      }
+    } catch (err) {
+      console.warn('Error fetching MP status:', err);
+    } finally {
+      setIsLoadingStatus(false);
+    }
+  }, [storeSlug]);
 
-  // Helper to safely mask sensitive tokens for display
-  const maskToken = (token?: string) => {
-    if (!token) return '';
-    if (token.length <= 8) return '••••••••';
-    return `${token.slice(0, 5)}••••••••••••${token.slice(-4)}`;
-  };
+  useEffect(() => {
+    fetchStatus();
+  }, [fetchStatus]);
+
+  // Keep local enabled state synchronized with props
+  useEffect(() => {
+    setEnabled(isPaymentEnabled);
+  }, [isPaymentEnabled]);
 
   // Listen for official OAuth callbacks via postMessage, localStorage, BroadcastChannel, or URL params
   useEffect(() => {
@@ -71,12 +94,9 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
       isHandled = true;
 
       try {
-        // Regla 1: Al volver de la vinculación, solo debe volver a LEER la configuración de la tienda desde Firestore
-        // y actualizar el estado local, SIN sobrescribir el objeto completo en Firestore.
+        await fetchStatus();
         if (onReloadSettings) {
           await onReloadSettings();
-        } else {
-          await getStoreSettingsFromDb(storeSlug || 'apolo');
         }
 
         setConnectingStep('success');
@@ -177,9 +197,9 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
         channel.close();
       }
     };
-  }, [storeSlug, onReloadSettings]);
+  }, [storeSlug, fetchStatus, onReloadSettings]);
 
-  // Toggle payment method in store catalog
+  // Toggle payment availability in catalog
   const handleToggleEnabled = async (nextEnabled: boolean) => {
     setEnabled(nextEnabled);
     setIsSaving(true);
@@ -194,9 +214,10 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
 
       await onSaveSettings({
         ...settings,
-        mercadoPago: updatedConfig
+        mercadoPago: updatedConfig,
       });
 
+      setStatus((prev) => prev ? { ...prev, enabled: nextEnabled } : null);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
@@ -207,7 +228,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
     }
   };
 
-  // Quick toggle between Sandbox and Production (Only available for sandbox store)
+  // Toggle Sandbox Mode (only for sandbox test store)
   const handleToggleSandboxMode = async (nextSandbox: boolean) => {
     setIsSaving(true);
     try {
@@ -218,9 +239,10 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
 
       await onSaveSettings({
         ...settings,
-        mercadoPago: updatedConfig
+        mercadoPago: updatedConfig,
       });
 
+      setStatus((prev) => prev ? { ...prev, sandboxMode: nextSandbox } : null);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
@@ -230,18 +252,16 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
     }
   };
 
-  // Open Official Connect Modal
+  // Open official OAuth connection modal
   const handleOpenConnectModal = () => {
-    // Normal stores always connect in production mode (false).
-    // ONLY the dedicated test store (isSandboxStore) uses sandbox mode.
-    setConnectSandbox(isSandboxStore ? Boolean(mpState.sandboxMode ?? true) : false);
+    setConnectSandbox(isSandboxStore ? isCurrentSandbox : false);
     setAuthError(null);
     setAuthUrl('');
     setConnectingStep('form');
     setIsConnectModalOpen(true);
   };
 
-  // Initiate official OAuth Handshake popup with Mercado Pago
+  // Start OAuth popup
   const handleStartOAuth = async () => {
     setAuthError(null);
     setConnectingStep('opening');
@@ -280,78 +300,63 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
     }
   };
 
-  // Handle disconnect
+  // Disconnect handler calling secure backend endpoint with Firebase ID token
   const handleDisconnect = async () => {
-    setIsSaving(true);
-    try {
-      const updatedConfig: MercadoPagoConfig = {
-        connected: false,
-        enabled: false,
-        accountEmail: '',
-        accountNickname: '',
-        sandboxMode: false,
-        connectedAt: '',
-        lastVerifiedAt: '',
-        accessToken: '',
-        publicKey: ''
-      };
+    setIsDisconnecting(true);
+    setActionError(null);
 
-      await onSaveSettings({
-        ...settings,
-        mercadoPago: updatedConfig
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        throw new Error('Debes haber iniciado sesión para desvincular Mercado Pago.');
+      }
+
+      const idToken = await currentUser.getIdToken();
+
+      const res = await fetch('/api/mercadopago/disconnect', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ storeSlug }),
       });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Error al desvincular la cuenta en el servidor.');
+      }
+
+      await fetchStatus();
+      if (onReloadSettings) {
+        await onReloadSettings();
+      }
 
       setIsDisconnectModalOpen(false);
       setEnabled(false);
-      setCustomAccessToken('');
-      setCustomPublicKey('');
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error disconnecting Mercado Pago:', err);
+      setActionError(err?.message || 'Error al desvincular.');
     } finally {
-      setIsSaving(false);
+      setIsDisconnecting(false);
     }
   };
 
-  // Re-verify connection status
+  // Re-verify connection status with backend
   const handleCheckConnection = async () => {
     setIsVerifying(true);
     setVerifyMessage(null);
     try {
-      await new Promise((r) => setTimeout(r, 600));
-      setVerifyMessage(`✓ Conexión activa con cuenta ${mpState.accountNickname || mpState.accountEmail || 'Mercado Pago'}`);
+      await fetchStatus();
+      await new Promise((r) => setTimeout(r, 400));
+      setVerifyMessage(`✓ Conexión activa con cuenta ${currentNickname || currentEmail || 'Mercado Pago'}`);
     } catch {
       setVerifyMessage('✕ Error al verificar estado');
     } finally {
       setIsVerifying(false);
       setTimeout(() => setVerifyMessage(null), 4000);
-    }
-  };
-
-  // Save manual developer credentials if advanced mode used
-  const handleSaveAdvanced = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSaving(true);
-    try {
-      const updatedConfig: MercadoPagoConfig = {
-        ...mpState,
-        accessToken: customAccessToken.trim() ? customAccessToken.trim() : mpState.accessToken,
-        publicKey: customPublicKey.trim() ? customPublicKey.trim() : mpState.publicKey,
-      };
-
-      await onSaveSettings({
-        ...settings,
-        mercadoPago: updatedConfig
-      });
-
-      setCustomAccessToken('');
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err) {
-      console.error('Error saving advanced MP credentials:', err);
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -385,7 +390,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                     TIENDA TEST (SANDBOX)
                   </span>
                 )}
-                {isSandboxStore && isConnected && mpState.sandboxMode && (
+                {isSandboxStore && isConnected && isCurrentSandbox && (
                   <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200">
                     MODO PRUEBAS
                   </span>
@@ -406,6 +411,15 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
         )}
       </div>
 
+      {actionError && (
+        <div className="mb-6 p-4 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center justify-between">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} className="text-rose-500 hover:text-rose-800">
+            <span className="material-symbols-outlined text-sm">close</span>
+          </button>
+        </div>
+      )}
+
       {/* Main Status Cards */}
       {!isConnected ? (
         /* ============================================================== */
@@ -423,7 +437,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                   Empezá a cobrar con Mercado Pago en tu tienda
                 </h2>
                 <p className="text-sm text-neutral-600 leading-relaxed">
-                  No necesitás ser programador ni configurar claves complejas. Conectás tu cuenta de Mercado Pago en un solo paso y tus clientes podrán pagarte con tarjetas de crédito, débito y dinero en cuenta.
+                  No necesitás configurar claves complejas ni compartir contraseñas. Conectás tu cuenta de Mercado Pago en un solo paso y tus clientes podrán pagarte con tarjetas de crédito, débito y dinero en cuenta.
                 </p>
               </div>
 
@@ -493,11 +507,11 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                     </span>
                     {isSandboxStore ? (
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
-                        mpState.sandboxMode
+                        isCurrentSandbox
                           ? 'bg-purple-50 text-purple-700 border-purple-200'
                           : 'bg-emerald-50 text-emerald-700 border-emerald-200'
                       }`}>
-                        {mpState.sandboxMode ? 'Sandbox (Pruebas)' : 'Producción (Real)'}
+                        {isCurrentSandbox ? 'Sandbox (Pruebas)' : 'Producción (Real)'}
                       </span>
                     ) : (
                       <span className="text-[10px] font-bold text-neutral-600 bg-neutral-100 px-2 py-0.5 rounded-md border border-neutral-200">
@@ -506,12 +520,12 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                     )}
                   </div>
                   <h3 className="text-lg font-bold text-neutral-900 mt-1">
-                    {mpState.accountNickname || settings.storeName || 'Mi Tienda'}
+                    {currentNickname}
                   </h3>
                   <div className="flex flex-wrap items-center gap-y-1 gap-x-4 text-xs text-neutral-500 mt-1">
                     <span className="flex items-center gap-1">
                       <span className="material-symbols-outlined text-sm text-neutral-400">mail</span>
-                      {mpState.accountEmail || 'Sin email registrado'}
+                      {currentEmail || 'Sin email registrado'}
                     </span>
                     {mpState.connectedAt && (
                       <span className="flex items-center gap-1">
@@ -519,7 +533,18 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                         Vinculado el {new Date(mpState.connectedAt).toLocaleDateString()}
                       </span>
                     )}
+                    {currentExpiresAt && (
+                      <span className="flex items-center gap-1 text-neutral-400">
+                        <span className="material-symbols-outlined text-sm">schedule</span>
+                        Vigencia token: {new Date(currentExpiresAt).toLocaleDateString()}
+                      </span>
+                    )}
                   </div>
+                  {verifyMessage && (
+                    <div className="mt-2 text-xs font-semibold text-emerald-700 animate-fade-in">
+                      {verifyMessage}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -528,7 +553,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                 <button
                   type="button"
                   onClick={handleCheckConnection}
-                  disabled={isVerifying}
+                  disabled={isVerifying || isLoadingStatus}
                   className="px-3.5 py-2 text-xs font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                   title="Verificar conexión activa"
                 >
@@ -558,18 +583,18 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                     <span className="text-[10px] font-semibold px-1.5 py-0.5 bg-amber-200 text-amber-900 rounded">Admin Test</span>
                   </div>
                   <p className="text-[11px] text-neutral-500 mt-0.5">
-                    {mpState.sandboxMode
+                    {isCurrentSandbox
                       ? 'Activo: los pagos en esta tienda se procesan con tarjetas de prueba de Mercado Pago.'
                       : 'Activo en Producción: los pagos se procesan con tarjetas y saldo real.'}
                   </p>
                 </div>
                 <label className="flex items-center gap-2.5 cursor-pointer select-none">
                   <span className="text-xs font-bold text-neutral-700">
-                    {mpState.sandboxMode ? 'Sandbox (Test)' : 'Producción (Real)'}
+                    {isCurrentSandbox ? 'Sandbox (Test)' : 'Producción (Real)'}
                   </span>
                   <input
                     type="checkbox"
-                    checked={Boolean(mpState.sandboxMode)}
+                    checked={isCurrentSandbox}
                     onChange={(e) => handleToggleSandboxMode(e.target.checked)}
                     className="w-4 h-4 text-[#009EE3] rounded border-neutral-300 focus:ring-[#009EE3] cursor-pointer"
                   />
@@ -624,98 +649,6 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
           </div>
         </div>
       )}
-
-      {/* Advanced Developer Settings Accordion (Collapsed by default so regular merchants don't get confused) */}
-      <div className="mt-8 pt-6 border-t border-neutral-200">
-        <button
-          type="button"
-          onClick={() => setShowAdvanced(!showAdvanced)}
-          className="flex items-center justify-between w-full text-left text-xs font-semibold text-neutral-500 hover:text-neutral-800 py-2 transition-colors cursor-pointer"
-        >
-          <span className="flex items-center gap-1.5">
-            <span className="material-symbols-outlined text-sm">tune</span>
-            Opciones avanzadas para desarrolladores (opcional)
-          </span>
-          <span className="material-symbols-outlined text-sm">
-            {showAdvanced ? 'expand_less' : 'expand_more'}
-          </span>
-        </button>
-
-        {showAdvanced && (
-          <div className="mt-4 p-5 rounded-xl bg-neutral-50 border border-neutral-200 text-xs space-y-4 animate-fade-in">
-            <p className="text-neutral-600">
-              Por defecto, tu tienda se conecta en 1 clic utilizando la aplicación oficial de la plataforma. Si tenés una aplicación propia en Mercado Pago Developers y preferís usar credenciales técnicas manuales, podés cargarlas acá:
-            </p>
-
-            <form onSubmit={handleSaveAdvanced} className="space-y-3">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block font-semibold text-neutral-700">
-                    Access Token Personalizado (Opcional)
-                  </label>
-                  {mpState.accessToken && (
-                    <span className="text-[10px] font-mono text-neutral-500 bg-neutral-200/80 px-2 py-0.5 rounded font-medium">
-                      Configurado: {maskToken(mpState.accessToken)}
-                    </span>
-                  )}
-                </div>
-                <input
-                  type="password"
-                  value={customAccessToken}
-                  onChange={(e) => setCustomAccessToken(e.target.value)}
-                  placeholder={mpState.accessToken ? 'Ingresá un nuevo token para reemplazar...' : 'APP_USR-...'}
-                  className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-[#009EE3] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-neutral-700 mb-1">
-                  Public Key Personalizada (Opcional)
-                </label>
-                <input
-                  type="text"
-                  value={customPublicKey}
-                  onChange={(e) => setCustomPublicKey(e.target.value)}
-                  placeholder="APP_USR-..."
-                  className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-[#009EE3] focus:outline-none"
-                />
-              </div>
-
-              <div className="flex justify-end pt-2">
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white font-semibold rounded-lg text-xs transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  {isSaving ? 'Guardando...' : 'Guardar credenciales manuales'}
-                </button>
-              </div>
-            </form>
-
-            <div className="pt-3 border-t border-neutral-200">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[11px] font-bold text-neutral-700">URL de redireccionamiento (Callback) para MP Developers:</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const url = 'https://tienditas.ai.studio/api/mercadopago/oauth/callback';
-                    navigator.clipboard.writeText(url);
-                    setCopiedUrl(true);
-                    setTimeout(() => setCopiedUrl(false), 2000);
-                  }}
-                  className="text-[11px] font-semibold text-[#009EE3] hover:underline flex items-center gap-1 cursor-pointer"
-                >
-                  <span className="material-symbols-outlined text-xs">{copiedUrl ? 'check' : 'content_copy'}</span>
-                  <span>{copiedUrl ? '¡Copiada!' : 'Copiar URL'}</span>
-                </button>
-              </div>
-              <code className="block p-2 rounded-lg bg-white border border-neutral-200 text-[10px] text-neutral-700 font-mono break-all select-all">
-                https://tienditas.ai.studio/api/mercadopago/oauth/callback
-              </code>
-            </div>
-          </div>
-        )}
-      </div>
 
       {/* ============================================================== */}
       {/* 1-CLICK CONNECT MODAL                                          */}
@@ -781,7 +714,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                   </div>
                 </div>
 
-                {/* Exclusivo y ÚNICAMENTE para la tienda de pruebas Sandbox */}
+                {/* Exclusivo para la tienda de pruebas Sandbox */}
                 {isSandboxStore && (
                   <div className="pt-2">
                     <label className="flex items-start justify-between p-3 rounded-xl border border-amber-200 bg-amber-50/70 hover:bg-amber-100/60 transition-colors cursor-pointer gap-3">
@@ -916,14 +849,14 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                       setIsConnectModalOpen(false);
                       setConnectingStep('form');
                     }}
-                    className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:text-neutral-900 rounded-xl"
+                    className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:text-neutral-900 rounded-xl cursor-pointer"
                   >
                     Cerrar
                   </button>
                   <button
                     type="button"
                     onClick={handleStartOAuth}
-                    className="px-5 py-2 bg-[#009EE3] hover:bg-[#0089c7] text-white text-xs font-bold rounded-xl shadow-sm transition-all"
+                    className="px-5 py-2 bg-[#009EE3] hover:bg-[#0089c7] text-white text-xs font-bold rounded-xl shadow-sm transition-all cursor-pointer"
                   >
                     Reintentar vinculación
                   </button>
@@ -970,7 +903,7 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
               <button
                 type="button"
                 onClick={() => setIsDisconnectModalOpen(false)}
-                disabled={isSaving}
+                disabled={isDisconnecting}
                 className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:text-neutral-900 rounded-lg transition-colors cursor-pointer"
               >
                 Cancelar
@@ -978,10 +911,10 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
               <button
                 type="button"
                 onClick={handleDisconnect}
-                disabled={isSaving}
+                disabled={isDisconnecting}
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg shadow-sm transition-colors cursor-pointer disabled:opacity-50"
               >
-                {isSaving ? 'Desvinculando...' : 'Sí, desvincular'}
+                {isDisconnecting ? 'Desvinculando...' : 'Sí, desvincular'}
               </button>
             </div>
           </div>

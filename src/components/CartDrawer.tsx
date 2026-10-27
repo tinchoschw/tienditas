@@ -32,7 +32,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   const totalItemsCount = cart.reduce((acc, item) => acc + item.quantity, 0);
   const subtotal = cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
 
-  const isMpConnected = Boolean(settings.mercadoPago?.connected && (settings.mercadoPago?.accessToken || settings.mercadoPago?.accountEmail || settings.mercadoPago?.accountNickname));
+  const isMpConnected = Boolean(settings.mercadoPago?.connected && (settings.mercadoPago?.accountEmail || settings.mercadoPago?.accountNickname));
   const isMpEnabled = (featureFlags?.mercadoPagoCheckout !== false) && isMpConnected && (settings.mercadoPago?.enabled !== false);
   const isWaEnabled = featureFlags?.whatsappCheckout !== false;
 
@@ -263,7 +263,6 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
           externalReference: orderRef,
           storeSlug: storeSlug || 'tienda',
           storeName: settings.storeName || 'Tienda',
-          accessToken: mpConfig?.accessToken || undefined,
           sandboxMode: Boolean(mpConfig?.sandboxMode)
         })
       });

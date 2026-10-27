@@ -5,6 +5,9 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { initializeApp, getApps, App } from 'firebase-admin/app';
+import { getFirestore, Firestore, FieldValue } from 'firebase-admin/firestore';
+import { getAuth, Auth } from 'firebase-admin/auth';
 
 dotenv.config();
 
@@ -17,6 +20,32 @@ const PORT = Number(process.env.PORT) || 3000;
 // Allow large payloads for base64 image uploads
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ extended: true, limit: '60mb' }));
+
+// Initialize Firebase Admin with default environment credentials (Cloud Run default service account)
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zinc-doodad-wwh4c';
+const FIREBASE_DATABASE_ID = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || 'ai-studio-dee35615-acaf-42d4-984f-7cbc923722c4';
+
+let adminApp: App | null = null;
+let db: Firestore | null = null;
+let adminAuth: Auth | null = null;
+
+try {
+  if (getApps().length === 0) {
+    adminApp = initializeApp({
+      projectId: FIREBASE_PROJECT_ID,
+    });
+  } else {
+    adminApp = getApps()[0];
+  }
+  db = getFirestore(adminApp, FIREBASE_DATABASE_ID);
+  adminAuth = getAuth(adminApp);
+  console.log(`[Firebase Admin] Inicializado exitosamente para projectId="${FIREBASE_PROJECT_ID}" y databaseId="${FIREBASE_DATABASE_ID}".`);
+} catch (adminErr: any) {
+  console.error('[Firebase Admin Fatal Error] No se pudo inicializar firebase-admin con las credenciales por defecto del entorno:', adminErr?.message || adminErr);
+  adminApp = null;
+  db = null;
+  adminAuth = null;
+}
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -918,94 +947,50 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
 
     const nowIso = new Date().toISOString();
 
-    // Direct Firestore update if configured
-    const fsProjectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zinc-doodad-wwh4c';
-    const fsDbId = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || 'ai-studio-dee35615-acaf-42d4-984f-7cbc923722c4';
-    const fsApiKey = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || '';
+    if (!db) {
+      console.error('[Mercado Pago OAuth] Fatal: Firestore Admin no está inicializado. No se pueden guardar credenciales.');
+      return res.status(500).send('Error interno del servidor: Base de datos no disponible.');
+    }
 
-    if (fsProjectId && fsDbId) {
+    try {
+      // 1. Guardar tokens en documento privado stores/{slug}/private/mercadopago
+      await db.doc(`stores/${targetStore}/private/mercadopago`).set({
+        accessToken: merchantAccessToken,
+        refreshToken: merchantRefreshToken || '',
+        publicKey: merchantPublicKey || '',
+        expiresIn: expiresIn || 0,
+        expiresAt: expiresAt || '',
+        updatedAt: nowIso,
+      }, { merge: true });
+
+      // 2. stores/{slug}/settings/current -> mercadoPago conserva únicamente campos no secretos
+      await db.doc(`stores/${targetStore}/settings/current`).set({
+        mercadoPago: {
+          connected: true,
+          enabled: true,
+          accountEmail: email,
+          accountNickname: nickname,
+          connectedAt: nowIso,
+          lastVerifiedAt: nowIso,
+          sandboxMode: isSandbox,
+        },
+        updatedAt: nowIso,
+      }, { merge: true });
+
+      // Borrar cualquier campo secreto previo en settings si existía
       try {
-        const keyParam = fsApiKey ? `&key=${encodeURIComponent(fsApiKey)}` : '';
-        const maskFields = [
-          'mercadoPago.connected',
-          'mercadoPago.enabled',
-          'mercadoPago.accountEmail',
-          'mercadoPago.accountNickname',
-          'mercadoPago.connectedAt',
-          'mercadoPago.lastVerifiedAt',
-          'mercadoPago.accessToken',
-          'mercadoPago.publicKey',
-          'mercadoPago.sandboxMode',
-          'updatedAt',
-        ];
-        if (merchantRefreshToken) {
-          maskFields.push('mercadoPago.refreshToken');
-        }
-        if (expiresIn > 0) {
-          maskFields.push('mercadoPago.expiresIn');
-          maskFields.push('mercadoPago.expiresAt');
-        }
-
-        const maskQuery = maskFields.map((f) => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
-        const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${targetStore}/settings/current?${maskQuery}${keyParam}`;
-
-        const mpFields: Record<string, any> = {
-          connected: { booleanValue: true },
-          enabled: { booleanValue: true },
-          accountEmail: { stringValue: email },
-          accountNickname: { stringValue: nickname },
-          connectedAt: { stringValue: nowIso },
-          lastVerifiedAt: { stringValue: nowIso },
-          accessToken: { stringValue: merchantAccessToken },
-          publicKey: { stringValue: merchantPublicKey },
-          sandboxMode: { booleanValue: isSandbox },
-        };
-        if (merchantRefreshToken) {
-          mpFields.refreshToken = { stringValue: merchantRefreshToken };
-        }
-        if (expiresIn > 0) {
-          mpFields.expiresIn = { integerValue: String(expiresIn) };
-          mpFields.expiresAt = { stringValue: expiresAt };
-        }
-
-        const patchRes = await fetch(firestoreUrl, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fields: {
-              mercadoPago: {
-                mapValue: {
-                  fields: mpFields,
-                },
-              },
-              updatedAt: { stringValue: nowIso },
-            },
-          }),
+        await db.doc(`stores/${targetStore}/settings/current`).update({
+          'mercadoPago.accessToken': FieldValue.delete(),
+          'mercadoPago.refreshToken': FieldValue.delete(),
+          'mercadoPago.publicKey': FieldValue.delete(),
+          'mercadoPago.expiresIn': FieldValue.delete(),
+          'mercadoPago.expiresAt': FieldValue.delete(),
         });
+      } catch (_) {}
 
-        const patchStatus = patchRes.status;
-        const patchText = await patchRes.text();
-        let sanitizedLog = patchText
-          .replace(new RegExp(merchantAccessToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '••••••••')
-          .replace(new RegExp(merchantPublicKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '••••••••');
-        if (merchantRefreshToken) {
-          sanitizedLog = sanitizedLog.replace(new RegExp(merchantRefreshToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '••••••••');
-        }
-        sanitizedLog = sanitizedLog
-          .replace(/TG-[a-zA-Z0-9_-]+/g, 'TG-••••••••')
-          .replace(/TEST-[a-zA-Z0-9_-]+/g, 'TEST-••••••••')
-          .replace(/APP_USR-[a-zA-Z0-9_-]+/g, 'APP_USR-••••••••');
-
-        console.log(`[Mercado Pago OAuth -> Firestore PATCH] TargetStore: "${targetStore}" | Status: ${patchStatus} | Response:`, sanitizedLog);
-
-        if (!patchRes.ok) {
-          console.error(`[Mercado Pago OAuth] Failed to update Firestore settings for store "${targetStore}". Status: ${patchStatus}`);
-        } else {
-          console.log(`[Mercado Pago OAuth] Successfully updated Firestore settings for store "${targetStore}" with tokens!`);
-        }
-      } catch (fsErr: any) {
-        console.warn('[Mercado Pago OAuth] Could not update Firestore directly, error:', fsErr?.message || fsErr);
-      }
+      console.log(`[Mercado Pago OAuth] Credenciales guardadas exitosamente en stores/${targetStore}/private/mercadopago y configuración pública actualizada.`);
+    } catch (fsErr: any) {
+      console.error(`[Mercado Pago OAuth] Error al guardar en Firestore para "${targetStore}":`, fsErr?.message || fsErr);
     }
 
     // Success URL for non-popup fallbacks (Tarea 1: no exponer accessToken en la URL)
@@ -1090,31 +1075,258 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
   }
 });
 
-// Helper to retrieve store's Mercado Pago Access Token from Firestore
+// Helper to retrieve store's Mercado Pago Access Token securely from Firestore via firebase-admin
 async function getStoreAccessToken(storeSlug: string): Promise<string | null> {
-  if (!storeSlug) return null;
-  const fsProjectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zinc-doodad-wwh4c';
-  const fsDbId = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || 'ai-studio-dee35615-acaf-42d4-984f-7cbc923722c4';
-  const fsApiKey = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || '';
+  if (!storeSlug || !db) return null;
+  const cleanStore = storeSlug.toLowerCase().trim();
 
   try {
-    const keyParam = fsApiKey ? `?key=${encodeURIComponent(fsApiKey)}` : '';
-    const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${storeSlug}/settings/current${keyParam}`;
+    // 1. Check private document stores/{cleanStore}/private/mercadopago
+    const privateRef = db.doc(`stores/${cleanStore}/private/mercadopago`);
+    const privateSnap = await privateRef.get();
 
-    const res = await fetch(firestoreUrl);
-    if (!res.ok) {
-      return null;
+    if (privateSnap.exists) {
+      const pData = privateSnap.data() || {};
+      let accessToken = pData.accessToken;
+      const refreshToken = pData.refreshToken;
+      const expiresAt = pData.expiresAt;
+
+      // Renovación automática con refresh_token si expiró o está por expirar en los próximos 5 minutos
+      if (refreshToken && expiresAt) {
+        const expiresAtTime = new Date(expiresAt).getTime();
+        const nowTime = Date.now();
+        if (expiresAtTime - nowTime < 5 * 60 * 1000) {
+          console.log(`[Mercado Pago Token Refresh] Token próximo a expirar para "${cleanStore}", renovando con refresh_token...`);
+          try {
+            const clientId = platformMpConfig.clientId || MP_CLIENT_ID;
+            const clientSecret = process.env.MERCADOPAGO_CLIENT_SECRET;
+            if (clientId && clientSecret) {
+              const refreshRes = await fetch('https://api.mercadopago.com/oauth/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  client_id: clientId,
+                  client_secret: clientSecret,
+                  grant_type: 'refresh_token',
+                  refresh_token: refreshToken,
+                }),
+              });
+              const rData: any = await refreshRes.json();
+              if (refreshRes.ok && rData.access_token) {
+                accessToken = rData.access_token;
+                const newExpIn = Number(rData.expires_in) || 0;
+                const newExpAt = newExpIn > 0 ? new Date(Date.now() + newExpIn * 1000).toISOString() : '';
+                await privateRef.set({
+                  accessToken: rData.access_token,
+                  refreshToken: rData.refresh_token || refreshToken,
+                  publicKey: rData.public_key || pData.publicKey || '',
+                  expiresIn: newExpIn,
+                  expiresAt: newExpAt,
+                  updatedAt: new Date().toISOString(),
+                }, { merge: true });
+
+                // Actualizar timestamp en configuración pública de la tienda
+                await db.doc(`stores/${cleanStore}/settings/current`).set({
+                  mercadoPago: {
+                    lastVerifiedAt: new Date().toISOString(),
+                  },
+                }, { merge: true });
+                console.log(`[Mercado Pago Token Refresh] Token renovado exitosamente para "${cleanStore}".`);
+              } else {
+                console.warn(`[Mercado Pago Token Refresh] Error de MP al renovar token para "${cleanStore}":`, rData);
+              }
+            }
+          } catch (rErr) {
+            console.error(`[Mercado Pago Token Refresh] Error durante renovación para "${cleanStore}":`, rErr);
+          }
+        }
+      }
+
+      if (accessToken && typeof accessToken === 'string' && accessToken.trim()) {
+        return accessToken.trim();
+      }
     }
-    const doc: any = await res.json();
-    const fields = doc.fields || {};
-    const mpMap = fields.mercadoPago?.mapValue?.fields || {};
-    const token = mpMap.accessToken?.stringValue;
-    return token && token.trim() ? token.trim() : null;
+
+    // 2. Migración automática: si no existe private/mercadopago pero settings.mercadoPago tiene accessToken
+    const settingsRef = db.doc(`stores/${cleanStore}/settings/current`);
+    const settingsSnap = await settingsRef.get();
+
+    if (settingsSnap.exists) {
+      const sData = settingsSnap.data() || {};
+      const mpData = sData.mercadoPago || {};
+
+      if (mpData.accessToken && typeof mpData.accessToken === 'string' && mpData.accessToken.trim()) {
+        console.log(`[Mercado Pago Migración] Migrando credenciales desde settings/current a private/mercadopago para "${cleanStore}"...`);
+        const tokenToMigrate = mpData.accessToken.trim();
+
+        // Guardar en el documento privado
+        await privateRef.set({
+          accessToken: tokenToMigrate,
+          refreshToken: mpData.refreshToken || '',
+          publicKey: mpData.publicKey || '',
+          expiresIn: mpData.expiresIn || 0,
+          expiresAt: mpData.expiresAt || '',
+          migratedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+
+        // Limpiar campos secretos de settings/current
+        await settingsRef.update({
+          'mercadoPago.accessToken': FieldValue.delete(),
+          'mercadoPago.refreshToken': FieldValue.delete(),
+          'mercadoPago.publicKey': FieldValue.delete(),
+          'mercadoPago.expiresIn': FieldValue.delete(),
+          'mercadoPago.expiresAt': FieldValue.delete(),
+        });
+
+        console.log(`[Mercado Pago Migración] Migración automática completada para "${cleanStore}".`);
+        return tokenToMigrate;
+      }
+    }
+
+    return null;
   } catch (err) {
-    console.warn(`[Firestore] Error fetching store settings for "${storeSlug}":`, err);
+    console.warn(`[Firestore Admin] Error obteniendo token de tienda para "${cleanStore}":`, err);
     return null;
   }
 }
+
+// Endpoint público de estado de Mercado Pago (NUNCA devuelve tokens secretos)
+app.get('/api/mercadopago/status', async (req, res) => {
+  try {
+    const rawStoreSlug = req.query.storeSlug || '';
+    const storeSlug = String(rawStoreSlug).toLowerCase().trim();
+
+    if (!storeSlug) {
+      return res.status(400).json({ error: 'Falta el parámetro storeSlug.' });
+    }
+
+    if (!db) {
+      return res.status(500).json({ error: 'Base de datos no inicializada.' });
+    }
+
+    // Asegurar migración si aún no se realizó
+    const privateRef = db.doc(`stores/${storeSlug}/private/mercadopago`);
+    let privateSnap = await privateRef.get();
+
+    const settingsRef = db.doc(`stores/${storeSlug}/settings/current`);
+    const settingsSnap = await settingsRef.get();
+    const settingsData = settingsSnap.exists ? settingsSnap.data() || {} : {};
+    const mpSettings = settingsData.mercadoPago || {};
+
+    if (!privateSnap.exists && mpSettings.accessToken) {
+      await getStoreAccessToken(storeSlug);
+      privateSnap = await privateRef.get();
+    }
+
+    const privateData = privateSnap.exists ? privateSnap.data() || {} : {};
+
+    const hasPrivateToken = Boolean(privateData.accessToken);
+    const connected = Boolean(mpSettings.connected || hasPrivateToken);
+    const enabled = connected && mpSettings.enabled !== false;
+
+    // Devuelve ÚNICAMENTE campos no secretos y expiresAt
+    return res.json({
+      connected,
+      enabled,
+      accountEmail: mpSettings.accountEmail || '',
+      accountNickname: mpSettings.accountNickname || '',
+      sandboxMode: Boolean(mpSettings.sandboxMode),
+      expiresAt: privateData.expiresAt || mpSettings.expiresAt || '',
+    });
+  } catch (err: any) {
+    console.error('Error in /api/mercadopago/status:', err);
+    return res.status(500).json({ error: err?.message || 'Error al obtener estado de Mercado Pago' });
+  }
+});
+
+// Endpoint seguro para desvincular Mercado Pago desde el servidor
+app.post('/api/mercadopago/disconnect', async (req, res) => {
+  try {
+    const rawStoreSlug = req.body?.storeSlug || req.query.storeSlug || '';
+    const storeSlug = String(rawStoreSlug).toLowerCase().trim();
+
+    if (!storeSlug) {
+      return res.status(400).json({ error: 'Falta el parámetro storeSlug.' });
+    }
+
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No autorizado. Se requiere token de sesión Bearer.' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1].trim();
+    if (!adminAuth || !db) {
+      return res.status(500).json({ error: 'Servicio de autenticación o base de datos no disponible.' });
+    }
+
+    let decodedToken;
+    try {
+      decodedToken = await adminAuth.verifyIdToken(idToken);
+    } catch (verifyErr: any) {
+      console.warn('[Mercado Pago Disconnect] Token ID inválido:', verifyErr?.message);
+      return res.status(401).json({ error: 'Token de autenticación inválido o expirado.' });
+    }
+
+    const userEmail = (decodedToken.email || '').toLowerCase().trim();
+
+    // Validar que el usuario sea el owner de la tienda o yunior@gmail.com
+    const storeRef = db.doc(`stores/${storeSlug}`);
+    const storeSnap = await storeRef.get();
+
+    if (!storeSnap.exists) {
+      return res.status(404).json({ error: 'La tienda no existe.' });
+    }
+
+    const storeData = storeSnap.data() || {};
+    const ownerEmail = (storeData.ownerEmail || '').toLowerCase().trim();
+
+    const isSuperAdmin = userEmail === 'yunior@gmail.com';
+    const isOwner = Boolean(ownerEmail && userEmail === ownerEmail);
+
+    if (!isSuperAdmin && !isOwner) {
+      return res.status(403).json({ error: 'No tienes permisos para modificar esta tienda.' });
+    }
+
+    // 1. Borrar documento privado
+    try {
+      await db.doc(`stores/${storeSlug}/private/mercadopago`).delete();
+    } catch (delErr) {
+      console.warn(`[Disconnect] Error al eliminar documento privado para "${storeSlug}":`, delErr);
+    }
+
+    // 2. Limpiar campos en stores/{slug}/settings/current
+    const nowIso = new Date().toISOString();
+    await db.doc(`stores/${storeSlug}/settings/current`).set({
+      mercadoPago: {
+        connected: false,
+        enabled: false,
+        accountEmail: '',
+        accountNickname: '',
+        sandboxMode: false,
+        connectedAt: '',
+        lastVerifiedAt: '',
+      },
+      updatedAt: nowIso,
+    }, { merge: true });
+
+    try {
+      await db.doc(`stores/${storeSlug}/settings/current`).update({
+        'mercadoPago.accessToken': FieldValue.delete(),
+        'mercadoPago.refreshToken': FieldValue.delete(),
+        'mercadoPago.publicKey': FieldValue.delete(),
+        'mercadoPago.expiresIn': FieldValue.delete(),
+        'mercadoPago.expiresAt': FieldValue.delete(),
+      });
+    } catch (_) {}
+
+    console.log(`[Mercado Pago Disconnect] Tienda "${storeSlug}" desvinculada exitosamente por ${userEmail}.`);
+    return res.json({ success: true, message: 'Mercado Pago desvinculado exitosamente.' });
+  } catch (err: any) {
+    console.error('Error in /api/mercadopago/disconnect:', err);
+    return res.status(500).json({ error: err?.message || 'Error al desvincular Mercado Pago' });
+  }
+});
 
 // Endpoint to create a Checkout Pro Preference (Tarea 3)
 app.post('/api/mercadopago/create-preference', async (req, res) => {
@@ -1125,7 +1337,7 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       externalReference,
       storeSlug,
       storeName,
-      // accessToken from req.body is intentionally IGNORED per Tarea 3
+      // accessToken from req.body is intentionally IGNORED per security rules
       sandboxMode = false,
       backUrls,
     } = req.body;
@@ -1139,7 +1351,7 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       return res.status(400).json({ error: 'Se requiere el identificador de la tienda (storeSlug).' });
     }
 
-    // 1. Obtener el token del comercio directamente desde Firestore usando storeSlug
+    // 1. Obtener el token del comercio directamente desde Firestore usando firebase-admin
     const token = await getStoreAccessToken(cleanStoreSlug);
 
     if (!token) {
@@ -1190,6 +1402,47 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
     // Add notification webhook URL using PUBLIC_BASE_URL
     preferencePayload.notification_url = `${PUBLIC_BASE_URL}/api/mercadopago/webhook?storeSlug=${encodeURIComponent(cleanStoreSlug)}`;
 
+    // Creación o registro de la venta en Firestore con firebase-admin al crear la preferencia
+    if (db && externalReference && cleanStoreSlug) {
+      try {
+        const saleRef = db.doc(`stores/${cleanStoreSlug}/sales/${externalReference}`);
+        const saleSnap = await saleRef.get();
+        if (!saleSnap.exists) {
+          const calculatedTotal = formattedItems.reduce((acc, it) => acc + (it.unit_price * it.quantity), 0);
+          const nowIso = new Date().toISOString();
+          await saleRef.set({
+            id: externalReference,
+            date: nowIso.slice(0, 10),
+            customer: (payer?.name ? `${payer.name} ${payer.surname || ''}`.trim() : '') || 'Cliente Tienda Online',
+            contactInfo: payer?.phone ? String(payer.phone) : (payer?.email || 'Venta Online'),
+            customerEmail: payer?.email || '',
+            customerPhone: payer?.phone ? String(payer.phone) : '',
+            dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+            items: formattedItems.map((it: any) => ({
+              productId: it.id || '',
+              productName: it.title || 'Prenda',
+              quantity: it.quantity || 1,
+              unitPrice: it.unit_price || 0,
+              totalPrice: (it.unit_price || 0) * (it.quantity || 1),
+            })),
+            subtotal: calculatedTotal,
+            total: calculatedTotal,
+            paidTotal: 0,
+            pendingBalance: calculatedTotal,
+            status: 'pendiente_total',
+            stockDiscounted: true,
+            channel: 'mercadopago',
+            payments: [],
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          });
+          console.log(`[Mercado Pago Preference] Venta "${externalReference}" creada/asegurada en Firestore con firebase-admin.`);
+        }
+      } catch (saleErr) {
+        console.warn(`[Mercado Pago Preference] No se pudo crear/verificar venta "${externalReference}":`, saleErr);
+      }
+    }
+
     const mpResponse = await fetch('https://api.mercadopago.com/checkout/preferences', {
       method: 'POST',
       headers: {
@@ -1209,11 +1462,10 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       });
     }
 
-    // (1) Usar SIEMPRE data.init_point como URL de checkout, también en sandbox
+    // Usar SIEMPRE data.init_point como URL de checkout, también en sandbox
     const isSandbox = Boolean(sandboxMode) || (typeof token === 'string' && token.startsWith('TEST-'));
     const checkoutUrl = data.init_point;
 
-    // 3. Logueá el collector_id y el id de la preferencia creada, sin imprimir tokens
     console.log(`[Mercado Pago Preference Created] Preference ID: "${data.id}", Collector ID: "${data.collector_id}", Store: "${cleanStoreSlug}", External Reference: "${preferencePayload.external_reference}" | Sandbox: ${isSandbox}`);
 
     return res.json({
@@ -1235,12 +1487,19 @@ app.post('/api/mercadopago/webhook', async (req, res) => {
   try {
     const { type, data, action } = req.body || {};
     const queryType = req.query.type || req.query.topic;
+    const notificationType = String(type || queryType || 'payment').toLowerCase().trim();
     const paymentId = (data && data.id) || req.query.id || req.query['data.id'];
     const rawStoreSlug = req.query.storeSlug || '';
     const storeSlug = String(rawStoreSlug).toLowerCase().trim();
 
+    // Ignorar notificaciones que no sean de pago (por ejemplo merchant_order)
+    if (notificationType !== 'payment' && !notificationType.includes('payment') && action && !action.startsWith('payment.')) {
+      console.log(`[Mercado Pago Webhook] Notificación ignorada (no es pago): type=${notificationType}, action=${action || 'none'}`);
+      return res.status(200).json({ status: 'ignored', reason: 'not_a_payment_notification' });
+    }
+
     // Log 1: Recibido
-    console.log(`[Mercado Pago Webhook] 1. Notificación recibida: type=${type || queryType || 'payment'}, paymentId=${paymentId || 'none'}, storeSlug=${storeSlug || 'none'}, action=${action || 'none'}`);
+    console.log(`[Mercado Pago Webhook] 1. Notificación recibida: type=${notificationType}, paymentId=${paymentId || 'none'}, storeSlug=${storeSlug || 'none'}, action=${action || 'none'}`);
 
     if (!paymentId) {
       return res.status(200).json({ status: 'ok', message: 'No paymentId provided' });
@@ -1251,7 +1510,7 @@ app.post('/api/mercadopago/webhook', async (req, res) => {
       return res.status(200).json({ status: 'ok', warning: 'missing_store_slug' });
     }
 
-    // 1. Obtener el token del comercio desde Firestore
+    // 1. Obtener el token del comercio desde Firestore usando firebase-admin
     const merchantToken = await getStoreAccessToken(storeSlug);
 
     // Log 2: Token encontrado sí/no
@@ -1282,39 +1541,29 @@ app.post('/api/mercadopago/webhook', async (req, res) => {
 
     // 3. Solo marcar como cobrada_total si status es 'approved' y external_reference existe en la tienda
     if (paymentStatus === 'approved' && extRef) {
-      const fsProjectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'zinc-doodad-wwh4c';
-      const fsDbId = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || 'ai-studio-dee35615-acaf-42d4-984f-7cbc923722c4';
-      const fsApiKey = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || '';
-      const keyParam = fsApiKey ? `?key=${encodeURIComponent(fsApiKey)}` : '';
-      const saleUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${storeSlug}/sales/${extRef}${keyParam}`;
-
-      // Verificar que la venta exista en la tienda
-      const checkSaleRes = await fetch(saleUrl);
-      if (checkSaleRes.ok) {
-        const patchUrl = `https://firestore.googleapis.com/v1/projects/${fsProjectId}/databases/${fsDbId}/documents/stores/${storeSlug}/sales/${extRef}?updateMask.fieldPaths=status&updateMask.fieldPaths=paidTotal&updateMask.fieldPaths=pendingBalance&updateMask.fieldPaths=updatedAt${fsApiKey ? `&key=${encodeURIComponent(fsApiKey)}` : ''}`;
-        const nowIso = new Date().toISOString();
-
-        const patchRes = await fetch(patchUrl, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fields: {
-              status: { stringValue: 'cobrada_total' },
-              paidTotal: { doubleValue: Number(paymentData.transaction_amount) || 0 },
-              pendingBalance: { doubleValue: 0 },
-              updatedAt: { stringValue: nowIso },
-            },
-          }),
-        });
-
-        // Log 4: Venta actualizada sí/no
-        if (patchRes.ok) {
-          console.log(`[Mercado Pago Webhook] 4. Venta actualizada: SÍ (Venta ${extRef} de la tienda "${storeSlug}" actualizada a 'cobrada_total').`);
-        } else {
-          console.warn(`[Mercado Pago Webhook] 4. Venta actualizada: NO (Error al actualizar venta en Firestore: status ${patchRes.status}).`);
-        }
+      if (!db) {
+        console.error('[Mercado Pago Webhook] 4. Venta actualizada: NO (Error de base de datos: Firestore Admin no inicializado).');
       } else {
-        console.warn(`[Mercado Pago Webhook] 4. Venta actualizada: NO (La venta ${extRef} no existe en la tienda "${storeSlug}").`);
+        try {
+          const saleRef = db.doc(`stores/${storeSlug}/sales/${extRef}`);
+          const saleSnap = await saleRef.get();
+
+          if (!saleSnap.exists) {
+            console.warn(`[Mercado Pago Webhook] 4. Venta actualizada: NO (La venta "${extRef}" no existe en la tienda "${storeSlug}").`);
+          } else {
+            const nowIso = new Date().toISOString();
+            const amount = Number(paymentData.transaction_amount) || 0;
+            await saleRef.update({
+              status: 'cobrada_total',
+              paidTotal: amount,
+              pendingBalance: 0,
+              updatedAt: nowIso,
+            });
+            console.log(`[Mercado Pago Webhook] 4. Venta actualizada: SÍ (Venta "${extRef}" de la tienda "${storeSlug}" actualizada a 'cobrada_total').`);
+          }
+        } catch (firestoreError: any) {
+          console.error(`[Mercado Pago Webhook] 4. Venta actualizada: NO (Error de permisos u otro error de Firestore: ${firestoreError?.message || firestoreError}).`);
+        }
       }
     } else {
       console.log(`[Mercado Pago Webhook] 4. Venta no actualizada (Estado no aprobado o sin external_reference: status=${paymentStatus}).`);

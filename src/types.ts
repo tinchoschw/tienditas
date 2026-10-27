@@ -117,12 +117,17 @@ export interface MercadoPagoConfig {
   accountNickname?: string;
   connectedAt?: string;
   sandboxMode?: boolean;
-  publicKey?: string;
-  accessToken?: string;
-  refreshToken?: string;
-  expiresIn?: number;
   expiresAt?: string;
   lastVerifiedAt?: string;
+}
+
+export interface MercadoPagoStatusResponse {
+  connected: boolean;
+  enabled: boolean;
+  accountEmail: string;
+  accountNickname: string;
+  sandboxMode: boolean;
+  expiresAt: string;
 }
 
 export interface StoreFeatureFlags {

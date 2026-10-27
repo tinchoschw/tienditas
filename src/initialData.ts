@@ -103,8 +103,6 @@ export const INITIAL_SETTINGS: StoreSettings = {
     enabled: false,
     accountNickname: '',
     accountEmail: '',
-    accessToken: '',
-    publicKey: '',
     sandboxMode: false
   }
 };

@@ -21,10 +21,10 @@ service cloud.firestore {
 
     // STORES COLLECTION
     match /stores/{storeId} {
-      // Public storefront can read store profile
+      // Lectura pública de perfiles de tiendas
       allow read: if true;
       
-      // Store registration: signed-in users can create their own trial store
+      // Registro de tiendas: usuarios autenticados pueden crear su propia tienda trial
       allow create: if isSuperAdmin() || (
         isSignedIn() && 
         request.resource.data.ownerEmail != null &&
@@ -34,8 +34,7 @@ service cloud.firestore {
         request.resource.data.status == 'active'
       );
       
-      // Store update: Superadmin can update anything.
-      // Store Owner CANNOT modify plan, planEndsAt, extensions, ownerEmail.
+      // Actualización de tiendas: Superadmin o dueño (sin poder alterar plan, vencimiento ni email)
       allow update: if isSuperAdmin() || (
         isStoreOwner(resource.data) &&
         request.resource.data.plan == resource.data.plan &&
@@ -49,46 +48,56 @@ service cloud.firestore {
       
       allow delete: if isSuperAdmin();
       
-      // PERIODS SUBCOLLECTION:
-      // Only Superadmin can write/update periods.
-      // Store owner or Superadmin can read periods.
+      // PERIODOS DE PAGO:
+      // Lectura para dueño o Superadmin; escritura solo Superadmin
       match /periods/{periodId} {
         allow read: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
         allow write: if isSuperAdmin();
       }
 
-      // Store settings subcollection
+      // CONFIGURACIÓN DE TIENDA:
+      // Lectura pública; escritura solo dueño o Superadmin
       match /settings/{docId} {
         allow read: if true;
         allow write: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
       }
       
-      // Store products subcollection
+      // PRODUCTOS DE TIENDA:
+      // Lectura pública; escritura solo dueño o Superadmin
       match /products/{productId} {
         allow read: if true;
         allow write: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
       }
       
-      // Store sales subcollection
+      // VENTAS DE TIENDA:
+      // Checkout público puede crear ventas (allow create)
+      // Lectura, actualización y borrado SOLO para el dueño de la tienda o superadmin
       match /sales/{saleId} {
         allow create: if true;
         allow read, update, delete: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
       }
+
+      // DOCUMENTOS PRIVADOS:
+      // Tokens de Mercado Pago y secretos de backend.
+      // Inaccesible para el frontend (allow read, write: if false;), solo accesible vía firebase-admin.
+      match /private/{document=**} {
+        allow read, write: if false;
+      }
     }
 
-    // GLOBAL PLATFORM CONFIG (PRICING & SUPPORT)
+    // CONFIGURACIÓN GLOBAL DE PLATAFORMA (PRECIOS Y SOPORTE)
     match /platformConfig/{docId} {
       allow read: if true;
       allow write: if isSuperAdmin();
     }
 
-    // FEEDBACK COLLECTION (Closure & Friends and Family)
+    // FEEDBACK DE CIERRE Y FRIENDS & FAMILY
     match /feedback/{feedbackId} {
       allow create: if isSignedIn();
       allow read, delete, update: if isSuperAdmin();
     }
 
-    // Legacy collections fallback
+    // COLECCIONES LEGACY
     match /storeSettings/{docId} {
       allow read: if true;
       allow write: if isSuperAdmin();
@@ -102,9 +111,6 @@ service cloud.firestore {
     }
     match /users/{userId} {
       allow read, write: if isSignedIn();
-    }
-    match /test/{docId} {
-      allow read, write: if true;
     }
   }
 }
