@@ -10,6 +10,7 @@ import {
 } from '../services/db';
 import { StoreSubscriptionManagerModal } from './StoreSubscriptionManagerModal';
 import { FeedbackViewerModal } from './FeedbackViewerModal';
+import { auth } from '../firebase';
 
 interface SuperAdminViewProps {
   stores: Store[];
@@ -126,125 +127,71 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     }
   };
 
-  // Platform Mercado Pago Master Settings Modal
+  // Platform Mercado Pago Master Settings (Read-Only)
   const [isPlatformMpModalOpen, setIsPlatformMpModalOpen] = useState(false);
-  const [platformPublicKey, setPlatformPublicKey] = useState('');
-  const [platformAccessToken, setPlatformAccessToken] = useState('');
-  const [showPlatformToken, setShowPlatformToken] = useState(false);
-  const [platformSandboxMode, setPlatformSandboxMode] = useState(true);
-  const [isVerifyingMp, setIsVerifyingMp] = useState(false);
-  const [isSavingPlatformMp, setIsSavingPlatformMp] = useState(false);
   const [activeMpModalTab, setActiveMpModalTab] = useState<'credentials' | 'guide' | 'cards'>('credentials');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [mpVerifyResult, setMpVerifyResult] = useState<{
-    valid?: boolean;
-    nickname?: string;
-    email?: string;
-    siteId?: string;
-    error?: string;
-  } | null>({
-    valid: true,
-    nickname: 'Cuenta de Desarrollo (Sandbox)',
-    email: 'yunior@gmail.com',
-    siteId: 'MLA'
-  });
+  const [isLoadingPlatformMp, setIsLoadingPlatformMp] = useState(false);
+  const [platformMpError, setPlatformMpError] = useState<string | null>(null);
+  const [platformMpStatus, setPlatformMpStatus] = useState<{
+    production: {
+      appId: string;
+      clientId: string;
+      hasClientSecret: boolean;
+      hasPublicKey: boolean;
+      hasAccessToken: boolean;
+    };
+    sandbox: {
+      appId: string;
+      clientId: string;
+      hasClientSecret: boolean;
+      hasPublicKey: boolean;
+      hasAccessToken: boolean;
+    };
+    sandboxStores: string[];
+    redirectUri: string;
+    baseUrl: string;
+  } | null>(null);
+
+  const fetchPlatformMpStatus = async () => {
+    setIsLoadingPlatformMp(true);
+    setPlatformMpError(null);
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        setPlatformMpError('Debes iniciar sesión con tu cuenta de Google (SuperAdmin) para ver esta configuración.');
+        return;
+      }
+      const idToken = await currentUser.getIdToken();
+      const res = await fetch('/api/platform/mercadopago', {
+        headers: {
+          'Authorization': `Bearer ${idToken}`,
+        },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPlatformMpStatus(data);
+      } else {
+        setPlatformMpError(data.error || 'Error al obtener la configuración de Mercado Pago.');
+      }
+    } catch (err: any) {
+      console.warn('Could not load MP platform config:', err);
+      setPlatformMpError(err?.message || 'Error de conexión con el servidor.');
+    } finally {
+      setIsLoadingPlatformMp(false);
+    }
+  };
 
   useEffect(() => {
-    fetch('/api/platform/mercadopago')
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.publicKey) setPlatformPublicKey(d.publicKey);
-        if (d.accessToken) setPlatformAccessToken(d.accessToken);
-        if (typeof d.sandboxMode === 'boolean') setPlatformSandboxMode(d.sandboxMode);
-        if (d.accountNickname) {
-          setMpVerifyResult({
-            valid: true,
-            nickname: d.accountNickname,
-            email: d.accountEmail || '',
-            siteId: 'MLA'
-          });
-        }
-      })
-      .catch((err) => console.warn('Could not load MP platform config:', err));
-  }, []);
+    if (isAuthenticated || isPlatformMpModalOpen) {
+      fetchPlatformMpStatus();
+    }
+  }, [isAuthenticated, isPlatformMpModalOpen]);
 
   const handleCopy = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
     setCopiedKey(label);
     setTimeout(() => setCopiedKey(null), 2000);
-  };
-
-  const handleVerifyPlatformMp = async () => {
-    if (!platformAccessToken.trim()) {
-      showToast('Debes ingresar un Access Token para verificar.');
-      return;
-    }
-    setIsVerifyingMp(true);
-    setMpVerifyResult(null);
-    try {
-      const res = await fetch('/api/mercadopago/verify-credentials', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accessToken: platformAccessToken.trim() })
-      });
-      const data = await res.json();
-      if (res.ok && data.valid) {
-        setMpVerifyResult({
-          valid: true,
-          nickname: data.nickname,
-          email: data.email,
-          siteId: data.siteId
-        });
-        showToast('¡Credenciales validadas con éxito con Mercado Pago!');
-      } else {
-        setMpVerifyResult({
-          valid: false,
-          error: data.error || 'Credenciales no válidas.'
-        });
-        showToast('Error de validación con Mercado Pago.');
-      }
-    } catch (err: any) {
-      setMpVerifyResult({
-        valid: false,
-        error: err.message || 'Error de red.'
-      });
-    } finally {
-      setIsVerifyingMp(false);
-    }
-  };
-
-  const handleSavePlatformMp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSavingPlatformMp(true);
-    try {
-      const res = await fetch('/api/platform/mercadopago', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          publicKey: platformPublicKey.trim(),
-          accessToken: platformAccessToken.trim(),
-          sandboxMode: platformSandboxMode
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast('¡Configuración global de Mercado Pago guardada!');
-        if (data.config?.accountNickname) {
-          setMpVerifyResult({
-            valid: true,
-            nickname: data.config.accountNickname,
-            email: data.config.accountEmail || '',
-            siteId: 'MLA'
-          });
-        }
-      } else {
-        showToast(data.error || 'Error al guardar la configuración');
-      }
-    } catch (err: any) {
-      showToast(err.message || 'Error de conexión');
-    } finally {
-      setIsSavingPlatformMp(false);
-    }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -2061,12 +2008,8 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     <h3 className="text-base font-bold tracking-tight text-white">
                       Pasarela Global Mercado Pago
                     </h3>
-                    <span className={`px-2 py-0.5 text-[10px] font-bold uppercase rounded-md tracking-wider ${
-                      platformSandboxMode
-                        ? 'bg-amber-400 text-neutral-900'
-                        : 'bg-emerald-400 text-neutral-900'
-                    }`}>
-                      {platformSandboxMode ? 'Sandbox (Prueba)' : 'Producción (Real)'}
+                    <span className="px-2 py-0.5 text-[10px] font-bold uppercase rounded-md tracking-wider bg-white/15 text-white">
+                      Multi-Entorno (Prod + Sandbox)
                     </span>
                   </div>
                   <p className="text-xs text-neutral-400 mt-0.5">
@@ -2126,185 +2069,343 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
 
             {/* Modal Body */}
             <div className="p-6 max-h-[75vh] overflow-y-auto">
-              {/* TAB 1: CREDENTIALS */}
+              {/* TAB 1: CREDENTIALS (READ-ONLY) */}
               {activeMpModalTab === 'credentials' && (
-                <form onSubmit={handleSavePlatformMp} className="space-y-5">
-                  {/* Status Banner */}
-                  {mpVerifyResult?.valid ? (
-                    <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2.5">
-                        <span className="material-symbols-outlined text-emerald-600 text-xl">check_circle</span>
-                        <div>
-                          <div className="text-xs font-bold text-emerald-900">
-                            Conexión verificada con la API de Mercado Pago
-                          </div>
-                          <div className="text-[11px] text-emerald-700">
-                            Cuenta: {mpVerifyResult.nickname} {mpVerifyResult.email ? `(${mpVerifyResult.email})` : ''} • Región: {mpVerifyResult.siteId || 'MLA'}
-                          </div>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleVerifyPlatformMp}
-                        disabled={isVerifyingMp}
-                        className="px-2.5 py-1 text-[11px] font-semibold bg-white text-emerald-800 hover:bg-emerald-100 rounded-lg border border-emerald-300 transition-colors cursor-pointer shrink-0"
-                      >
-                        {isVerifyingMp ? 'Probando...' : 'Re-verificar'}
-                      </button>
-                    </div>
-                  ) : mpVerifyResult?.valid === false ? (
-                    <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 flex items-center gap-2.5">
-                      <span className="material-symbols-outlined text-rose-600 text-xl">error</span>
+                <div className="space-y-6">
+                  {/* Security Notice Banner */}
+                  <div className="p-4 rounded-xl bg-neutral-50 border border-neutral-200">
+                    <div className="flex items-start gap-3">
+                      <span className="material-symbols-outlined text-neutral-700 text-xl shrink-0 mt-0.5">lock</span>
                       <div>
-                        <div className="text-xs font-bold text-rose-900">Error en credenciales de Mercado Pago</div>
-                        <div className="text-[11px] text-rose-700">{mpVerifyResult.error}</div>
+                        <div className="text-xs font-bold text-neutral-900">Configuración Segura desde el Servidor (Solo Lectura)</div>
+                        <p className="text-[11px] text-neutral-600 mt-1 leading-relaxed">
+                          Por seguridad, las credenciales maestras de Mercado Pago se definen exclusivamente mediante variables de entorno en el servidor (Cloud Run / Secrets). Ningún token secreto se expone ni se edita a través del navegador.
+                        </p>
                       </div>
                     </div>
-                  ) : null}
-
-                  {/* Mode Selector */}
-                  <div className="p-4 rounded-xl bg-neutral-50 border border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div>
-                      <div className="text-xs font-bold text-neutral-900">Entorno de Operación</div>
-                      <p className="text-[11px] text-neutral-500 mt-0.5">
-                        Define si las ventas se procesan en modo de prueba o con cobros bancarios reales.
-                      </p>
-                    </div>
-
-                    <div className="inline-flex p-1 bg-white border border-neutral-200 rounded-xl shadow-2xs">
-                      <button
-                        type="button"
-                        onClick={() => setPlatformSandboxMode(true)}
-                        className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                          platformSandboxMode
-                            ? 'bg-amber-100 text-amber-900 shadow-2xs'
-                            : 'text-neutral-600 hover:text-black'
-                        }`}
-                      >
-                        Sandbox (Prueba)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPlatformSandboxMode(false)}
-                        className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                          !platformSandboxMode
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'text-neutral-600 hover:text-black'
-                        }`}
-                      >
-                        Producción (Real)
-                      </button>
-                    </div>
                   </div>
 
-                  {/* Public Key */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-xs font-bold text-neutral-800">
-                        Public Key (Clave Pública)
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => handleCopy(platformPublicKey, 'public')}
-                        className="text-[11px] text-[#009EE3] hover:underline flex items-center gap-1 cursor-pointer"
-                      >
-                        <span className="material-symbols-outlined text-[13px]">content_copy</span>
-                        <span>{copiedKey === 'public' ? '¡Copiada!' : 'Copiar'}</span>
-                      </button>
+                  {isLoadingPlatformMp && (
+                    <div className="py-8 text-center text-xs text-neutral-500 flex items-center justify-center gap-2">
+                      <span className="material-symbols-outlined animate-spin text-base">refresh</span>
+                      <span>Consultando estado de credenciales con el servidor...</span>
                     </div>
-                    <input
-                      type="text"
-                      required
-                      value={platformPublicKey}
-                      onChange={(e) => setPlatformPublicKey(e.target.value)}
-                      placeholder="APP_USR-xxxx-xxxx..."
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs font-mono bg-neutral-50/50 focus:bg-white focus:ring-2 focus:ring-[#009EE3] focus:border-[#009EE3] outline-none"
-                    />
-                    <p className="text-[11px] text-neutral-500 mt-1">
-                      Identificador público de la aplicación de Mercado Pago.
-                    </p>
-                  </div>
+                  )}
 
-                  {/* Access Token */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-xs font-bold text-neutral-800">
-                        Access Token (Clave Secreta de Plataforma)
-                      </label>
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => setShowPlatformToken(!showPlatformToken)}
-                          className="text-[11px] text-neutral-600 hover:text-black flex items-center gap-1 cursor-pointer"
-                        >
-                          <span className="material-symbols-outlined text-[14px]">
-                            {showPlatformToken ? 'visibility_off' : 'visibility'}
+                  {platformMpError && (
+                    <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-start gap-2">
+                      <span className="material-symbols-outlined text-rose-600 text-base shrink-0 mt-0.5">error</span>
+                      <span>{platformMpError}</span>
+                    </div>
+                  )}
+
+                  {platformMpStatus && (
+                    <>
+                      {/* Redirect URI Box */}
+                      <div className="p-4 rounded-xl bg-blue-50/50 border border-blue-200/80">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs font-bold text-blue-950 flex items-center gap-1.5">
+                            <span className="material-symbols-outlined text-blue-600 text-[16px]">link</span>
+                            <span>Redirect URI oficial para Mercado Pago Developers</span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(platformMpStatus.redirectUri, 'redirect')}
+                            className="text-[11px] font-semibold text-blue-700 hover:text-blue-900 flex items-center gap-1 cursor-pointer"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">content_copy</span>
+                            <span>{copiedKey === 'redirect' ? '¡Copiada!' : 'Copiar URL'}</span>
+                          </button>
+                        </div>
+                        <div className="p-2.5 rounded-lg bg-white border border-blue-200 text-xs font-mono text-neutral-800 break-all select-all">
+                          {platformMpStatus.redirectUri}
+                        </div>
+                        <p className="text-[11px] text-blue-800/80 mt-1.5 leading-relaxed">
+                          Pegá esta URL exacta en la sección "URLs de redireccionamiento" dentro de tu aplicación en Mercado Pago Developers.
+                        </p>
+                      </div>
+
+                      {/* Environments Grid (Producción & Sandbox) */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* ENTORNO PRODUCCIÓN */}
+                        {(() => {
+                          const prod = platformMpStatus.production;
+                          const isComplete = Boolean(
+                            prod.appId &&
+                            prod.clientId &&
+                            prod.hasClientSecret &&
+                            prod.hasPublicKey &&
+                            prod.hasAccessToken
+                          );
+
+                          return (
+                            <div className="p-4 rounded-xl border border-neutral-200 bg-white space-y-3.5 shadow-xs">
+                              <div className="flex items-center justify-between pb-2.5 border-b border-neutral-100">
+                                <div>
+                                  <h4 className="text-xs font-bold text-neutral-900">Entorno de Producción</h4>
+                                  <p className="text-[10px] text-neutral-500">Cobros reales en tiendas activas</p>
+                                </div>
+                                {isComplete ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                    Configurado
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                                    Incompleto
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="space-y-2 text-xs">
+                                <div className="flex items-center justify-between py-1 border-b border-neutral-50">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_APP_ID</span>
+                                  {prod.appId ? (
+                                    <span className="text-emerald-700 font-medium font-mono text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      {prod.appId}
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between py-1 border-b border-neutral-50">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_CLIENT_ID</span>
+                                  {prod.clientId ? (
+                                    <span className="text-emerald-700 font-medium font-mono text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      {prod.clientId}
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between py-1 border-b border-neutral-50">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_CLIENT_SECRET</span>
+                                  {prod.hasClientSecret ? (
+                                    <span className="text-emerald-700 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      Configurado
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between py-1 border-b border-neutral-50">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_PUBLIC_KEY</span>
+                                  {prod.hasPublicKey ? (
+                                    <span className="text-emerald-700 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      Configurada
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between py-1">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_ACCESS_TOKEN</span>
+                                  {prod.hasAccessToken ? (
+                                    <span className="text-emerald-700 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      Configurado
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* ENTORNO SANDBOX */}
+                        {(() => {
+                          const sand = platformMpStatus.sandbox;
+                          const isComplete = Boolean(
+                            sand.appId &&
+                            sand.clientId &&
+                            sand.hasClientSecret &&
+                            sand.hasPublicKey &&
+                            sand.hasAccessToken
+                          );
+
+                          return (
+                            <div className="p-4 rounded-xl border border-neutral-200 bg-white space-y-3.5 shadow-xs">
+                              <div className="flex items-center justify-between pb-2.5 border-b border-neutral-100">
+                                <div>
+                                  <h4 className="text-xs font-bold text-neutral-900">Entorno Sandbox (Pruebas)</h4>
+                                  <p className="text-[10px] text-neutral-500">Cobros simulados para tiendas test</p>
+                                </div>
+                                {isComplete ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                    Configurado
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                                    Incompleto
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="space-y-2 text-xs">
+                                <div className="flex items-center justify-between py-1 border-b border-neutral-50">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_SANDBOX_APP_ID</span>
+                                  {sand.appId ? (
+                                    <span className="text-emerald-700 font-medium font-mono text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      {sand.appId}
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between py-1 border-b border-neutral-50">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_SANDBOX_CLIENT_ID</span>
+                                  {sand.clientId ? (
+                                    <span className="text-emerald-700 font-medium font-mono text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      {sand.clientId}
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between py-1 border-b border-neutral-50">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_SANDBOX_CLIENT_SECRET</span>
+                                  {sand.hasClientSecret ? (
+                                    <span className="text-emerald-700 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      Configurado
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between py-1 border-b border-neutral-50">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_SANDBOX_PUBLIC_KEY</span>
+                                  {sand.hasPublicKey ? (
+                                    <span className="text-emerald-700 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      Configurada
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between py-1">
+                                  <span className="text-neutral-600 font-mono text-[11px]">MERCADOPAGO_SANDBOX_ACCESS_TOKEN</span>
+                                  {sand.hasAccessToken ? (
+                                    <span className="text-emerald-700 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">check</span>
+                                      Configurado
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 font-medium text-[11px] flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[14px]">close</span>
+                                      Faltante
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {/* Tiendas Asignadas a Sandbox */}
+                      <div className="p-4 rounded-xl border border-neutral-200 bg-neutral-50 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="text-xs font-bold text-neutral-900 flex items-center gap-1.5">
+                            <span className="material-symbols-outlined text-amber-600 text-[16px]">science</span>
+                            <span>Tiendas de prueba activas (MP_SANDBOX_STORES)</span>
+                          </div>
+                          <span className="text-[10px] text-neutral-500 font-mono">
+                            {platformMpStatus.sandboxStores.length} tienda(s)
                           </span>
-                          <span>{showPlatformToken ? 'Ocultar' : 'Revelar'}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleCopy(platformAccessToken, 'token')}
-                          className="text-[11px] text-[#009EE3] hover:underline flex items-center gap-1 cursor-pointer"
-                        >
-                          <span className="material-symbols-outlined text-[13px]">content_copy</span>
-                          <span>{copiedKey === 'token' ? '¡Copiado!' : 'Copiar'}</span>
-                        </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {platformMpStatus.sandboxStores.length > 0 ? (
+                            platformMpStatus.sandboxStores.map((slug) => (
+                              <span
+                                key={slug}
+                                className="px-2.5 py-1 rounded-lg text-xs font-mono font-bold bg-amber-100 text-amber-900 border border-amber-200"
+                              >
+                                /{slug}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-xs text-neutral-500 italic">
+                              Ninguna (por defecto "sandbox")
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-neutral-500 mt-1 leading-relaxed">
+                          El servidor asigna automáticamente el entorno Sandbox a las tiendas listadas arriba. Cualquier otra tienda no incluida en esta lista opera en el entorno de Producción.
+                        </p>
                       </div>
-                    </div>
-                    <input
-                      type={showPlatformToken ? 'text' : 'password'}
-                      required
-                      value={platformAccessToken}
-                      onChange={(e) => setPlatformAccessToken(e.target.value)}
-                      placeholder="APP_USR-xxxx-xxxx..."
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs font-mono bg-neutral-50/50 focus:bg-white focus:ring-2 focus:ring-[#009EE3] focus:border-[#009EE3] outline-none"
-                    />
-                    <p className="text-[11px] text-neutral-500 mt-1">
-                      Clave de autorización con permisos para generar preferencias de Checkout Pro.
-                    </p>
-                  </div>
+                    </>
+                  )}
 
-                  {/* Save and Verify Buttons */}
-                  <div className="pt-4 border-t border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  {/* Modal Footer */}
+                  <div className="pt-4 border-t border-neutral-200 flex items-center justify-between">
                     <button
                       type="button"
-                      disabled={isVerifyingMp}
-                      onClick={handleVerifyPlatformMp}
-                      className="px-4 py-2 text-xs font-medium text-neutral-700 hover:text-black bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                      onClick={fetchPlatformMpStatus}
+                      disabled={isLoadingPlatformMp}
+                      className="px-3 py-1.5 text-xs font-medium text-neutral-700 hover:text-black bg-neutral-100 hover:bg-neutral-200 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
                     >
-                      <span className="material-symbols-outlined text-[15px]">sync</span>
-                      <span>{isVerifyingMp ? 'Verificando con MP...' : 'Testear Conexión'}</span>
+                      <span className={`material-symbols-outlined text-[15px] ${isLoadingPlatformMp ? 'animate-spin' : ''}`}>
+                        refresh
+                      </span>
+                      <span>Actualizar estado</span>
                     </button>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setIsPlatformMpModalOpen(false)}
-                        className="px-4 py-2 text-xs font-medium text-neutral-600 hover:text-neutral-800 rounded-xl cursor-pointer"
-                      >
-                        Cerrar
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={isSavingPlatformMp}
-                        className="px-5 py-2 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-xl shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                      >
-                        {isSavingPlatformMp ? (
-                          <>
-                            <span className="material-symbols-outlined text-[14px] animate-spin">refresh</span>
-                            <span>Guardando...</span>
-                          </>
-                        ) : (
-                          <>
-                            <span className="material-symbols-outlined text-[16px]">save</span>
-                            <span>Guardar Credenciales</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsPlatformMpModalOpen(false)}
+                      className="px-4 py-2 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-xl cursor-pointer"
+                    >
+                      Cerrar
+                    </button>
                   </div>
-                </form>
+                </div>
               )}
 
               {/* TAB 2: PRODUCTION GUIDE & SECURITY */}
@@ -2313,30 +2414,36 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                   <div className="p-4 rounded-xl bg-blue-50/60 border border-blue-200 text-blue-900">
                     <h4 className="text-sm font-bold flex items-center gap-1.5 mb-1">
                       <span className="material-symbols-outlined text-blue-600 text-[18px]">verified_user</span>
-                      ¿Cómo resguardar tus credenciales en Producción sin escribirlas en el chat?
+                      ¿Cómo configurar las credenciales de Producción en el servidor?
                     </h4>
                     <p className="text-xs leading-relaxed text-blue-800">
-                      Tenés dos métodos 100% seguros y privados para configurar tus credenciales de producción sin exponerlas jamás públicamente:
+                      Por motivos de seguridad, las credenciales de producción no se cargan por pantalla ni se guardan en base de datos. Se configuran directamente en los Secrets / Variables de entorno del servicio en Cloud Run.
                     </p>
                   </div>
 
                   <div className="p-4 rounded-xl bg-white border border-neutral-200 space-y-2">
                     <div className="font-bold text-neutral-900 flex items-center gap-1.5">
                       <span className="w-5 h-5 rounded-full bg-neutral-900 text-white text-[11px] flex items-center justify-center">1</span>
-                      Opción A: Cargar directamente en este panel de Super Admin
+                      Variables de Entorno para Producción
                     </div>
                     <p className="text-xs text-neutral-600 pl-6 leading-relaxed">
-                      Este modal está protegido bajo tu clave maestra de Super Administrador. Podés pegar aquí tu Public Key y Access Token de producción, seleccionar el modo <strong>Producción (Real)</strong> y presionar Guardar. Los datos se envían cifrados directamente al backend.
+                      En la consola de Google Cloud / Cloud Run, definís las siguientes variables o secrets:
+                      <br />
+                      <code className="bg-neutral-100 px-1 py-0.5 rounded text-neutral-800 font-mono text-[11px] inline-block mt-1">MERCADOPAGO_APP_ID</code>,{' '}
+                      <code className="bg-neutral-100 px-1 py-0.5 rounded text-neutral-800 font-mono text-[11px] inline-block">MERCADOPAGO_CLIENT_ID</code>,{' '}
+                      <code className="bg-neutral-100 px-1 py-0.5 rounded text-neutral-800 font-mono text-[11px] inline-block">MERCADOPAGO_CLIENT_SECRET</code>,{' '}
+                      <code className="bg-neutral-100 px-1 py-0.5 rounded text-neutral-800 font-mono text-[11px] inline-block">MERCADOPAGO_PUBLIC_KEY</code> y{' '}
+                      <code className="bg-neutral-100 px-1 py-0.5 rounded text-neutral-800 font-mono text-[11px] inline-block">MERCADOPAGO_ACCESS_TOKEN</code>.
                     </p>
                   </div>
 
                   <div className="p-4 rounded-xl bg-white border border-neutral-200 space-y-2">
                     <div className="font-bold text-neutral-900 flex items-center gap-1.5">
                       <span className="w-5 h-5 rounded-full bg-neutral-900 text-white text-[11px] flex items-center justify-center">2</span>
-                      Opción B: Variables de entorno del servidor (.env)
+                      Tiendas Sandbox vs Producción
                     </div>
                     <p className="text-xs text-neutral-600 pl-6 leading-relaxed">
-                      Al desplegar en Cloud Run / servidor, definís las variables de entorno <code className="bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-800 font-mono">MERCADOPAGO_PUBLIC_KEY</code> y <code className="bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-800 font-mono">MERCADOPAGO_ACCESS_TOKEN</code>. El servidor las detecta automáticamente como prioritarias sin necesidad de guardarlas en base de datos.
+                      La variable <code className="bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-800 font-mono text-[11px]">MP_SANDBOX_STORES</code> contiene la lista de slugs de tiendas que operan en modo de pruebas (por ejemplo <code className="bg-neutral-100 px-1 py-0.5 rounded font-mono text-[11px]">sandbox</code>). Todas las demás tiendas que se registren o vinculen operarán automáticamente en Producción con cobros bancarios reales.
                     </p>
                   </div>
 
@@ -2345,9 +2452,9 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     <ol className="list-decimal pl-5 space-y-1.5 text-xs text-neutral-600">
                       <li>Ingresá a <a href="https://www.mercadopago.com.ar/developers" target="_blank" rel="noreferrer" className="text-[#009EE3] underline font-medium">mercadopago.com.ar/developers</a> con tu cuenta.</li>
                       <li>Abrí la aplicación que creaste y navegá a <strong>Credenciales de producción</strong>.</li>
-                      <li>Completá el formulario de homologación (nombre del negocio, sitio web de la tienda, rubro indumentaria).</li>
+                      <li>Completá el formulario de homologación (nombre del negocio, sitio web de la tienda, rubro).</li>
                       <li>Mercado Pago te habilitará de inmediato el par de credenciales de Producción.</li>
-                      <li>Copiá esas credenciales y pegalas en este panel o en tus variables de entorno.</li>
+                      <li>Copiá esas credenciales y configuralas en los Secrets / Variables de Cloud Run.</li>
                     </ol>
                   </div>
                 </div>

@@ -85,6 +85,12 @@ service cloud.firestore {
       }
     }
 
+    // ESTADOS OAUTH MERCADO PAGO:
+    // Exclusivo para el backend con firebase-admin (allow read, write: if false;)
+    match /oauthStates/{document=**} {
+      allow read, write: if false;
+    }
+
     // CONFIGURACIÓN GLOBAL DE PLATAFORMA (PRECIOS Y SOPORTE)
     match /platformConfig/{docId} {
       allow read: if true;

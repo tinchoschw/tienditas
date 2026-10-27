@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 import { initializeApp, getApps, App } from 'firebase-admin/app';
 import { getFirestore, Firestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth, Auth } from 'firebase-admin/auth';
@@ -469,20 +470,105 @@ ${guide}
 });
 
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://tienditas.ai.studio').replace(/\/+$/, '');
-const MP_APP_ID = process.env.MERCADOPAGO_APP_ID || '1254765898303511';
-const MP_CLIENT_ID = process.env.MERCADOPAGO_CLIENT_ID || '';
 const MP_REDIRECT_URI = `${PUBLIC_BASE_URL}/api/mercadopago/oauth/callback`;
 
-let platformMpConfig = {
-  appId: MP_APP_ID,
-  clientId: MP_CLIENT_ID,
-  publicKey: process.env.MERCADOPAGO_PUBLIC_KEY || '',
-  accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || '',
-  sandboxMode: process.env.MERCADOPAGO_SANDBOX !== 'false',
-  accountNickname: '',
-  accountEmail: '',
-  lastVerifiedAt: new Date().toISOString(),
-};
+// Resolver el entorno de una tienda según la variable MP_SANDBOX_STORES
+function getStoreEnvironment(storeSlug: string): 'sandbox' | 'production' {
+  const cleanSlug = (storeSlug || '').toLowerCase().trim();
+  const rawList = process.env.MP_SANDBOX_STORES || 'sandbox';
+  const sandboxStores = rawList.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return sandboxStores.includes(cleanSlug) ? 'sandbox' : 'production';
+}
+
+interface MPCredentials {
+  env: 'sandbox' | 'production';
+  isSandbox: boolean;
+  appId: string;
+  clientId: string;
+  clientSecret: string;
+  publicKey: string;
+  accessToken: string;
+}
+
+// Función única para obtener credenciales de Mercado Pago según el entorno de la tienda
+function getMercadoPagoCredentials(storeSlug: string): MPCredentials {
+  const env = getStoreEnvironment(storeSlug);
+  const isSandbox = env === 'sandbox';
+
+  const appId = isSandbox
+    ? (process.env.MERCADOPAGO_SANDBOX_APP_ID || '').trim()
+    : (process.env.MERCADOPAGO_APP_ID || '').trim();
+
+  const clientId = isSandbox
+    ? (process.env.MERCADOPAGO_SANDBOX_CLIENT_ID || '').trim()
+    : (process.env.MERCADOPAGO_CLIENT_ID || '').trim();
+
+  const clientSecret = isSandbox
+    ? (process.env.MERCADOPAGO_SANDBOX_CLIENT_SECRET || '').trim()
+    : (process.env.MERCADOPAGO_CLIENT_SECRET || '').trim();
+
+  const publicKey = isSandbox
+    ? (process.env.MERCADOPAGO_SANDBOX_PUBLIC_KEY || '').trim()
+    : (process.env.MERCADOPAGO_PUBLIC_KEY || '').trim();
+
+  const accessToken = isSandbox
+    ? (process.env.MERCADOPAGO_SANDBOX_ACCESS_TOKEN || '').trim()
+    : (process.env.MERCADOPAGO_ACCESS_TOKEN || '').trim();
+
+  return {
+    env,
+    isSandbox,
+    appId,
+    clientId,
+    clientSecret,
+    publicKey,
+    accessToken,
+  };
+}
+
+function renderOAuthErrorHtml(errorMsg: string, targetStore: string = '', fallbackUrl: string = ''): string {
+  const returnUrl = fallbackUrl || (targetStore ? `${PUBLIC_BASE_URL}/${targetStore}/admin?mp_auth=error&error_desc=${encodeURIComponent(errorMsg)}` : `${PUBLIC_BASE_URL}/?mp_auth=error`);
+  return `
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="utf-8">
+      <title>Mercado Pago - Error de Autorización</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1.5rem; box-sizing: border-box; }
+        .card { background: white; border: 1px solid #fee2e2; border-radius: 1.25rem; padding: 2.25rem 2rem; max-width: 440px; width: 100%; text-align: center; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); }
+        .icon { width: 56px; height: 56px; border-radius: 50%; background: #fee2e2; color: #dc2626; font-size: 28px; display: inline-flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
+        h2 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #991b1b; }
+        p { font-size: 0.875rem; color: #64748b; line-height: 1.5; margin: 0 0 1.25rem; }
+        .btn { display: inline-block; background: #0f172a; color: white; padding: 0.65rem 1.25rem; border-radius: 0.75rem; text-decoration: none; font-size: 0.875rem; font-weight: 600; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="icon">✕</div>
+        <h2>No se completó la vinculación</h2>
+        <p>${errorMsg}</p>
+        <a id="btnFallback" href="${returnUrl}" class="btn">Volver al Panel</a>
+      </div>
+      <script>
+        if (window.opener && !window.opener.closed) {
+          try {
+            window.opener.postMessage({
+              type: 'MP_OAUTH_ERROR',
+              error: ${JSON.stringify(errorMsg)},
+              storeSlug: ${JSON.stringify(targetStore || '')}
+            }, '*');
+          } catch (e) {}
+          setTimeout(() => {
+            window.close();
+          }, 3000);
+        }
+      </script>
+    </body>
+    </html>
+  `;
+}
 
 // Endpoint for SuperAdmin Login authentication (verified securely server-side)
 app.post('/api/auth/superadmin-login', (req, res) => {
@@ -494,131 +580,56 @@ app.post('/api/auth/superadmin-login', (req, res) => {
   return res.status(401).json({ error: 'Contraseña de SuperAdmin incorrecta.' });
 });
 
-// Endpoint to get platform Mercado Pago config for SuperAdmin
-app.get('/api/platform/mercadopago', (_req, res) => {
-  return res.json({
-    appId: platformMpConfig.appId,
-    clientId: platformMpConfig.clientId,
-    publicKey: platformMpConfig.publicKey,
-    accessToken: platformMpConfig.accessToken,
-    accessTokenMasked: platformMpConfig.accessToken
-      ? `${platformMpConfig.accessToken.substring(0, 14)}••••••••••••••••`
-      : '',
-    hasAccessToken: Boolean(platformMpConfig.accessToken),
-    sandboxMode: platformMpConfig.sandboxMode,
-    accountNickname: platformMpConfig.accountNickname,
-    accountEmail: platformMpConfig.accountEmail,
-    lastVerifiedAt: platformMpConfig.lastVerifiedAt,
-  });
-});
-
-// Endpoint for SuperAdmin to update platform Mercado Pago credentials
-app.post('/api/platform/mercadopago', async (req, res) => {
+// Endpoint to get platform Mercado Pago configuration for SuperAdmin (read-only, requires superadmin ID token)
+app.get('/api/platform/mercadopago', async (req, res) => {
   try {
-    const { appId, clientId, publicKey, accessToken, sandboxMode } = req.body;
-
-    if (typeof appId === 'string' && appId.trim()) {
-      platformMpConfig.appId = appId.trim();
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No autorizado. Se requiere token Bearer de sesión.' });
     }
 
-    if (typeof clientId === 'string' && clientId.trim()) {
-      platformMpConfig.clientId = clientId.trim();
+    const idToken = authHeader.split('Bearer ')[1].trim();
+    if (!adminAuth) {
+      return res.status(500).json({ error: 'Servicio de autenticación no disponible.' });
     }
 
-    if (typeof publicKey === 'string') {
-      platformMpConfig.publicKey = publicKey.trim();
+    let decodedToken;
+    try {
+      decodedToken = await adminAuth.verifyIdToken(idToken);
+    } catch (verifyErr) {
+      return res.status(401).json({ error: 'Token de autenticación inválido o expirado.' });
     }
 
-    if (typeof accessToken === 'string' && accessToken.trim()) {
-      platformMpConfig.accessToken = accessToken.trim();
+    const userEmail = (decodedToken.email || '').toLowerCase().trim();
+    if (userEmail !== 'yunior@gmail.com') {
+      return res.status(403).json({ error: 'Acceso restringido al Super Administrador.' });
     }
 
-    if (typeof sandboxMode === 'boolean') {
-      platformMpConfig.sandboxMode = sandboxMode;
-    }
-
-    // Attempt to verify with Mercado Pago API if access token is present
-    if (platformMpConfig.accessToken) {
-      try {
-        const mpRes = await fetch('https://api.mercadopago.com/users/me', {
-          headers: {
-            'Authorization': `Bearer ${platformMpConfig.accessToken}`,
-          },
-        });
-        const data: any = await mpRes.json();
-        if (mpRes.ok) {
-          platformMpConfig.accountNickname = data.nickname || 'Cuenta Verificada';
-          platformMpConfig.accountEmail = data.email || '';
-          platformMpConfig.lastVerifiedAt = new Date().toISOString();
-        }
-      } catch (checkErr) {
-        console.warn('Could not verify new credentials with MP API:', checkErr);
-      }
-    }
+    const rawSandboxStores = process.env.MP_SANDBOX_STORES || 'sandbox';
+    const sandboxStores = rawSandboxStores.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 
     return res.json({
-      success: true,
-      message: 'Configuración maestra de Mercado Pago actualizada exitosamente.',
-      config: {
-        appId: platformMpConfig.appId,
-        publicKey: platformMpConfig.publicKey,
-        accessTokenMasked: platformMpConfig.accessToken
-          ? `${platformMpConfig.accessToken.substring(0, 14)}••••••••••••••••`
-          : '',
-        sandboxMode: platformMpConfig.sandboxMode,
-        accountNickname: platformMpConfig.accountNickname,
-        accountEmail: platformMpConfig.accountEmail,
-        lastVerifiedAt: platformMpConfig.lastVerifiedAt,
+      production: {
+        appId: (process.env.MERCADOPAGO_APP_ID || '').trim(),
+        clientId: (process.env.MERCADOPAGO_CLIENT_ID || '').trim(),
+        hasClientSecret: Boolean((process.env.MERCADOPAGO_CLIENT_SECRET || '').trim()),
+        hasPublicKey: Boolean((process.env.MERCADOPAGO_PUBLIC_KEY || '').trim()),
+        hasAccessToken: Boolean((process.env.MERCADOPAGO_ACCESS_TOKEN || '').trim()),
       },
-    });
-  } catch (error: any) {
-    return res.status(500).json({ error: error?.message || 'Error al guardar credenciales de plataforma' });
-  }
-});
-
-// Endpoint to verify credentials against Mercado Pago API
-app.post('/api/mercadopago/verify-credentials', async (req, res) => {
-  try {
-    const { accessToken } = req.body;
-    const token = (accessToken && typeof accessToken === 'string' && accessToken.trim())
-      ? accessToken.trim()
-      : platformMpConfig.accessToken;
-
-    if (!token) {
-      return res.status(400).json({ valid: false, error: 'Debes ingresar un Access Token.' });
-    }
-
-    const mpRes = await fetch('https://api.mercadopago.com/users/me', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
+      sandbox: {
+        appId: (process.env.MERCADOPAGO_SANDBOX_APP_ID || '').trim(),
+        clientId: (process.env.MERCADOPAGO_SANDBOX_CLIENT_ID || '').trim(),
+        hasClientSecret: Boolean((process.env.MERCADOPAGO_SANDBOX_CLIENT_SECRET || '').trim()),
+        hasPublicKey: Boolean((process.env.MERCADOPAGO_SANDBOX_PUBLIC_KEY || '').trim()),
+        hasAccessToken: Boolean((process.env.MERCADOPAGO_SANDBOX_ACCESS_TOKEN || '').trim()),
       },
+      sandboxStores,
+      redirectUri: MP_REDIRECT_URI,
+      baseUrl: PUBLIC_BASE_URL,
     });
-
-    const data: any = await mpRes.json();
-
-    if (!mpRes.ok) {
-      return res.status(mpRes.status).json({
-        valid: false,
-        error: data.message || `Error de validación Mercado Pago (${mpRes.status})`,
-        details: data,
-      });
-    }
-
-    return res.json({
-      valid: true,
-      id: data.id,
-      nickname: data.nickname || 'Usuario Mercado Pago',
-      email: data.email || '',
-      siteId: data.site_id || 'MLA',
-      countryId: data.country_id || 'AR',
-    });
-  } catch (error: any) {
-    console.error('Error in /api/mercadopago/verify-credentials:', error);
-    return res.status(500).json({
-      valid: false,
-      error: error?.message || 'Error de conexión con los servidores de Mercado Pago',
-    });
+  } catch (err: any) {
+    console.error('Error in GET /api/platform/mercadopago:', err);
+    return res.status(500).json({ error: err?.message || 'Error al obtener configuración de plataforma' });
   }
 });
 
@@ -626,67 +637,88 @@ app.post('/api/mercadopago/verify-credentials', async (req, res) => {
 // -------- MERCADO PAGO OFFICIAL OAUTH (CONNECT) ---------
 // ========================================================
 
-// ========================================================
-// -------- MERCADO PAGO OFFICIAL OAUTH (CONNECT) ---------
-// ========================================================
-
-// 0. Endpoint to get authorization URL dynamically for popups (recommended by AI Studio iframe guidelines)
-app.get('/api/mercadopago/oauth/url', (req, res) => {
+// 1. Endpoint to generate authorization URL (requires owner or superadmin authentication)
+app.get('/api/mercadopago/oauth/url', async (req, res) => {
   try {
-    const storeSlug = String(req.query.storeSlug || 'apolo').trim();
-    const isSandbox = req.query.isSandbox === 'true';
-    const clientId = platformMpConfig.clientId || MP_CLIENT_ID;
-    const appId = platformMpConfig.appId || MP_APP_ID;
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No autorizado. Se requiere token Bearer de autenticación.' });
+    }
 
-    if (!clientId) {
+    const idToken = authHeader.split('Bearer ')[1].trim();
+    if (!adminAuth || !db) {
+      return res.status(500).json({ error: 'Servicio de autenticación o base de datos no disponible.' });
+    }
+
+    let decodedToken;
+    try {
+      decodedToken = await adminAuth.verifyIdToken(idToken);
+    } catch (verifyErr) {
+      return res.status(401).json({ error: 'Token de autenticación inválido o expirado.' });
+    }
+
+    const userEmail = (decodedToken.email || '').toLowerCase().trim();
+    const rawStoreSlug = req.query.storeSlug || '';
+    const storeSlug = String(rawStoreSlug).toLowerCase().trim();
+
+    if (!storeSlug) {
+      return res.status(400).json({ error: 'Falta el parámetro storeSlug.' });
+    }
+
+    // Validar existencia de la tienda y permisos del usuario
+    const storeRef = db.doc(`stores/${storeSlug}`);
+    const storeSnap = await storeRef.get();
+
+    if (!storeSnap.exists) {
+      return res.status(404).json({ error: 'La tienda no existe.' });
+    }
+
+    const storeData = storeSnap.data() || {};
+    const ownerEmail = (storeData.ownerEmail || '').toLowerCase().trim();
+    const isSuperAdmin = userEmail === 'yunior@gmail.com';
+    const isOwner = Boolean(ownerEmail && userEmail === ownerEmail);
+
+    if (!isSuperAdmin && !isOwner) {
+      return res.status(403).json({ error: 'No tienes permisos para vincular Mercado Pago en esta tienda.' });
+    }
+
+    const creds = getMercadoPagoCredentials(storeSlug);
+    if (!creds.clientId) {
+      const envName = creds.isSandbox ? 'sandbox' : 'producción';
       return res.status(400).json({
-        error: 'Falta configurar MERCADOPAGO_CLIENT_ID en los secrets del servidor.'
+        error: `Credenciales de ${envName} no configuradas en el servidor.`
       });
     }
+
+    // Generar state criptográficamente seguro (32 bytes hex)
+    const state = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+    // Guardar en la colección raíz oauthStates
+    await db.collection('oauthStates').doc(state).set({
+      storeSlug,
+      email: userEmail,
+      createdAt: FieldValue.serverTimestamp(),
+      expiresAt,
+      used: false,
+    });
 
     const redirectUri = MP_REDIRECT_URI;
-    // Clean URL-safe state: letters, numbers and underscores only (no colons or special chars)
-    const state = `${storeSlug}_${isSandbox ? 'sandbox' : 'prod'}`;
-
-    // Canonical Mercado Pago OAuth authorization URL
-    const mpAuthUrl = `https://auth.mercadopago.com/authorization?client_id=${encodeURIComponent(clientId)}&response_type=code&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+    const mpAuthUrl = `https://auth.mercadopago.com/authorization?client_id=${encodeURIComponent(creds.clientId)}&response_type=code&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
     return res.json({
       url: mpAuthUrl,
       redirectUri,
-      appId,
-      clientId,
+      appId: creds.appId,
+      clientId: creds.clientId,
       state,
       storeSlug,
-      isSandbox,
+      isSandbox: creds.isSandbox,
       origin: PUBLIC_BASE_URL,
     });
   } catch (err: any) {
+    console.error('Error in /api/mercadopago/oauth/url:', err);
     return res.status(500).json({ error: err?.message || 'Error al generar URL de autorización' });
-  }
-});
-
-// 1. Endpoint to initiate OAuth Handshake (direct redirect fallback if opened without popup)
-app.get('/api/mercadopago/oauth/start', (req, res) => {
-  try {
-    const storeSlug = String(req.query.storeSlug || 'apolo').trim();
-    const isSandbox = req.query.isSandbox === 'true';
-    const clientId = platformMpConfig.clientId || MP_CLIENT_ID;
-
-    if (!clientId) {
-      return res.status(500).send('Falta configurar MERCADOPAGO_CLIENT_ID en los secrets del servidor.');
-    }
-
-    const redirectUri = MP_REDIRECT_URI;
-    const state = `${storeSlug}_${isSandbox ? 'sandbox' : 'prod'}`;
-
-    const mpAuthUrl = `https://auth.mercadopago.com/authorization?client_id=${encodeURIComponent(clientId)}&response_type=code&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-
-    console.log(`[Mercado Pago OAuth] Redirecting store "${storeSlug}" to Mercado Pago OAuth: ${mpAuthUrl}`);
-    return res.redirect(mpAuthUrl);
-  } catch (err: any) {
-    console.error('[Mercado Pago OAuth Start Error]:', err);
-    return res.status(500).send(`Error al iniciar autorización con Mercado Pago: ${err?.message}`);
   }
 });
 
@@ -695,21 +727,55 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
   try {
     const { code, state, error, error_description } = req.query;
 
-    // Parse state: "storeSlug_sandbox" or "storeSlug_prod"
-    let targetStore = 'apolo';
-    let isSandbox = false;
-    if (typeof state === 'string') {
-      if (state.includes('_')) {
-        const parts = state.split('_');
-        targetStore = parts[0] || 'apolo';
-        isSandbox = parts[1] === 'sandbox';
-      } else if (state.includes(':')) {
-        const parts = state.split(':');
-        targetStore = parts[0] || 'apolo';
-        isSandbox = parts[1] === 'sandbox';
-      } else {
-        targetStore = state;
-      }
+    if (!state || typeof state !== 'string' || !state.trim()) {
+      return res.status(400).send(renderOAuthErrorHtml('Parámetro "state" ausente o inválido.', ''));
+    }
+
+    const stateKey = state.trim();
+    if (!db) {
+      return res.status(500).send(renderOAuthErrorHtml('Base de datos no disponible.', ''));
+    }
+
+    // Validar estado en oauthStates y marcarlo used: true atómicamente en transacción
+    let oauthData: any = null;
+    try {
+      oauthData = await db.runTransaction(async (transaction) => {
+        const stateRef = db.collection('oauthStates').doc(stateKey);
+        const stateSnap = await transaction.get(stateRef);
+
+        if (!stateSnap.exists) {
+          throw new Error('Sesión de autorización inválida o no encontrada.');
+        }
+
+        const data = stateSnap.data() || {};
+
+        if (data.used === true) {
+          throw new Error('Esta sesión de autorización ya fue utilizada.');
+        }
+
+        if (data.expiresAt) {
+          const expTime = new Date(data.expiresAt).getTime();
+          if (Date.now() > expTime) {
+            throw new Error('La sesión de autorización expiró (validez máxima de 10 minutos).');
+          }
+        }
+
+        transaction.update(stateRef, {
+          used: true,
+          usedAt: FieldValue.serverTimestamp(),
+        });
+
+        return data;
+      });
+    } catch (stateErr: any) {
+      console.warn('[Mercado Pago OAuth] State validation failed:', stateErr?.message);
+      return res.status(400).send(renderOAuthErrorHtml(stateErr?.message || 'Estado de autorización inválido.', ''));
+    }
+
+    // storeSlug se obtiene EXCLUSIVAMENTE de ese documento de oauthStates
+    const targetStore = (oauthData.storeSlug || '').toLowerCase().trim();
+    if (!targetStore) {
+      return res.status(400).send(renderOAuthErrorHtml('No se encontró la tienda asociada a esta autorización.', ''));
     }
 
     const redirectUri = MP_REDIRECT_URI;
@@ -718,149 +784,24 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
     if (error || !code) {
       console.warn('[Mercado Pago OAuth] Authorization cancelled or returned error:', error, error_description);
       const errorMsg = String(error_description || error || 'Autorización cancelada en Mercado Pago');
-      return res.status(400).send(`
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-          <meta charset="utf-8">
-          <title>Mercado Pago - Autorización Cancelada</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1.5rem; box-sizing: border-box; }
-            .card { background: white; border: 1px solid #fee2e2; border-radius: 1.25rem; padding: 2.25rem 2rem; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); }
-            .icon { width: 56px; height: 56px; border-radius: 50%; background: #fee2e2; color: #dc2626; font-size: 28px; display: inline-flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
-            h2 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #991b1b; }
-            p { font-size: 0.875rem; color: #64748b; line-height: 1.5; margin: 0 0 1.25rem; }
-            .btn { display: inline-block; background: #0f172a; color: white; padding: 0.65rem 1.25rem; border-radius: 0.75rem; text-decoration: none; font-size: 0.875rem; font-weight: 600; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="icon">✕</div>
-            <h2>No se completó la vinculación</h2>
-            <p>${errorMsg}</p>
-            <a id="btnFallback" href="${failUrl}" class="btn">Volver al Panel</a>
-          </div>
-          <script>
-            if (window.opener && !window.opener.closed) {
-              try {
-                window.opener.postMessage({
-                  type: 'MP_OAUTH_ERROR',
-                  error: ${JSON.stringify(errorMsg)},
-                  storeSlug: ${JSON.stringify(targetStore)}
-                }, '*');
-              } catch (e) {}
-              setTimeout(() => {
-                window.close();
-              }, 2000);
-            }
-          </script>
-        </body>
-        </html>
-      `);
+      return res.status(400).send(renderOAuthErrorHtml(errorMsg, targetStore, failUrl));
     }
 
-    const appId = MP_APP_ID;
-    const clientSecret = process.env.MERCADOPAGO_CLIENT_SECRET;
-
-    if (!clientSecret) {
-      console.error('[Mercado Pago OAuth] Error: Falta configurar MERCADOPAGO_CLIENT_SECRET en el servidor');
-      const errorMsg = 'Falta configurar MERCADOPAGO_CLIENT_SECRET en el servidor';
-      return res.status(500).send(`
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-          <meta charset="utf-8">
-          <title>Mercado Pago - Error de Configuración</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1.5rem; box-sizing: border-box; }
-            .card { background: white; border: 1px solid #fee2e2; border-radius: 1.25rem; padding: 2.25rem 2rem; max-width: 440px; width: 100%; text-align: center; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); }
-            .icon { width: 56px; height: 56px; border-radius: 50%; background: #fee2e2; color: #dc2626; font-size: 28px; display: inline-flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
-            h2 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #991b1b; }
-            p { font-size: 0.875rem; color: #64748b; line-height: 1.5; margin: 0 0 1.25rem; }
-            .btn { display: inline-block; background: #0f172a; color: white; padding: 0.65rem 1.25rem; border-radius: 0.75rem; text-decoration: none; font-size: 0.875rem; font-weight: 600; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="icon">✕</div>
-            <h2>Falta configurar MERCADOPAGO_CLIENT_SECRET</h2>
-            <p>${errorMsg}</p>
-            <a id="btnFallback" href="${failUrl}" class="btn">Volver al Panel</a>
-          </div>
-          <script>
-            if (window.opener && !window.opener.closed) {
-              try {
-                window.opener.postMessage({
-                  type: 'MP_OAUTH_ERROR',
-                  error: ${JSON.stringify(errorMsg)},
-                  storeSlug: ${JSON.stringify(targetStore)}
-                }, '*');
-              } catch (e) {}
-              setTimeout(() => {
-                window.close();
-              }, 3000);
-            }
-          </script>
-        </body>
-        </html>
-      `);
+    // Obtener credenciales del entorno para targetStore
+    const creds = getMercadoPagoCredentials(targetStore);
+    if (!creds.clientId || !creds.clientSecret) {
+      const envName = creds.isSandbox ? 'sandbox' : 'producción';
+      const errorMsg = `Credenciales de ${envName} no configuradas en el servidor.`;
+      console.error(`[Mercado Pago OAuth] ${errorMsg} (Tienda: "${targetStore}")`);
+      return res.status(500).send(renderOAuthErrorHtml(errorMsg, targetStore, failUrl));
     }
 
-    const clientId = platformMpConfig.clientId || MP_CLIENT_ID;
+    console.log(`[Mercado Pago OAuth] Exchanging code for store="${targetStore}", isSandbox=${creds.isSandbox}`);
 
-    if (!clientId) {
-      console.error('[Mercado Pago OAuth] Error: Falta configurar MERCADOPAGO_CLIENT_ID en el servidor');
-      const errorMsg = 'Falta configurar MERCADOPAGO_CLIENT_ID en los secrets del servidor';
-      return res.status(500).send(`
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-          <meta charset="utf-8">
-          <title>Mercado Pago - Error de Configuración</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1.5rem; box-sizing: border-box; }
-            .card { background: white; border: 1px solid #fee2e2; border-radius: 1.25rem; padding: 2.25rem 2rem; max-width: 440px; width: 100%; text-align: center; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); }
-            .icon { width: 56px; height: 56px; border-radius: 50%; background: #fee2e2; color: #dc2626; font-size: 28px; display: inline-flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
-            h2 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #991b1b; }
-            p { font-size: 0.875rem; color: #64748b; line-height: 1.5; margin: 0 0 1.25rem; }
-            .btn { display: inline-block; background: #0f172a; color: white; padding: 0.65rem 1.25rem; border-radius: 0.75rem; text-decoration: none; font-size: 0.875rem; font-weight: 600; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="icon">✕</div>
-            <h2>Falta configurar MERCADOPAGO_CLIENT_ID</h2>
-            <p>${errorMsg}</p>
-            <a id="btnFallback" href="${failUrl}" class="btn">Volver al Panel</a>
-          </div>
-          <script>
-            if (window.opener && !window.opener.closed) {
-              try {
-                window.opener.postMessage({
-                  type: 'MP_OAUTH_ERROR',
-                  error: ${JSON.stringify(errorMsg)},
-                  storeSlug: ${JSON.stringify(targetStore)}
-                }, '*');
-              } catch (e) {}
-              setTimeout(() => {
-                window.close();
-              }, 3000);
-            }
-          </script>
-        </body>
-        </html>
-      `);
-    }
-
-    console.log(`[Mercado Pago OAuth] Exchanging code for store="${targetStore}", isSandbox=${isSandbox}, clientId=${clientId}`);
-
-    // Request body for token exchange
+    // Request body for token exchange (test_token siempre false)
     const tokenPayload: Record<string, any> = {
-      client_id: clientId,
-      client_secret: clientSecret,
+      client_id: creds.clientId,
+      client_secret: creds.clientSecret,
       grant_type: 'authorization_code',
       code: String(code),
       redirect_uri: redirectUri,
@@ -880,46 +821,7 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
     if (!tokenRes.ok || !tokenData.access_token) {
       console.error('[Mercado Pago OAuth] Token exchange error:', tokenData);
       const failMsg = tokenData.message || tokenData.error || 'No se pudo obtener el token de Mercado Pago';
-      return res.status(400).send(`
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-          <meta charset="utf-8">
-          <title>Mercado Pago - Error de Autorización</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1.5rem; box-sizing: border-box; }
-            .card { background: white; border: 1px solid #fee2e2; border-radius: 1.25rem; padding: 2.25rem 2rem; max-width: 440px; width: 100%; text-align: center; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); }
-            .icon { width: 56px; height: 56px; border-radius: 50%; background: #fee2e2; color: #dc2626; font-size: 28px; display: inline-flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
-            h2 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #991b1b; }
-            p { font-size: 0.875rem; color: #64748b; line-height: 1.5; margin: 0 0 1.25rem; }
-            .btn { display: inline-block; background: #0f172a; color: white; padding: 0.65rem 1.25rem; border-radius: 0.75rem; text-decoration: none; font-size: 0.875rem; font-weight: 600; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="icon">✕</div>
-            <h2>Error al intercambiar credenciales</h2>
-            <p>${failMsg}</p>
-            <a id="btnFallback" href="${failUrl}" class="btn">Volver al Panel</a>
-          </div>
-          <script>
-            if (window.opener && !window.opener.closed) {
-              try {
-                window.opener.postMessage({
-                  type: 'MP_OAUTH_ERROR',
-                  error: ${JSON.stringify(failMsg)},
-                  storeSlug: ${JSON.stringify(targetStore)}
-                }, '*');
-              } catch (e) {}
-              setTimeout(() => {
-                window.close();
-              }, 2500);
-            }
-          </script>
-        </body>
-        </html>
-      `);
+      return res.status(400).send(renderOAuthErrorHtml(failMsg, targetStore, failUrl));
     }
 
     const merchantAccessToken = tokenData.access_token;
@@ -947,56 +849,45 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
 
     const nowIso = new Date().toISOString();
 
-    if (!db) {
-      console.error('[Mercado Pago OAuth] Fatal: Firestore Admin no está inicializado. No se pueden guardar credenciales.');
-      return res.status(500).send('Error interno del servidor: Base de datos no disponible.');
-    }
+    // 1. Guardar tokens en documento privado stores/{slug}/private/mercadopago
+    await db.doc(`stores/${targetStore}/private/mercadopago`).set({
+      accessToken: merchantAccessToken,
+      refreshToken: merchantRefreshToken || '',
+      publicKey: merchantPublicKey || '',
+      expiresIn: expiresIn || 0,
+      expiresAt: expiresAt || '',
+      updatedAt: nowIso,
+    }, { merge: true });
 
+    // 2. stores/{slug}/settings/current -> mercadoPago conserva únicamente campos no secretos (sandboxMode derivado por el servidor)
+    await db.doc(`stores/${targetStore}/settings/current`).set({
+      mercadoPago: {
+        connected: true,
+        enabled: true,
+        accountEmail: email,
+        accountNickname: nickname,
+        connectedAt: nowIso,
+        lastVerifiedAt: nowIso,
+        sandboxMode: creds.isSandbox,
+      },
+      updatedAt: nowIso,
+    }, { merge: true });
+
+    // Limpiar campos secretos residuales si existían
     try {
-      // 1. Guardar tokens en documento privado stores/{slug}/private/mercadopago
-      await db.doc(`stores/${targetStore}/private/mercadopago`).set({
-        accessToken: merchantAccessToken,
-        refreshToken: merchantRefreshToken || '',
-        publicKey: merchantPublicKey || '',
-        expiresIn: expiresIn || 0,
-        expiresAt: expiresAt || '',
-        updatedAt: nowIso,
-      }, { merge: true });
+      await db.doc(`stores/${targetStore}/settings/current`).update({
+        'mercadoPago.accessToken': FieldValue.delete(),
+        'mercadoPago.refreshToken': FieldValue.delete(),
+        'mercadoPago.publicKey': FieldValue.delete(),
+        'mercadoPago.expiresIn': FieldValue.delete(),
+        'mercadoPago.expiresAt': FieldValue.delete(),
+      });
+    } catch (_) {}
 
-      // 2. stores/{slug}/settings/current -> mercadoPago conserva únicamente campos no secretos
-      await db.doc(`stores/${targetStore}/settings/current`).set({
-        mercadoPago: {
-          connected: true,
-          enabled: true,
-          accountEmail: email,
-          accountNickname: nickname,
-          connectedAt: nowIso,
-          lastVerifiedAt: nowIso,
-          sandboxMode: isSandbox,
-        },
-        updatedAt: nowIso,
-      }, { merge: true });
+    console.log(`[Mercado Pago OAuth] Credenciales guardadas exitosamente en stores/${targetStore}/private/mercadopago y configuración pública actualizada (sandboxMode=${creds.isSandbox}).`);
 
-      // Borrar cualquier campo secreto previo en settings si existía
-      try {
-        await db.doc(`stores/${targetStore}/settings/current`).update({
-          'mercadoPago.accessToken': FieldValue.delete(),
-          'mercadoPago.refreshToken': FieldValue.delete(),
-          'mercadoPago.publicKey': FieldValue.delete(),
-          'mercadoPago.expiresIn': FieldValue.delete(),
-          'mercadoPago.expiresAt': FieldValue.delete(),
-        });
-      } catch (_) {}
-
-      console.log(`[Mercado Pago OAuth] Credenciales guardadas exitosamente en stores/${targetStore}/private/mercadopago y configuración pública actualizada.`);
-    } catch (fsErr: any) {
-      console.error(`[Mercado Pago OAuth] Error al guardar en Firestore para "${targetStore}":`, fsErr?.message || fsErr);
-    }
-
-    // Success URL for non-popup fallbacks (Tarea 1: no exponer accessToken en la URL)
     const successUrl = `${PUBLIC_BASE_URL}/${targetStore}/admin?mp_auth=success&accountEmail=${encodeURIComponent(email)}&accountNickname=${encodeURIComponent(nickname)}`;
 
-    // Return HTML page with multi-channel communication (localStorage, BroadcastChannel, postMessage) for popups
     return res.send(`
       <!DOCTYPE html>
       <html lang="es">
@@ -1028,10 +919,9 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
             storeSlug: targetStore,
             accountEmail: email,
             accountNickname: nickname,
-            isSandbox: isSandbox,
+            isSandbox: creds.isSandbox,
           })};
 
-          // 1. Broadcast via localStorage (cross-window on same domain, survives severed window.opener)
           try {
             localStorage.setItem('MP_OAUTH_SUCCESS_EVENT', JSON.stringify({
               ...payload,
@@ -1039,7 +929,6 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
             }));
           } catch (e) {}
 
-          // 2. Broadcast via BroadcastChannel (modern multi-tab channel)
           try {
             if (typeof BroadcastChannel !== 'undefined') {
               const channel = new BroadcastChannel('MP_OAUTH_CHANNEL');
@@ -1048,19 +937,16 @@ app.get(['/api/mercadopago/oauth/callback', '/api/mercadopago/oauth/callback/'],
             }
           } catch (e) {}
 
-          // 3. postMessage if window.opener is still connected
           if (window.opener && !window.opener.closed) {
             try {
               window.opener.postMessage(payload, '*');
             } catch (e) {}
           }
 
-          // 4. Auto-close popup after 1.2s, or fallback to direct admin redirect
           setTimeout(() => {
             try {
               window.close();
             } catch (e) {}
-            // If window.close() was prevented by browser policy, navigate to admin panel
             setTimeout(() => {
               window.location.href = ${JSON.stringify(successUrl)};
             }, 500);
@@ -1098,15 +984,14 @@ async function getStoreAccessToken(storeSlug: string): Promise<string | null> {
         if (expiresAtTime - nowTime < 5 * 60 * 1000) {
           console.log(`[Mercado Pago Token Refresh] Token próximo a expirar para "${cleanStore}", renovando con refresh_token...`);
           try {
-            const clientId = platformMpConfig.clientId || MP_CLIENT_ID;
-            const clientSecret = process.env.MERCADOPAGO_CLIENT_SECRET;
-            if (clientId && clientSecret) {
+            const creds = getMercadoPagoCredentials(cleanStore);
+            if (creds.clientId && creds.clientSecret) {
               const refreshRes = await fetch('https://api.mercadopago.com/oauth/token', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  client_id: clientId,
-                  client_secret: clientSecret,
+                  client_id: creds.clientId,
+                  client_secret: creds.clientSecret,
                   grant_type: 'refresh_token',
                   refresh_token: refreshToken,
                 }),
@@ -1125,7 +1010,6 @@ async function getStoreAccessToken(storeSlug: string): Promise<string | null> {
                   updatedAt: new Date().toISOString(),
                 }, { merge: true });
 
-                // Actualizar timestamp en configuración pública de la tienda
                 await db.doc(`stores/${cleanStore}/settings/current`).set({
                   mercadoPago: {
                     lastVerifiedAt: new Date().toISOString(),
@@ -1135,6 +1019,8 @@ async function getStoreAccessToken(storeSlug: string): Promise<string | null> {
               } else {
                 console.warn(`[Mercado Pago Token Refresh] Error de MP al renovar token para "${cleanStore}":`, rData);
               }
+            } else {
+              console.warn(`[Mercado Pago Token Refresh] Credenciales de ${creds.isSandbox ? 'sandbox' : 'producción'} no configuradas para renovar token en "${cleanStore}".`);
             }
           } catch (rErr) {
             console.error(`[Mercado Pago Token Refresh] Error durante renovación para "${cleanStore}":`, rErr);
@@ -1225,13 +1111,16 @@ app.get('/api/mercadopago/status', async (req, res) => {
     const connected = Boolean(mpSettings.connected || hasPrivateToken);
     const enabled = connected && mpSettings.enabled !== false;
 
+    // Entorno determinado de forma autoritativa por el servidor según MP_SANDBOX_STORES
+    const creds = getMercadoPagoCredentials(storeSlug);
+
     // Devuelve ÚNICAMENTE campos no secretos y expiresAt
     return res.json({
       connected,
       enabled,
       accountEmail: mpSettings.accountEmail || '',
       accountNickname: mpSettings.accountNickname || '',
-      sandboxMode: Boolean(mpSettings.sandboxMode),
+      sandboxMode: creds.isSandbox,
       expiresAt: privateData.expiresAt || mpSettings.expiresAt || '',
     });
   } catch (err: any) {

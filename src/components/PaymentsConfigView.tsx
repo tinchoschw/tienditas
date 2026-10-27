@@ -264,16 +264,30 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
   // Start OAuth popup
   const handleStartOAuth = async () => {
     setAuthError(null);
+
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      setAuthError('Debes iniciar sesión con tu cuenta de Google para vincular Mercado Pago.');
+      setConnectingStep('error');
+      return;
+    }
+
     setConnectingStep('opening');
 
     try {
+      const idToken = await currentUser.getIdToken();
       const res = await fetch(
-        `/api/mercadopago/oauth/url?storeSlug=${encodeURIComponent(storeSlug || 'apolo')}&isSandbox=${connectSandbox}`
+        `/api/mercadopago/oauth/url?storeSlug=${encodeURIComponent(storeSlug || 'apolo')}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${idToken}`,
+          },
+        }
       );
-      if (!res.ok) {
-        throw new Error('No se pudo generar la URL de autorización oficial de Mercado Pago.');
-      }
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudo generar la URL de autorización oficial de Mercado Pago.');
+      }
       if (!data.url) {
         throw new Error('Respuesta inválida del servidor.');
       }
@@ -717,23 +731,18 @@ export const PaymentsConfigView: React.FC<PaymentsConfigViewProps> = ({
                 {/* Exclusivo para la tienda de pruebas Sandbox */}
                 {isSandboxStore && (
                   <div className="pt-2">
-                    <label className="flex items-start justify-between p-3 rounded-xl border border-amber-200 bg-amber-50/70 hover:bg-amber-100/60 transition-colors cursor-pointer gap-3">
-                      <div className="space-y-0.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-bold text-amber-900">Entorno de Pruebas (Exclusivo Tienda Sandbox)</span>
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-amber-200 text-amber-900 rounded">Test</span>
+                    <div className="p-3 rounded-xl border border-amber-200 bg-amber-50/70 text-amber-900 flex items-start gap-2.5">
+                      <span className="material-symbols-outlined text-amber-600 text-lg shrink-0 mt-0.5">science</span>
+                      <div>
+                        <div className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                          <span>Tienda asignada a Sandbox</span>
+                          <span className="px-1.5 py-0.2 text-[10px] font-semibold bg-amber-200 text-amber-900 rounded">Test</span>
                         </div>
-                        <span className="text-[11px] text-amber-800 block leading-relaxed">
-                          Activá esto si vas a iniciar sesión con una cuenta de vendedor de prueba creada en Mercado Pago Developers.
-                        </span>
+                        <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                          Esta tienda opera en el entorno de pruebas según la configuración del servidor. Usá tu cuenta de vendedor de prueba de Mercado Pago para vincular.
+                        </p>
                       </div>
-                      <input
-                        type="checkbox"
-                        checked={connectSandbox}
-                        onChange={(e) => setConnectSandbox(e.target.checked)}
-                        className="w-4 h-4 mt-0.5 text-[#009EE3] rounded border-neutral-300 focus:ring-[#009EE3] cursor-pointer"
-                      />
-                    </label>
+                    </div>
                   </div>
                 )}
 
