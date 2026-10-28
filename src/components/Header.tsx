@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { StoreSettings, StoreFeatureFlags, Store } from '../types';
+import { useModalHistory } from '../hooks/useModalHistory';
 
 interface HeaderProps {
   isAdminView: boolean;
@@ -37,6 +39,37 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenHelpAssistant
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const menuContainerRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Connect menu with mobile back button / swipe gesture
+  useModalHistory({
+    isOpen: mobileMenuOpen,
+    onClose: () => setMobileMenuOpen(false),
+    modalKey: 'admin-header-menu'
+  });
+
+  // Close admin menu when clicking outside
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as Node;
+      if (
+        menuContainerRef.current &&
+        !menuContainerRef.current.contains(target) &&
+        menuButtonRef.current &&
+        !menuButtonRef.current.contains(target)
+      ) {
+        setMobileMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+    };
+  }, [mobileMenuOpen]);
 
   // Close admin menu when Escape key is pressed
   useEffect(() => {
@@ -169,6 +202,7 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Menú Toggle Button Container with Dropdown */}
             <div className="relative">
               <button
+                ref={menuButtonRef}
                 onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
                 className="flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs font-semibold transition-all shadow-xs cursor-pointer active:scale-95"
                 title="Abrir menú de navegación y opciones"
@@ -186,25 +220,41 @@ export const Header: React.FC<HeaderProps> = ({
               {/* Admin Unified Menu (Compact floating card anchored right) */}
               {mobileMenuOpen && (
                 <>
-                  {/* Dismiss Backdrop */}
-                  <div
-                    className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[2px] transition-opacity"
-                    onClick={() => setMobileMenuOpen(false)}
-                  />
+                  {/* Full-screen Dismiss Backdrop via Portal (Escapes header stacking context) */}
+                  {typeof document !== 'undefined' && createPortal(
+                    <div
+                      className="fixed inset-0 z-[60] bg-black/25 backdrop-blur-[1px] transition-opacity cursor-pointer"
+                      onClick={() => setMobileMenuOpen(false)}
+                      aria-label="Cerrar menú"
+                    />,
+                    document.body
+                  )}
 
                   {/* Menu Floating Card */}
                   <div 
-                    className="absolute right-0 top-full mt-2.5 z-50 w-[min(340px,calc(100vw-2rem))] bg-white rounded-2xl shadow-2xl border border-neutral-200/90 p-3.5 sm:p-4 animate-in fade-in zoom-in-95 duration-150"
+                    ref={menuContainerRef}
+                    className="absolute right-0 top-full mt-2.5 z-[70] w-[min(340px,calc(100vw-2rem))] bg-white rounded-2xl shadow-2xl border border-neutral-200/90 p-3.5 sm:p-4 animate-in fade-in zoom-in-95 duration-150"
                     role="menu"
                   >
                     <div className="space-y-3">
                       <div className="flex items-center justify-between pb-2 border-b border-neutral-100">
-                        <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">
-                          Navegación del Administrador
-                        </span>
-                        <span className="text-xs text-neutral-500 font-medium truncate max-w-[170px]">
-                          {settings.storeName || 'Mi Tienda'}
-                        </span>
+                        <div className="flex flex-col min-w-0 pr-2">
+                          <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">
+                            Navegación
+                          </span>
+                          <span className="text-xs text-neutral-700 font-semibold truncate max-w-[190px]">
+                            {settings.storeName || 'Mi Tienda'}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setMobileMenuOpen(false)}
+                          className="w-7 h-7 flex items-center justify-center rounded-lg text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors cursor-pointer shrink-0"
+                          title="Cerrar menú"
+                          aria-label="Cerrar menú"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">close</span>
+                        </button>
                       </div>
 
                       {/* Expiration / Plan Alert Banner */}

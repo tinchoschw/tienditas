@@ -435,7 +435,6 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
     setLastAddedProduct(selectedProductModal.name);
     setTimeout(() => setLastAddedProduct(null), 3000);
-    if (onOpenCart) onOpenCart();
   };
   const handleAddToCart = (product: Product) => {
     const visibleVariants = product.variants.filter(isVariantVisible);
@@ -498,7 +497,6 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
     setLastAddedProduct(product.name);
     setTimeout(() => setLastAddedProduct(null), 3000);
-    if (onOpenCart) onOpenCart();
   };
 
   return (
