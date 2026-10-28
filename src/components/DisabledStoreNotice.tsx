@@ -37,7 +37,7 @@ export const DisabledStoreNotice: React.FC<DisabledStoreNoticeProps> = ({
   const mailtoHref = `mailto:ugmartin@hotmail.com?subject=${encodeURIComponent(
     `Solicitud de Reactivación de Tienda: ${store.name} (/${store.slug})`
   )}&body=${encodeURIComponent(
-    `Hola Martín,\n\nMe pongo en contacto para solicitar la reactivación de mi tienda en la plataforma Apolo Commerce.\n\n` +
+    `Hola Martín,\n\nMe pongo en contacto para solicitar la reactivación de mi tienda en la plataforma Tiendita.\n\n` +
       `• Nombre del Comercio: ${store.name}\n` +
       `• URL de la Tienda: /${store.slug}\n` +
       `• WhatsApp de Contacto: ${store.whatsappNumber || 'Sin especificar'}\n\n` +
@@ -61,18 +61,22 @@ export const DisabledStoreNotice: React.FC<DisabledStoreNoticeProps> = ({
     <div className="min-h-screen bg-[#FBF9F8] text-neutral-900 flex flex-col justify-between font-sans selection:bg-neutral-900 selection:text-white">
       {/* Top Header */}
       <header className="bg-white border-b border-neutral-200/80 sticky top-0 z-20 shadow-2xs">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2.5">
             <button
               onClick={onExitToLanding}
-              className="w-10 h-10 bg-neutral-900 text-white rounded-xl flex items-center justify-center font-bold shadow-xs hover:bg-black transition-colors cursor-pointer"
+              className="p-1 rounded-xl hover:bg-neutral-100 transition-colors cursor-pointer"
               title="Ir al inicio de la plataforma"
             >
-              <span className="material-symbols-outlined text-xl">storefront</span>
+              <img
+                src="/assets/aistudio/tiendita_logo_9de88685.png"
+                alt="Tiendita"
+                className="w-9 h-9 object-contain rounded-lg"
+              />
             </button>
             <div>
               <div className="text-sm font-bold tracking-tight text-neutral-900">
-                Apolo Commerce
+                Tiendita
               </div>
               <div className="text-[11px] text-neutral-500 font-medium">
                 Panel de Administración
@@ -233,7 +237,7 @@ export const DisabledStoreNotice: React.FC<DisabledStoreNoticeProps> = ({
                   </div>
 
                   <p className="text-xs text-neutral-600 leading-relaxed">
-                    Martín U. • Administración & Soporte Apolo Commerce. Atención personalizada para la reactivación inmediata de comercios.
+                    Martín U. • Administración & Soporte Tiendita. Atención personalizada para la reactivación inmediata de comercios.
                   </p>
                 </div>
 
@@ -313,7 +317,7 @@ export const DisabledStoreNotice: React.FC<DisabledStoreNoticeProps> = ({
       {/* Footer */}
       <footer className="border-t border-neutral-200/80 bg-white py-6 text-center text-xs text-neutral-500">
         <div className="max-w-4xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>© {new Date().getFullYear()} Apolo Commerce • Plataforma de Catálogos Digitales</p>
+          <p>© {new Date().getFullYear()} Tiendita • Plataforma de Catálogos Digitales</p>
           <div className="flex items-center gap-4">
             <button
               onClick={onExitToLanding}

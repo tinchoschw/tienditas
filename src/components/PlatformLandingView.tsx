@@ -17,8 +17,6 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
   onOpenSuperAdmin
 }) => {
   const { user, loginWithGoogle } = useAuth();
-  const [searchTerm, setSearchTerm] = useState('');
-  const [slugInput, setSlugInput] = useState('');
   const [copiedEmail, setCopiedEmail] = useState(false);
 
   // Modals for Google Onboarding & Store Selection
@@ -85,27 +83,25 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
     }
   }, [user, stores, isLoggingIn, onSelectStore]);
 
-  // Only active stores with public catalog enabled appear in the public platform directory
-  const activeStores = stores.filter(
-    (s) => s.active !== false && s.featureFlags?.publicCatalog !== false && s.status !== 'closed'
-  );
+  // Slugs of sandbox stores from environment or default
+  const sandboxList = (() => {
+    const raw = (typeof process !== 'undefined' && process.env?.MP_SANDBOX_STORES) ||
+                (import.meta.env as any)?.VITE_MP_SANDBOX_STORES ||
+                (import.meta.env as any)?.MP_SANDBOX_STORES ||
+                'sandbox';
+    return String(raw).toLowerCase().split(',').map((s) => s.trim()).filter(Boolean);
+  })();
 
-  const filteredStores = activeStores.filter((s) => {
-    const term = searchTerm.toLowerCase().trim();
-    if (!term) return true;
-    return (
-      s.name.toLowerCase().includes(term) ||
-      s.slug.toLowerCase().includes(term) ||
-      (s.whatsappNumber && s.whatsappNumber.includes(term))
-    );
-  });
-
-  const handleDirectGo = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanSlug = slugInput.trim().toLowerCase().replace(/^\/+|\/+$/g, '');
-    if (!cleanSlug) return;
-    onSelectStore(cleanSlug, 'storefront');
+  const isStoreSandbox = (s: Store) => {
+    return s.isSandbox === true ||
+           sandboxList.includes((s.slug || '').toLowerCase()) ||
+           sandboxList.includes((s.id || '').toLowerCase());
   };
+
+  // Only active stores with public catalog enabled appear in the public platform directory (excluding sandbox test stores)
+  const activeStores = stores.filter(
+    (s) => s.active !== false && s.featureFlags?.publicCatalog !== false && s.status !== 'closed' && !isStoreSandbox(s)
+  );
 
   const scrollToSection = (e: React.MouseEvent, sectionId: string) => {
     e.preventDefault();
@@ -130,7 +126,7 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
   };
 
   const mailtoHref = `mailto:ugmartin@hotmail.com?subject=${encodeURIComponent(
-    'Consulta por Tienda Online - Apolo Commerce'
+    'Consulta por Tienda Online - Tiendita'
   )}&body=${encodeURIComponent(
     'Hola Martín,\n\nQuisiera solicitar información para activar mi tienda online en la plataforma.\n\n' +
       '• Nombre de mi comercio / marca:\n' +
@@ -146,13 +142,15 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
       {/* Platform Header */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-neutral-200/80 shadow-xs">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-neutral-900 text-white rounded-xl flex items-center justify-center font-bold shadow-xs">
-              <span className="material-symbols-outlined text-xl">storefront</span>
-            </div>
+          <div className="flex items-center gap-2.5">
+            <img
+              src="/assets/aistudio/tiendita_logo_9de88685.png"
+              alt="Tiendita"
+              className="w-9 h-9 sm:w-10 sm:h-10 object-contain rounded-xl"
+            />
             <div>
               <div className="text-base font-bold tracking-tight text-neutral-900 leading-tight">
-                Apolo Commerce
+                Tiendita
               </div>
               <div className="text-xs text-neutral-500 font-medium">
                 Catálogos Digitales & Ventas por WhatsApp
@@ -288,33 +286,6 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
               <span>Explorar Comercios de Ejemplo</span>
             </a>
           </div>
-
-          {/* Quick Direct Store Access Input */}
-          <form
-            onSubmit={handleDirectGo}
-            className="pt-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-2 max-w-md mx-auto"
-          >
-            <div className="relative flex-1">
-              <span className="material-symbols-outlined text-neutral-400 text-[18px] absolute left-3 top-1/2 -translate-y-1/2">
-                link
-              </span>
-              <input
-                type="text"
-                value={slugInput}
-                onChange={(e) => setSlugInput(e.target.value)}
-                placeholder="Abrir catálogo directo (ej. apolo, calipso...)"
-                className="w-full pl-9 pr-3 py-2.5 bg-white border border-neutral-300 rounded-xl text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900 shadow-xs"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={!slugInput.trim()}
-              className="px-4 py-2.5 bg-neutral-800 hover:bg-black disabled:opacity-40 text-white text-xs font-semibold rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
-            >
-              <span>Abrir</span>
-              <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-            </button>
-          </form>
         </section>
 
         {/* SUBSCRIPTION & PRICING SECTION (New Section 6) */}
@@ -380,8 +351,12 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
                 </button>
               </div>
 
-              {/* 9 Features Included List */}
+              {/* Features Included List */}
               <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-neutral-200">
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
+                  <span><strong>Comisión $0</strong> de la tienda.</span>
+                </div>
                 <div className="flex items-start gap-2.5">
                   <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
                   <span><strong>Carga ilimitada de productos</strong> sin topes artificiales.</span>
@@ -392,11 +367,7 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
                 </div>
                 <div className="flex items-start gap-2.5">
                   <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
-                  <span><strong>Armado de carrito</strong> con pedido detallado directo a WhatsApp.</span>
-                </div>
-                <div className="flex items-start gap-2.5">
-                  <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
-                  <span><strong>Pagos directos por Mercado Pago</strong> acreditados en tu propia cuenta.</span>
+                  <span><strong>Pagos directos por Mercado Pago</strong> acreditados en tu propia cuenta o podés gestionar por WhatsApp.</span>
                 </div>
                 <div className="flex items-start gap-2.5">
                   <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
@@ -404,7 +375,7 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
                 </div>
                 <div className="flex items-start gap-2.5">
                   <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
-                  <span><strong>Administración de ventas</strong> por catálogo, mostrador y otros canales.</span>
+                  <span><strong>Administración de ventas</strong> automáticas por catálogo y manuales recibidas por otros canales.</span>
                 </div>
                 <div className="flex items-start gap-2.5">
                   <span className="material-symbols-outlined text-emerald-400 text-[18px] shrink-0 mt-0.5">check_circle</span>
@@ -546,122 +517,58 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
             <div>
               <h2 className="text-lg font-bold text-neutral-900 flex items-center gap-2">
                 <span>Comercios Activos en la Plataforma</span>
-                <span className="text-xs font-semibold text-neutral-700 bg-neutral-100 px-2 py-0.5 rounded-full">
-                  {activeStores.length} tiendas
+                <span className="text-xs font-semibold text-neutral-700 bg-neutral-100 px-2.5 py-0.5 rounded-full">
+                  {activeStores.length} {activeStores.length === 1 ? 'tienda' : 'tiendas'}
                 </span>
               </h2>
               <p className="text-xs text-neutral-500 mt-0.5">
-                Mirá cómo se ve un catálogo en vivo y explorá las tiendas activas en la plataforma.
+                Mirá cómo se ve un catálogo en vivo.
               </p>
             </div>
-
-            {/* Filter Input */}
-            {stores.length > 2 && (
-              <div className="relative w-full sm:w-64">
-                <span className="material-symbols-outlined text-neutral-400 text-[16px] absolute left-3 top-1/2 -translate-y-1/2">
-                  search
-                </span>
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Buscar comercio..."
-                  className="w-full pl-8 pr-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-xs text-neutral-800 focus:outline-none focus:ring-1 focus:ring-black"
-                />
-              </div>
-            )}
           </div>
 
-          {filteredStores.length === 0 ? (
+          {activeStores.length === 0 ? (
             <div className="bg-white rounded-2xl border border-neutral-200 p-8 text-center space-y-3">
               <span className="material-symbols-outlined text-3xl text-neutral-400">store_mall_directory</span>
               <p className="text-sm text-neutral-600 font-medium">
-                {stores.length === 0
-                  ? 'Aún no hay tiendas creadas en la plataforma.'
-                  : `No se encontraron tiendas que coincidan con "${searchTerm}".`}
+                Aún no hay tiendas creadas en la plataforma.
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              {filteredStores.map((store) => {
-                const isActive = store.active !== false && store.status !== 'suspended' && store.status !== 'closed';
-
-                return (
-                  <div
-                    key={store.id}
-                    className="bg-white rounded-2xl border border-neutral-200/90 shadow-xs hover:shadow-md transition-all flex flex-col justify-between overflow-hidden group"
-                  >
-                    <div className="p-5">
-                      <div className="flex items-start justify-between gap-3 mb-3">
-                        <div className="flex items-center gap-3 min-w-0">
-                          {store.logoUrl ? (
-                            <div className="w-12 h-12 rounded-xl bg-neutral-50 border border-neutral-100 p-1 flex items-center justify-center shrink-0 overflow-hidden">
-                              <img
-                                src={store.logoUrl}
-                                alt={store.name}
-                                className="max-h-full max-w-full object-contain"
-                              />
-                            </div>
-                          ) : (
-                            <div
-                              className="w-12 h-12 rounded-xl text-white flex items-center justify-center font-bold text-base shrink-0 shadow-xs uppercase"
-                              style={{ backgroundColor: store.primaryColor || '#1A1A1A' }}
-                            >
-                              {store.name.substring(0, 2)}
-                            </div>
-                          )}
-
-                          <div className="min-w-0">
-                            <h3 className="font-bold text-neutral-900 text-base truncate tracking-tight">
-                              {store.name}
-                            </h3>
-                            <div className="flex items-center gap-1.5 text-xs text-neutral-500 font-mono mt-0.5 truncate">
-                              <span className="text-neutral-400">/</span>
-                              <span className="bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-700 font-semibold">
-                                {store.slug}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1 ${
-                            isActive
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
-                              : 'bg-neutral-100 text-neutral-500'
-                          }`}
-                        >
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              isActive ? 'bg-emerald-500' : 'bg-neutral-400'
-                            }`}
-                          />
-                          <span>{isActive ? 'Activa' : 'Pausada'}</span>
-                        </span>
-                      </div>
-
-                      {store.whatsappNumber && (
-                        <div className="flex items-center gap-2 text-xs text-neutral-600 mt-3 pt-3 border-t border-neutral-100">
-                          <span className="material-symbols-outlined text-[15px] text-emerald-600">chat</span>
-                          <span className="truncate">{store.whatsappNumber}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Action button: Ver Catálogo */}
-                    <div className="bg-neutral-50/80 p-4 border-t border-neutral-100">
-                      <button
-                        onClick={() => onSelectStore(store.slug, 'storefront')}
-                        className="w-full py-2.5 px-4 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs hover:shadow active:scale-[0.99]"
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-5">
+              {activeStores.map((store) => (
+                <div
+                  key={store.id}
+                  onClick={() => onSelectStore(store.slug, 'storefront')}
+                  className="bg-white rounded-2xl border border-neutral-200/90 shadow-2xs hover:shadow-md transition-all p-4 flex flex-col items-center justify-between text-center cursor-pointer group hover:-translate-y-0.5"
+                  title={`Abrir catálogo de ${store.name}`}
+                >
+                  {/* Logo área con altura amplia y ancho adaptable */}
+                  <div className="w-full h-28 sm:h-32 flex items-center justify-center p-2 rounded-xl bg-neutral-50/60 group-hover:bg-neutral-50 transition-colors overflow-hidden">
+                    {store.logoUrl ? (
+                      <img
+                        src={store.logoUrl}
+                        alt={store.name}
+                        className="max-h-full max-w-full object-contain transition-transform group-hover:scale-105"
+                      />
+                    ) : (
+                      <div
+                        className="w-16 h-16 rounded-2xl text-white flex items-center justify-center font-bold text-xl shadow-xs uppercase transition-transform group-hover:scale-105"
+                        style={{ backgroundColor: store.primaryColor || '#1A1A1A' }}
                       >
-                        <span className="material-symbols-outlined text-[17px] text-neutral-300">storefront</span>
-                        <span>Ver Catálogo</span>
-                        <span className="material-symbols-outlined text-[15px] text-neutral-400">arrow_forward</span>
-                      </button>
-                    </div>
+                        {store.name.substring(0, 2)}
+                      </div>
+                    )}
                   </div>
-                );
-              })}
+
+                  {/* Nombre del comercio */}
+                  <div className="w-full mt-3 pt-1">
+                    <h3 className="font-bold text-neutral-900 text-sm truncate w-full group-hover:text-black tracking-tight">
+                      {store.name}
+                    </h3>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </section>
@@ -800,7 +707,7 @@ export const PlatformLandingView: React.FC<PlatformLandingViewProps> = ({
       <footer className="bg-white border-t border-neutral-200/80 py-6 text-xs text-neutral-500">
         <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-neutral-800">Apolo Commerce</span>
+            <span className="font-bold text-neutral-800">Tiendita</span>
             <span>· Plataforma Multi-Comercio &copy; {new Date().getFullYear()}</span>
           </div>
 
