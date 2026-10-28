@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { StoreSettings, StoreFeatureFlags, Store } from '../types';
 import { useModalHistory } from '../hooks/useModalHistory';
 
@@ -219,43 +218,20 @@ export const Header: React.FC<HeaderProps> = ({
 
               {/* Admin Unified Menu (Compact floating card anchored right) */}
               {mobileMenuOpen && (
-                <>
-                  {/* Full-screen Dismiss Backdrop via Portal (Escapes header stacking context) */}
-                  {typeof document !== 'undefined' && createPortal(
-                    <div
-                      className="fixed inset-0 z-[60] bg-black/25 backdrop-blur-[1px] transition-opacity cursor-pointer"
-                      onClick={() => setMobileMenuOpen(false)}
-                      aria-label="Cerrar menú"
-                    />,
-                    document.body
-                  )}
-
-                  {/* Menu Floating Card */}
-                  <div 
-                    ref={menuContainerRef}
-                    className="absolute right-0 top-full mt-2.5 z-[70] w-[min(340px,calc(100vw-2rem))] bg-white rounded-2xl shadow-2xl border border-neutral-200/90 p-3.5 sm:p-4 animate-in fade-in zoom-in-95 duration-150"
-                    role="menu"
-                  >
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between pb-2 border-b border-neutral-100">
-                        <div className="flex flex-col min-w-0 pr-2">
-                          <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">
-                            Navegación
-                          </span>
-                          <span className="text-xs text-neutral-700 font-semibold truncate max-w-[190px]">
-                            {settings.storeName || 'Mi Tienda'}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setMobileMenuOpen(false)}
-                          className="w-7 h-7 flex items-center justify-center rounded-lg text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors cursor-pointer shrink-0"
-                          title="Cerrar menú"
-                          aria-label="Cerrar menú"
-                        >
-                          <span className="material-symbols-outlined text-[18px]">close</span>
-                        </button>
-                      </div>
+                <div 
+                  ref={menuContainerRef}
+                  className="absolute right-0 top-full mt-2.5 z-50 w-[min(340px,calc(100vw-2rem))] bg-white rounded-2xl shadow-2xl border border-neutral-200/90 p-3.5 sm:p-4 animate-in fade-in zoom-in-95 duration-150"
+                  role="menu"
+                >
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-neutral-100">
+                      <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">
+                        Navegación del Administrador
+                      </span>
+                      <span className="text-xs text-neutral-500 font-medium truncate max-w-[170px]">
+                        {settings.storeName || 'Mi Tienda'}
+                      </span>
+                    </div>
 
                       {/* Expiration / Plan Alert Banner */}
                       {(isExpired || isExpiringSoon) && (
@@ -444,8 +420,7 @@ export const Header: React.FC<HeaderProps> = ({
                       </div>
                     </div>
                   </div>
-                </>
-              )}
+                )}
             </div>
           </div>
         ) : (
