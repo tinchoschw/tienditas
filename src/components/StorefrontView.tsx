@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Product, CartItem, StoreSettings, StoreFeatureFlags } from '../types';
 import { useModalHistory } from '../hooks/useModalHistory';
+import { ensureStoreAttributes, formatVariantSummary } from '../utils/attributeUtils';
 
 interface StorefrontViewProps {
   products: Product[];
@@ -31,9 +32,11 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
   initialProductId,
   featureFlags
 }) => {
+  const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
+
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [selectedSizes, setSelectedSizes] = useState<string[]>([]);
-  const [selectedColors, setSelectedColors] = useState<string[]>([]);
+  const [selectedAttr1, setSelectedAttr1] = useState<string[]>([]);
+  const [selectedAttr2, setSelectedAttr2] = useState<string[]>([]);
   const [onlyInStock, setOnlyInStock] = useState<boolean>(true);
   const [sortBy, setSortBy] = useState<string>('recent');
   const [isFiltersOpen, setIsFiltersOpen] = useState<boolean>(() => 
@@ -46,7 +49,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
   const [isLinkCopied, setIsLinkCopied] = useState<boolean>(false);
 
   // Popover menus state
-  const [activeDropdown, setActiveDropdown] = useState<'cat' | 'size' | 'color' | null>(null);
+  const [activeDropdown, setActiveDropdown] = useState<'cat' | 'attr1' | 'attr2' | null>(null);
 
   // Product Detail Modal state
   const [selectedProductModal, setSelectedProductModal] = useState<Product | null>(null);
@@ -71,45 +74,45 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [settings.categories, products]);
 
-  // Dynamic available sizes (only for enabled combinations)
-  const sizeOptions = useMemo(() => {
-    const set = new Set<string>();
+  // Dynamic available options for Attribute 1
+  const attr1Options = useMemo(() => {
+    if (!attribute1.enabled) return [];
+    const usedIds = new Set<string>();
     products.filter((p) => p.enabledOnline).forEach((p) => {
       p.variants.filter(isVariantVisible).forEach((v) => {
-        if (v.size) set.add(v.size);
-      });
-    });
-    const standardOrder = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL', 'U', 'ÚNICO'];
-    return Array.from(set).sort((a, b) => {
-      const idxA = standardOrder.indexOf(a.toUpperCase());
-      const idxB = standardOrder.indexOf(b.toUpperCase());
-      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-      if (idxA !== -1) return -1;
-      if (idxB !== -1) return 1;
-      return a.localeCompare(b);
-    });
-  }, [products]);
-
-  // Dynamic available colors (only for enabled combinations)
-  const colorOptions = useMemo(() => {
-    const map = new Map<string, string>();
-    products.filter((p) => p.enabledOnline).forEach((p) => {
-      p.variants.filter(isVariantVisible).forEach((v) => {
-        if (v.color) {
-          if (!map.has(v.color.toLowerCase())) {
-            map.set(v.color.toLowerCase(), v.colorHex || '#000000');
-          }
+        if (v.attributeOptionId1) usedIds.add(v.attributeOptionId1);
+        else if (attribute1.type === 'color' && v.color) {
+          const match = attribute1.options.find((o) => o.label.toLowerCase() === v.color.toLowerCase());
+          if (match) usedIds.add(match.id);
+        } else if (v.size) {
+          const match = attribute1.options.find((o) => o.label.toLowerCase() === v.size.toLowerCase());
+          if (match) usedIds.add(match.id);
         }
       });
     });
-    return Array.from(map.entries())
-      .map(([name, hex]) => {
-        // Find proper casing
-        const orig = products.flatMap((p) => p.variants).filter(isVariantVisible).find((v) => v.color.toLowerCase() === name)?.color || name;
-        return { name: orig, hex };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [products]);
+    const visible = attribute1.options.filter((o) => usedIds.size === 0 || usedIds.has(o.id));
+    return visible.length > 0 ? visible : attribute1.options;
+  }, [attribute1, products]);
+
+  // Dynamic available options for Attribute 2
+  const attr2Options = useMemo(() => {
+    if (!attribute2.enabled) return [];
+    const usedIds = new Set<string>();
+    products.filter((p) => p.enabledOnline).forEach((p) => {
+      p.variants.filter(isVariantVisible).forEach((v) => {
+        if (v.attributeOptionId2) usedIds.add(v.attributeOptionId2);
+        else if (attribute2.type === 'color' && v.color) {
+          const match = attribute2.options.find((o) => o.label.toLowerCase() === v.color.toLowerCase());
+          if (match) usedIds.add(match.id);
+        } else if (v.size) {
+          const match = attribute2.options.find((o) => o.label.toLowerCase() === v.size.toLowerCase());
+          if (match) usedIds.add(match.id);
+        }
+      });
+    });
+    const visible = attribute2.options.filter((o) => usedIds.size === 0 || usedIds.has(o.id));
+    return visible.length > 0 ? visible : attribute2.options;
+  }, [attribute2, products]);
 
   // Toggle filter helper functions
   const toggleCategory = (cat: string) => {
@@ -118,38 +121,39 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     );
   };
 
-  const toggleSize = (sz: string) => {
-    setSelectedSizes((prev) =>
-      prev.includes(sz) ? prev.filter((s) => s !== sz) : [...prev, sz]
+  const toggleAttr1 = (id: string) => {
+    setSelectedAttr1((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
     );
   };
 
-  const toggleColor = (col: string) => {
-    setSelectedColors((prev) =>
-      prev.some((c) => c.toLowerCase() === col.toLowerCase())
-        ? prev.filter((c) => c.toLowerCase() !== col.toLowerCase())
-        : [...prev, col]
+  const toggleAttr2 = (id: string) => {
+    setSelectedAttr2((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
     );
   };
 
   const clearAllFilters = () => {
     setSelectedCategories([]);
-    setSelectedSizes([]);
-    setSelectedColors([]);
+    setSelectedAttr1([]);
+    setSelectedAttr2([]);
     setOnlyInStock(true);
   };
 
-  const hasSpecificFilters = selectedCategories.length > 0 || selectedSizes.length > 0 || selectedColors.length > 0;
+  const hasSpecificFilters =
+    selectedCategories.length > 0 ||
+    selectedAttr1.length > 0 ||
+    selectedAttr2.length > 0;
   const activeFiltersCount =
     selectedCategories.length +
-    selectedSizes.length +
-    selectedColors.length +
+    selectedAttr1.length +
+    selectedAttr2.length +
     (!onlyInStock ? 1 : 0);
 
-  // Filtered & Sorted products (Supporting multi-select, combined color+size constraint and stock boolean)
+  // Filtered & Sorted products (Supporting multi-select, dynamic attributes, stock boolean, hiding 0 variants)
   const filteredProducts = useMemo(() => {
     return products
-      .filter((p) => p.enabledOnline && p.variants.some(isVariantVisible))
+      .filter((p) => p.variants && p.variants.length > 0 && p.enabledOnline && p.variants.some(isVariantVisible))
       .filter((p) => {
         // Multi Category filter
         if (selectedCategories.length > 0) {
@@ -159,44 +163,49 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
           if (!matchCat) return false;
         }
 
-        // Helper to check if a variant matches active size and color filters
+        // Helper to check if a variant matches active attr1 and attr2 filters
         const variantMatchesCriteria = (v: any) => {
           if (!isVariantVisible(v)) return false;
 
-          if (selectedSizes.length > 0) {
-            const matchSize = selectedSizes.some(
-              (s) => s.toLowerCase() === v.size.toLowerCase()
-            );
-            if (!matchSize) return false;
+          if (attribute1.enabled && selectedAttr1.length > 0) {
+            const vOpt1 = v.attributeOptionId1 || '';
+            const match1 = selectedAttr1.some((sel) => {
+              if (vOpt1 && sel === vOpt1) return true;
+              const opt = attribute1.options.find((o) => o.id === sel);
+              if (opt) {
+                if (v.color && v.color.toLowerCase() === opt.label.toLowerCase()) return true;
+                if (v.size && v.size.toLowerCase() === opt.label.toLowerCase()) return true;
+              }
+              return false;
+            });
+            if (!match1) return false;
           }
 
-          if (selectedColors.length > 0) {
-            const matchColor = selectedColors.some(
-              (c) => c.toLowerCase() === v.color.toLowerCase()
-            );
-            if (!matchColor) return false;
+          if (attribute2.enabled && selectedAttr2.length > 0) {
+            const vOpt2 = v.attributeOptionId2 || '';
+            const match2 = selectedAttr2.some((sel) => {
+              if (vOpt2 && sel === vOpt2) return true;
+              const opt = attribute2.options.find((o) => o.id === sel);
+              if (opt) {
+                if (v.size && v.size.toLowerCase() === opt.label.toLowerCase()) return true;
+                if (v.color && v.color.toLowerCase() === opt.label.toLowerCase()) return true;
+              }
+              return false;
+            });
+            if (!match2) return false;
           }
 
           return true;
         };
 
-        // All visible variants of this product that match the selected size/color criteria
         const matchingVariants = p.variants.filter(variantMatchesCriteria);
+        if (matchingVariants.length === 0) return false;
 
-        // If no variant exists matching the selected combination, exclude product
-        // (e.g. if the shirt does not exist in size M, it does not exist under this filter)
-        if (matchingVariants.length === 0) {
-          return false;
-        }
-
-        // If "Solo en stock" is active, at least one of the MATCHING variants MUST have stock > 0
         if (onlyInStock) {
           const hasMatchingStock = matchingVariants.some(
-            (v) => Number(v.stock || 0) > 0
+            (v) => v.unlimited || Number(v.stock || 0) > 0
           );
-          if (!hasMatchingStock) {
-            return false;
-          }
+          if (!hasMatchingStock) return false;
         }
 
         return true;
@@ -207,7 +216,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
         if (sortBy === 'popular') return b.totalStock - a.totalStock;
         return 0;
       });
-  }, [products, selectedCategories, selectedSizes, selectedColors, onlyInStock, sortBy]);
+  }, [products, selectedCategories, selectedAttr1, selectedAttr2, onlyInStock, sortBy, attribute1, attribute2]);
 
   // Helper to generate the exact deep link URL for a product
   const getProductShareUrl = (productId: string): string => {
@@ -396,6 +405,8 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
       return;
     }
 
+    const isUnlimited = !!matchedVariant.unlimited;
+
     const inCart =
       cart.find(
         (c) =>
@@ -404,15 +415,15 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
           c.size.toLowerCase() === size.toLowerCase()
       )?.quantity || 0;
 
-    const maxStock = matchedVariant ? Number(matchedVariant.stock || 0) : 0;
-    const remainingStock = Math.max(0, maxStock - inCart);
+    const maxStock = isUnlimited ? 999999 : (matchedVariant ? Number(matchedVariant.stock || 0) : 0);
+    const remainingStock = isUnlimited ? 999999 : Math.max(0, maxStock - inCart);
 
-    if (remainingStock <= 0) {
-      alert(`No hay más stock disponible de esta combinación (${color}, Talle ${size}).`);
+    if (!isUnlimited && remainingStock <= 0) {
+      alert(`No hay más stock disponible de esta combinación.`);
       return;
     }
 
-    const qtyToAdd = Math.min(modalQuantity, remainingStock);
+    const qtyToAdd = isUnlimited ? modalQuantity : Math.min(modalQuantity, remainingStock);
     const image = selectedProductModal.images[modalActiveImageIndex] || selectedProductModal.images[0];
     const effectiveModalPrice = (
       selectedProductModal.discountPrice &&
@@ -428,6 +439,8 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
       variantId: matchedVariant?.id || 'v-default',
       size,
       color,
+      attributeSummary: formatVariantSummary(matchedVariant, attribute1, attribute2, selectedProductModal),
+      unlimited: isUnlimited,
       price: effectiveModalPrice,
       quantity: qtyToAdd,
       image
@@ -436,6 +449,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     setLastAddedProduct(selectedProductModal.name);
     setTimeout(() => setLastAddedProduct(null), 3000);
   };
+
   const handleAddToCart = (product: Product) => {
     const visibleVariants = product.variants.filter(isVariantVisible);
     const uniqueColors = Array.from(new Set(visibleVariants.map((v) => v.color)));
@@ -459,6 +473,8 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
       return;
     }
 
+    const isUnlimited = !!matchedVariant.unlimited;
+
     const inCart =
       cart.find(
         (c) =>
@@ -467,11 +483,11 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
           c.size.toLowerCase() === size.toLowerCase()
       )?.quantity || 0;
 
-    const maxStock = matchedVariant ? Number(matchedVariant.stock || 0) : 0;
-    const remainingStock = Math.max(0, maxStock - inCart);
+    const maxStock = isUnlimited ? 999999 : (matchedVariant ? Number(matchedVariant.stock || 0) : 0);
+    const remainingStock = isUnlimited ? 999999 : Math.max(0, maxStock - inCart);
 
-    if (remainingStock <= 0) {
-      alert(`No hay más stock disponible de "${product.name}" en ${color} (Talle ${size}).`);
+    if (!isUnlimited && remainingStock <= 0) {
+      alert(`No hay más stock disponible de "${product.name}".`);
       return;
     }
 
@@ -490,6 +506,8 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
       variantId: matchedVariant?.id || 'v-default',
       size,
       color,
+      attributeSummary: formatVariantSummary(matchedVariant, attribute1, attribute2, product),
+      unlimited: isUnlimited,
       price: effectiveCardPrice,
       quantity: 1,
       image
@@ -609,141 +627,163 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                 )}
               </div>
 
-              {/* Talles Dropdown */}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setActiveDropdown(activeDropdown === 'size' ? null : 'size')}
-                  className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
-                    selectedSizes.length > 0
-                      ? 'bg-black text-white border-black shadow-xs'
-                      : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[17px]">straighten</span>
-                  <span>
-                    {selectedSizes.length === 0 ? 'Talles' : `Talles (${selectedSizes.length})`}
-                  </span>
-                  <span className="material-symbols-outlined text-[16px] opacity-70">
-                    {activeDropdown === 'size' ? 'expand_less' : 'expand_more'}
-                  </span>
-                </button>
+              {/* Atributo 1 Dropdown (si está habilitado) */}
+              {attribute1.enabled && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setActiveDropdown(activeDropdown === 'attr1' ? null : 'attr1')}
+                    className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
+                      selectedAttr1.length > 0
+                        ? 'bg-black text-white border-black shadow-xs'
+                        : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[17px]">
+                      {attribute1.type === 'color' ? 'palette' : 'tune'}
+                    </span>
+                    <span>
+                      {selectedAttr1.length === 0
+                        ? attribute1.name
+                        : `${attribute1.name} (${selectedAttr1.length})`}
+                    </span>
+                    <span className="material-symbols-outlined text-[16px] opacity-70">
+                      {activeDropdown === 'attr1' ? 'expand_less' : 'expand_more'}
+                    </span>
+                  </button>
 
-                {activeDropdown === 'size' && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-20"
-                      onClick={() => setActiveDropdown(null)}
-                    />
-                    <div className="absolute left-0 mt-2 w-56 bg-white rounded-xl shadow-xl border border-neutral-200 p-3 z-30 flex flex-col gap-2 max-h-72 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
-                      <div className="flex items-center justify-between pb-2 border-b border-neutral-100 text-[11px] font-bold text-neutral-500 uppercase tracking-wider">
-                        <span>Filtrar Talles</span>
-                        {selectedSizes.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setSelectedSizes([])}
-                            className="text-neutral-500 hover:text-black underline cursor-pointer"
-                          >
-                            Limpiar
-                          </button>
-                        )}
-                      </div>
-                      <div className="grid grid-cols-2 gap-1">
-                        {sizeOptions.map((sz) => {
-                          const isChecked = selectedSizes.includes(sz);
-                          return (
-                            <label
-                              key={sz}
-                              className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs cursor-pointer select-none transition-colors ${
-                                isChecked ? 'bg-neutral-100 font-bold text-black' : 'hover:bg-[#f5f3f3] text-neutral-700'
-                              }`}
+                  {activeDropdown === 'attr1' && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-20"
+                        onClick={() => setActiveDropdown(null)}
+                      />
+                      <div className="absolute left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-neutral-200 p-3 z-30 flex flex-col gap-2 max-h-72 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
+                        <div className="flex items-center justify-between pb-2 border-b border-neutral-100 text-[11px] font-bold text-neutral-500 uppercase tracking-wider">
+                          <span>Filtrar {attribute1.name}</span>
+                          {selectedAttr1.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedAttr1([])}
+                              className="text-neutral-500 hover:text-black underline cursor-pointer"
                             >
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={() => toggleSize(sz)}
-                                className="w-3.5 h-3.5 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
-                              />
-                              <span>{sz}</span>
-                            </label>
-                          );
-                        })}
+                              Limpiar
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          {attr1Options.map((opt) => {
+                            const isChecked = selectedAttr1.includes(opt.id);
+                            return (
+                              <label
+                                key={opt.id}
+                                className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors"
+                              >
+                                <div className="flex items-center gap-2.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={() => toggleAttr1(opt.id)}
+                                    className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
+                                  />
+                                  {attribute1.type === 'color' && (
+                                    <span
+                                      className="w-3.5 h-3.5 rounded-full border border-black/15 shrink-0"
+                                      style={{ backgroundColor: opt.hex || '#000000' }}
+                                    />
+                                  )}
+                                  <span className={isChecked ? 'font-bold text-black' : 'text-neutral-700'}>
+                                    {opt.label}
+                                  </span>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  </>
-                )}
-              </div>
+                    </>
+                  )}
+                </div>
+              )}
 
-              {/* Colores Dropdown */}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setActiveDropdown(activeDropdown === 'color' ? null : 'color')}
-                  className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
-                    selectedColors.length > 0
-                      ? 'bg-black text-white border-black shadow-xs'
-                      : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[17px]">palette</span>
-                  <span>
-                    {selectedColors.length === 0 ? 'Colores' : `Colores (${selectedColors.length})`}
-                  </span>
-                  <span className="material-symbols-outlined text-[16px] opacity-70">
-                    {activeDropdown === 'color' ? 'expand_less' : 'expand_more'}
-                  </span>
-                </button>
+              {/* Atributo 2 Dropdown (si está habilitado) */}
+              {attribute2.enabled && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setActiveDropdown(activeDropdown === 'attr2' ? null : 'attr2')}
+                    className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
+                      selectedAttr2.length > 0
+                        ? 'bg-black text-white border-black shadow-xs'
+                        : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[17px]">
+                      {attribute2.type === 'color' ? 'palette' : 'straighten'}
+                    </span>
+                    <span>
+                      {selectedAttr2.length === 0
+                        ? attribute2.name
+                        : `${attribute2.name} (${selectedAttr2.length})`}
+                    </span>
+                    <span className="material-symbols-outlined text-[16px] opacity-70">
+                      {activeDropdown === 'attr2' ? 'expand_less' : 'expand_more'}
+                    </span>
+                  </button>
 
-                {activeDropdown === 'color' && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-20"
-                      onClick={() => setActiveDropdown(null)}
-                    />
-                    <div className="absolute left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-neutral-200 p-3 z-30 flex flex-col gap-2 max-h-72 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
-                      <div className="flex items-center justify-between pb-2 border-b border-neutral-100 text-[11px] font-bold text-neutral-500 uppercase tracking-wider">
-                        <span>Filtrar Colores</span>
-                        {selectedColors.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setSelectedColors([])}
-                            className="text-neutral-500 hover:text-black underline cursor-pointer"
-                          >
-                            Limpiar
-                          </button>
-                        )}
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        {colorOptions.map((col) => {
-                          const isChecked = selectedColors.some((c) => c.toLowerCase() === col.name.toLowerCase());
-                          return (
-                            <label
-                              key={col.name}
-                              className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors"
+                  {activeDropdown === 'attr2' && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-20"
+                        onClick={() => setActiveDropdown(null)}
+                      />
+                      <div className="absolute left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-neutral-200 p-3 z-30 flex flex-col gap-2 max-h-72 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
+                        <div className="flex items-center justify-between pb-2 border-b border-neutral-100 text-[11px] font-bold text-neutral-500 uppercase tracking-wider">
+                          <span>Filtrar {attribute2.name}</span>
+                          {selectedAttr2.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedAttr2([])}
+                              className="text-neutral-500 hover:text-black underline cursor-pointer"
                             >
-                              <div className="flex items-center gap-2.5">
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={() => toggleColor(col.name)}
-                                  className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
-                                />
-                                <span
-                                  className="w-3.5 h-3.5 rounded-full border border-black/15 shrink-0"
-                                  style={{ backgroundColor: col.hex }}
-                                />
-                                <span className={isChecked ? 'font-bold text-black' : 'text-neutral-700'}>
-                                  {col.name}
-                                </span>
-                              </div>
-                            </label>
-                          );
-                        })}
+                              Limpiar
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          {attr2Options.map((opt) => {
+                            const isChecked = selectedAttr2.includes(opt.id);
+                            return (
+                              <label
+                                key={opt.id}
+                                className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors"
+                              >
+                                <div className="flex items-center gap-2.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={() => toggleAttr2(opt.id)}
+                                    className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
+                                  />
+                                  {attribute2.type === 'color' && (
+                                    <span
+                                      className="w-3.5 h-3.5 rounded-full border border-black/15 shrink-0"
+                                      style={{ backgroundColor: opt.hex || '#000000' }}
+                                    />
+                                  )}
+                                  <span className={isChecked ? 'font-bold text-black' : 'text-neutral-700'}>
+                                    {opt.label}
+                                  </span>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  </>
-                )}
-              </div>
+                    </>
+                  )}
+                </div>
+              )}
 
               {/* Interruptor Booleano: Solo en Stock */}
               <div className="h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl bg-[#f5f3f3] border border-transparent hover:border-neutral-200 flex items-center gap-2.5 transition-colors">
@@ -819,37 +859,43 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                 </span>
               ))}
 
-              {selectedSizes.map((sz) => (
-                <span
-                  key={sz}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#efeded] text-black text-[11px] font-medium"
-                >
-                  <span>Talle: {sz}</span>
-                  <button
-                    type="button"
-                    onClick={() => toggleSize(sz)}
-                    className="hover:text-red-600 cursor-pointer"
+              {selectedAttr1.map((id) => {
+                const opt = attribute1.options.find((o) => o.id === id);
+                return (
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#efeded] text-black text-[11px] font-medium"
                   >
-                    ×
-                  </button>
-                </span>
-              ))}
+                    <span>{attribute1.name}: {opt?.label || id}</span>
+                    <button
+                      type="button"
+                      onClick={() => toggleAttr1(id)}
+                      className="hover:text-red-600 cursor-pointer"
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
 
-              {selectedColors.map((col) => (
-                <span
-                  key={col}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#efeded] text-black text-[11px] font-medium"
-                >
-                  <span>Color: {col}</span>
-                  <button
-                    type="button"
-                    onClick={() => toggleColor(col)}
-                    className="hover:text-red-600 cursor-pointer"
+              {selectedAttr2.map((id) => {
+                const opt = attribute2.options.find((o) => o.id === id);
+                return (
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#efeded] text-black text-[11px] font-medium"
                   >
-                    ×
-                  </button>
-                </span>
-              ))}
+                    <span>{attribute2.name}: {opt?.label || id}</span>
+                    <button
+                      type="button"
+                      onClick={() => toggleAttr2(id)}
+                      className="hover:text-red-600 cursor-pointer"
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
 
               {!onlyInStock && (
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-neutral-200 text-neutral-800 text-[11px] font-medium">
@@ -956,30 +1002,42 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                 {filteredProducts.map((product) => {
                   const visibleVariants = product.variants.filter(isVariantVisible);
                   const uniqueColors = Array.from(new Set(visibleVariants.map((v) => v.color)));
-                  // Prefer user's active color filter if available for this product
-                  const preferredFilterColor = selectedColors.find((sc) =>
-                    uniqueColors.some((c) => c.toLowerCase() === sc.toLowerCase())
-                  );
+                  // Prefer user's active attribute 1 filter if available for this product
+                  const preferredFilterColor = selectedAttr1.find((sc) => {
+                    const opt = attribute1.options.find((o) => o.id === sc);
+                    const val = opt?.label || sc;
+                    return uniqueColors.some((c) => c.toLowerCase() === val.toLowerCase());
+                  });
                   const currentColorName =
                     cardSelectedColor[product.id] && uniqueColors.includes(cardSelectedColor[product.id])
                       ? cardSelectedColor[product.id]
                       : (preferredFilterColor
-                          ? uniqueColors.find((c) => c.toLowerCase() === preferredFilterColor.toLowerCase())!
+                          ? (uniqueColors.find((c) => {
+                              const opt = attribute1.options.find((o) => o.id === preferredFilterColor);
+                              const val = opt?.label || preferredFilterColor;
+                              return c.toLowerCase() === val.toLowerCase();
+                            }) || uniqueColors[0] || '')
                           : uniqueColors[0] || '');
                   const currentColorVariants = visibleVariants.filter(
                     (v) => v.color === currentColorName
                   );
 
                   const uniqueSizes = Array.from(new Set(currentColorVariants.map((v) => v.size)));
-                  // Prefer user's active size filter if available in current color
-                  const preferredFilterSize = selectedSizes.find((sz) =>
-                    uniqueSizes.some((s) => s.toLowerCase() === sz.toLowerCase())
-                  );
+                  // Prefer user's active attribute 2 filter if available in current color
+                  const preferredFilterSize = selectedAttr2.find((sz) => {
+                    const opt = attribute2.options.find((o) => o.id === sz);
+                    const val = opt?.label || sz;
+                    return uniqueSizes.some((s) => s.toLowerCase() === val.toLowerCase());
+                  });
                   const currentSizeName =
                     cardSelectedSize[product.id] && uniqueSizes.includes(cardSelectedSize[product.id])
                       ? cardSelectedSize[product.id]
                       : (preferredFilterSize
-                          ? uniqueSizes.find((s) => s.toLowerCase() === preferredFilterSize.toLowerCase())!
+                          ? (uniqueSizes.find((s) => {
+                              const opt = attribute2.options.find((o) => o.id === preferredFilterSize);
+                              const val = opt?.label || preferredFilterSize;
+                              return s.toLowerCase() === val.toLowerCase();
+                            }) || uniqueSizes[0] || '')
                           : uniqueSizes[0] || '');
 
                   const selectedVariant =
@@ -992,9 +1050,10 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                       ci.color.toLowerCase() === currentColorName.toLowerCase() &&
                       ci.size.toLowerCase() === currentSizeName.toLowerCase()
                   )?.quantity || 0;
+                  const isVariantUnlimited = !!selectedVariant?.unlimited;
                   const variantStock = selectedVariant ? Number(selectedVariant.stock || 0) : 0;
-                  const remainingStock = Math.max(0, variantStock - inCartCount);
-                  const isVariantOutOfStock = remainingStock <= 0;
+                  const remainingStock = isVariantUnlimited ? 999999 : Math.max(0, variantStock - inCartCount);
+                  const isVariantOutOfStock = !isVariantUnlimited && remainingStock <= 0;
 
                   // Dynamic Badge matching user's image ("Último!", "2 disp.", etc.)
                   let badgeText = '';
@@ -1002,21 +1061,24 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                   let badgeTextColor = '#854d0e';
                   let isUrgent = false;
 
-                  if (selectedVariant && selectedVariant.stock === 1) {
-                    badgeText = 'Último!';
-                    badgeBg = '#fef08a';
-                    badgeTextColor = '#854d0e';
-                    isUrgent = true;
-                  } else if (selectedVariant && selectedVariant.stock > 1 && selectedVariant.stock <= 3) {
-                    badgeText = `${selectedVariant.stock} disp.`;
-                    badgeBg = '#dcfce7';
-                    badgeTextColor = '#166534';
-                    isUrgent = true;
-                  } else if (isVariantOutOfStock) {
-                    badgeText = 'Agotado';
-                    badgeBg = '#262626';
-                    badgeTextColor = '#ffffff';
-                  } else if (product.tags.includes('Nueva Colección')) {
+                  if (!isVariantUnlimited) {
+                    if (selectedVariant && selectedVariant.stock === 1) {
+                      badgeText = 'Último!';
+                      badgeBg = '#fef08a';
+                      badgeTextColor = '#854d0e';
+                      isUrgent = true;
+                    } else if (selectedVariant && selectedVariant.stock > 1 && selectedVariant.stock <= 3) {
+                      badgeText = `${selectedVariant.stock} disp.`;
+                      badgeBg = '#dcfce7';
+                      badgeTextColor = '#166534';
+                      isUrgent = true;
+                    } else if (isVariantOutOfStock) {
+                      badgeText = 'Agotado';
+                      badgeBg = '#262626';
+                      badgeTextColor = '#ffffff';
+                    }
+                  }
+                  if (!badgeText && product.tags && product.tags.includes('Nueva Colección')) {
                     badgeText = 'Nuevo';
                     badgeBg = settings.primaryColor || '#1A1A1A';
                     badgeTextColor = '#ffffff';
@@ -1132,7 +1194,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                 {uniqueSizes.map((sName) => {
                                   const match = currentColorVariants.find((v) => v.size === sName);
                                   const isSelected = currentSizeName === sName;
-                                  const isOutOfStock = !match || match.stock <= 0;
+                                  const isOutOfStock = !match?.unlimited && (!match || match.stock <= 0);
                                   return (
                                     <button
                                       key={sName}
@@ -1149,7 +1211,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                           ? 'bg-neutral-900 text-white border-neutral-900 shadow-2xs'
                                           : 'bg-[#f5f5f5] text-neutral-700 border-neutral-200 hover:border-black cursor-pointer'
                                       }`}
-                                      title={isOutOfStock ? `Talle ${sName} sin stock` : `Elegir talle ${sName}`}
+                                      title={isOutOfStock ? `${sName} sin stock` : `Elegir ${sName}`}
                                     >
                                       {sName}
                                     </button>
@@ -1292,9 +1354,10 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
             ci.size.toLowerCase() === modalSelectedSize.toLowerCase()
         )?.quantity || 0;
 
+        const isModalVariantUnlimited = !!activeVariant?.unlimited;
         const rawVariantStock = activeVariant ? Number(activeVariant.stock || 0) : 0;
-        const maxStock = Math.max(0, rawVariantStock - inCartModal);
-        const isOutOfStock = maxStock <= 0;
+        const maxStock = isModalVariantUnlimited ? 99 : Math.max(0, rawVariantStock - inCartModal);
+        const isOutOfStock = !isModalVariantUnlimited && maxStock <= 0;
 
         return (
           <div 
@@ -1406,7 +1469,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     <span className="px-2.5 py-0.5 rounded-full bg-[#f5f3f3] text-black text-xs font-semibold border border-neutral-200">
                       {product.category}
                     </span>
-                    {activeVariant && rawVariantStock > 0 && maxStock <= 3 && maxStock > 0 && (
+                    {activeVariant && !isModalVariantUnlimited && rawVariantStock > 0 && maxStock <= 3 && maxStock > 0 && (
                       <span 
                         className="px-2.5 py-0.5 rounded-full text-white text-xs font-bold shadow-xs"
                         style={{ backgroundColor: settings.secondaryColor || '#de5845' }}
@@ -1414,12 +1477,17 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                         ¡Últimas {maxStock} unidades disponibles!
                       </span>
                     )}
+                    {isModalVariantUnlimited && (
+                      <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold">
+                        Stock Ilimitado
+                      </span>
+                    )}
                     {inCartModal > 0 && (
                       <span className="px-2.5 py-0.5 rounded-full bg-neutral-200 text-neutral-800 text-xs font-semibold">
                         {inCartModal} en tu carrito
                       </span>
                     )}
-                    {isOutOfStock && (
+                    {isOutOfStock && !isModalVariantUnlimited && (
                       <span className="px-2.5 py-0.5 rounded-full bg-neutral-800 text-white text-xs font-bold">
                         {rawVariantStock <= 0 ? 'Agotado en este talle' : 'Todo el stock disponible en tu carrito'}
                       </span>
@@ -1477,79 +1545,83 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                   )}
 
                   {/* Color Selector */}
-                  <div className="pt-2 border-t border-neutral-100">
-                    <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
-                      <span>Color: <strong className="text-black font-semibold">{modalSelectedColor}</strong></span>
-                      <span className="text-[11px] text-neutral-400">{uniqueColors.length} disponibles</span>
+                  {uniqueColors.length > 0 && (
+                    <div className="pt-2 border-t border-neutral-100">
+                      <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
+                        <span>{attribute1.name || 'Color'}: <strong className="text-black font-semibold">{modalSelectedColor}</strong></span>
+                        <span className="text-[11px] text-neutral-400">{uniqueColors.length} disponibles</span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {uniqueColors.map((cName) => {
+                          const matchVar = visibleVariants.find((v) => v.color === cName);
+                          const isSelected = modalSelectedColor === cName;
+                          return (
+                            <button
+                              key={cName}
+                              type="button"
+                              title={cName}
+                              onClick={() => {
+                                setModalSelectedColor(cName);
+                                // Auto-select first available size for that color if current is out of stock
+                                const newColorVars = visibleVariants.filter((v) => v.color === cName);
+                                const matchingSize = newColorVars.find((v) => v.size === modalSelectedSize && (v.unlimited || v.stock > 0));
+                                if (!matchingSize && newColorVars[0]) {
+                                  setModalSelectedSize(newColorVars[0].size);
+                                }
+                              }}
+                              style={{ backgroundColor: matchVar?.colorHex || '#000' }}
+                              className={`w-7 h-7 rounded-full border border-black/20 transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'ring-2 ring-black ring-offset-2 scale-110 shadow-xs'
+                                  : 'hover:scale-105'
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {uniqueColors.map((cName) => {
-                        const matchVar = visibleVariants.find((v) => v.color === cName);
-                        const isSelected = modalSelectedColor === cName;
-                        return (
-                          <button
-                            key={cName}
-                            type="button"
-                            title={cName}
-                            onClick={() => {
-                              setModalSelectedColor(cName);
-                              // Auto-select first available size for that color if current is out of stock
-                              const newColorVars = visibleVariants.filter((v) => v.color === cName);
-                              const matchingSize = newColorVars.find((v) => v.size === modalSelectedSize && v.stock > 0);
-                              if (!matchingSize && newColorVars[0]) {
-                                setModalSelectedSize(newColorVars[0].size);
-                              }
-                            }}
-                            style={{ backgroundColor: matchVar?.colorHex || '#000' }}
-                            className={`w-7 h-7 rounded-full border border-black/20 transition-all cursor-pointer ${
-                              isSelected
-                                ? 'ring-2 ring-black ring-offset-2 scale-110 shadow-xs'
-                                : 'hover:scale-105'
-                            }`}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
+                  )}
 
                   {/* Size Selector */}
-                  <div className="pt-1">
-                    <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
-                      <span>Talle disponible:</span>
-                      <span className="text-[11px] text-neutral-400">
-                        {activeVariant ? `Stock: ${activeVariant.stock} u.` : 'Sin stock'}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {uniqueSizes.map((sName) => {
-                        const match = currentColorVariants.find((v) => v.size === sName);
-                        const isSelected = modalSelectedSize === sName;
-                        const isNoStock = !match || match.stock <= 0;
+                  {uniqueSizes.length > 0 && (
+                    <div className="pt-1">
+                      <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
+                        <span>{attribute2.name || 'Talle'} disponible:</span>
+                        <span className="text-[11px] text-neutral-400">
+                          {activeVariant ? (isModalVariantUnlimited ? 'Stock: Ilimitado' : `Stock: ${activeVariant.stock} u.`) : 'Sin stock'}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {uniqueSizes.map((sName) => {
+                          const match = currentColorVariants.find((v) => v.size === sName);
+                          const isSelected = modalSelectedSize === sName;
+                          const isNoStock = !match?.unlimited && (!match || match.stock <= 0);
 
-                        return (
-                          <button
-                            key={sName}
-                            type="button"
-                            disabled={isNoStock}
-                            onClick={() => {
-                              setModalSelectedSize(sName);
-                              setModalQuantity(1);
-                            }}
-                            style={isSelected ? { backgroundColor: settings.primaryColor || '#1A1A1A' } : undefined}
-                            className={`py-1.5 px-3.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                              isNoStock
-                                ? 'bg-neutral-100 text-neutral-400 line-through cursor-not-allowed border border-neutral-200'
-                                : isSelected
-                                ? 'text-white shadow-xs'
-                                : 'bg-[#f5f3f3] text-black hover:bg-[#efeded] border border-transparent'
-                            }`}
-                          >
-                            {sName}
-                          </button>
-                        );
-                      })}
+                          return (
+                            <button
+                              key={sName}
+                              type="button"
+                              disabled={isNoStock}
+                              onClick={() => {
+                                setModalSelectedSize(sName);
+                                setModalQuantity(1);
+                              }}
+                              style={isSelected ? { backgroundColor: settings.primaryColor || '#1A1A1A' } : undefined}
+                              className={`py-1.5 px-3.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                                isNoStock
+                                  ? 'bg-neutral-100 text-neutral-400 line-through cursor-not-allowed border border-neutral-200'
+                                  : isSelected
+                                  ? 'text-white shadow-xs'
+                                  : 'bg-[#f5f3f3] text-black hover:bg-[#efeded] border border-transparent'
+                              }`}
+                            >
+                              {sName}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   {/* Quantity Stepper */}
                   {!isOutOfStock && (
@@ -1575,7 +1647,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                         </button>
                       </div>
                       <span className="text-[11px] text-neutral-400 font-medium">
-                        (Máx {maxStock} u.)
+                        (Máx {isModalVariantUnlimited ? 'ilimitado' : `${maxStock} u.`})
                       </span>
                     </div>
                   )}

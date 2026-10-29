@@ -803,6 +803,7 @@ function MainContent() {
               <SalesView
                 sales={sales}
                 products={products}
+                settings={settings}
                 featureFlags={activeStore?.featureFlags}
                 onCreateSale={async (newSale) => {
                   const res = await createSale(currentStoreSlug, newSale);

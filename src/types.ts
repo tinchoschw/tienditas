@@ -1,11 +1,29 @@
+export interface StoreAttributeOption {
+  id: string;
+  label: string;
+  hex?: string; // used when type === "color"
+}
+
+export interface StoreAttribute {
+  id: 'attr1' | 'attr2';
+  name: string; // editable e.g. "Color", "Talle", "Tamaño", "Modelo"
+  type: 'text' | 'color'; // strictly text or color (NO image)
+  enabled: boolean;
+  options: StoreAttributeOption[];
+  hideUnusedWarning?: boolean;
+}
+
 export interface ProductVariant {
   id: string;
   color: string;
-  colorHex: string;
+  colorHex?: string;
   size: string;
   sku: string;
   stock: number;
   enabled: boolean;
+  attributeOptionId1?: string;
+  attributeOptionId2?: string;
+  unlimited?: boolean;
 }
 
 export interface Product {
@@ -21,8 +39,14 @@ export interface Product {
   enabledOnline: boolean;
   images: string[];
   coverIndex: number;
+  attributesUsed?: ('attr1' | 'attr2')[];
+  attributeOptions?: {
+    attr1?: string[];
+    attr2?: string[];
+  };
   variants: ProductVariant[];
   totalStock: number;
+  isUnlimited?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -33,9 +57,11 @@ export interface CartItem {
   variantId: string;
   size: string;
   color: string;
+  attributeSummary?: string;
   price: number;
   quantity: number;
   image?: string;
+  unlimited?: boolean;
 }
 
 export interface SalePayment {
@@ -52,9 +78,12 @@ export interface SaleItem {
   variantId?: string;
   size: string;
   color: string;
+  attributeSummary?: string;
+  attributeValues?: Record<string, string>;
   quantity: number;
   unitPrice: number;
   totalPrice: number;
+  unlimited?: boolean;
 }
 
 export interface Sale {
@@ -236,8 +265,10 @@ export interface StoreSettings {
   whatsappEnabled: boolean;
   whatsappNumber: string;
   categories: string[];
-  masterSizes: MasterSize[];
-  masterColors: MasterColor[];
+  attribute1?: StoreAttribute;
+  attribute2?: StoreAttribute;
+  masterSizes?: MasterSize[];
+  masterColors?: MasterColor[];
   storeName: string;
   adminPassword?: string;
   primaryPresets?: ColorPreset[];

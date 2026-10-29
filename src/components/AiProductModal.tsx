@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { StoreSettings } from '../types';
 import { convertDriveUrlToDirectLink } from './ProductEditModal';
 import { compressImageFile } from '../utils/imageOptimizer';
+import { ensureStoreAttributes } from '../utils/attributeUtils';
 
 interface AiDetectedColor {
   name: string;
@@ -104,6 +105,12 @@ export const AiProductModal: React.FC<AiProductModalProps> = ({
     setImages((prev) => prev.filter((_, i) => i !== index));
   };
 
+  // Check if store has any enabled attribute of type "color"
+  const { attribute1, attribute2 } = ensureStoreAttributes(settings);
+  const hasEnabledColorAttr =
+    (attribute1.enabled && attribute1.type === 'color') ||
+    (attribute2.enabled && attribute2.type === 'color');
+
   // Call the server Gemini API endpoint
   const handleAnalyzeWithAI = async () => {
     if (images.length === 0) {
@@ -123,6 +130,7 @@ export const AiProductModal: React.FC<AiProductModalProps> = ({
         body: JSON.stringify({
           images,
           category: selectedCategory,
+          includeColors: hasEnabledColorAttr,
         }),
       });
 
@@ -135,20 +143,22 @@ export const AiProductModal: React.FC<AiProductModalProps> = ({
 
       // Compare colors with masterColors to distinguish existing vs new
       const masterColorsMap = new Map(
-        settings.masterColors.map((c) => [c.name.trim().toLowerCase(), c])
+        (settings.masterColors || []).map((c) => [c.name.trim().toLowerCase(), c])
       );
 
-      const detectedColors: AiDetectedColor[] = (data.colors || []).map((col: { name: string; hex: string }) => {
-        const cleanName = col.name.trim();
-        const exists = masterColorsMap.has(cleanName.toLowerCase());
-        const masterMatch = masterColorsMap.get(cleanName.toLowerCase());
+      const detectedColors: AiDetectedColor[] = hasEnabledColorAttr
+        ? (data.colors || []).map((col: { name: string; hex: string }) => {
+            const cleanName = col.name.trim();
+            const exists = masterColorsMap.has(cleanName.toLowerCase());
+            const masterMatch = masterColorsMap.get(cleanName.toLowerCase());
 
-        return {
-          name: cleanName,
-          hex: exists && masterMatch ? masterMatch.hex : col.hex || '#1A1A1A',
-          isNew: !exists,
-        };
-      });
+            return {
+              name: cleanName,
+              hex: exists && masterMatch ? masterMatch.hex : col.hex || '#1A1A1A',
+              isNew: !exists,
+            };
+          })
+        : [];
 
       setResult({
         name: data.name || '',
@@ -167,8 +177,8 @@ export const AiProductModal: React.FC<AiProductModalProps> = ({
   const handleConfirmAndProceed = async () => {
     if (!result) return;
 
-    const selectedColors = result.colors.map((c) => c.name);
-    const newColorsToSave = saveNewColorsToMaster
+    const selectedColors = hasEnabledColorAttr ? result.colors.map((c) => c.name) : [];
+    const newColorsToSave = hasEnabledColorAttr && saveNewColorsToMaster
       ? result.colors.filter((c) => c.isNew).map((c) => ({ name: c.name, hex: c.hex }))
       : [];
 
@@ -296,69 +306,71 @@ export const AiProductModal: React.FC<AiProductModalProps> = ({
                 />
               </div>
 
-              {/* COLORS IDENTIFIED & SUGGESTIONS */}
-              <div className="p-4 rounded-xl bg-[#f5f3f3] border border-neutral-200 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-[18px] text-neutral-700">
-                      palette
-                    </span>
-                    <span className="text-xs font-bold text-neutral-900">
-                      Colores Determinantes Detectados ({result.colors.length})
-                    </span>
+              {/* COLORS IDENTIFIED & SUGGESTIONS (only if store has a color attribute enabled) */}
+              {hasEnabledColorAttr && (
+                <div className="p-4 rounded-xl bg-[#f5f3f3] border border-neutral-200 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] text-neutral-700">
+                        palette
+                      </span>
+                      <span className="text-xs font-bold text-neutral-900">
+                        Colores Determinantes Detectados ({result.colors.length})
+                      </span>
+                    </div>
                   </div>
-                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {result.colors.map((col, idx) => (
-                    <div
-                      key={idx}
-                      className="p-2.5 bg-white rounded-xl border border-neutral-200 flex items-center justify-between gap-2 shadow-2xs"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span
-                          className="w-5 h-5 rounded-full border border-neutral-300 shrink-0 shadow-2xs"
-                          style={{ backgroundColor: col.hex }}
-                        />
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-neutral-900 truncate">
-                            {col.name}
-                          </div>
-                          <div className="text-[10px] font-mono text-neutral-400 uppercase">
-                            {col.hex}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {result.colors.map((col, idx) => (
+                      <div
+                        key={idx}
+                        className="p-2.5 bg-white rounded-xl border border-neutral-200 flex items-center justify-between gap-2 shadow-2xs"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span
+                            className="w-5 h-5 rounded-full border border-neutral-300 shrink-0 shadow-2xs"
+                            style={{ backgroundColor: col.hex }}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-neutral-900 truncate">
+                              {col.name}
+                            </div>
+                            <div className="text-[10px] font-mono text-neutral-400 uppercase">
+                              {col.hex}
+                            </div>
                           </div>
                         </div>
+
+                        {col.isNew ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 shrink-0">
+                            Nuevo Color
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0 flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[12px]">check</span>
+                            En tu Tienda
+                          </span>
+                        )}
                       </div>
+                    ))}
+                  </div>
 
-                      {col.isNew ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 shrink-0">
-                          Nuevo Color
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0 flex items-center gap-1">
-                          <span className="material-symbols-outlined text-[12px]">check</span>
-                          En tu Tienda
-                        </span>
-                      )}
-                    </div>
-                  ))}
+                  {/* Option to automatically register new colors to masterColors */}
+                  {result.colors.some((c) => c.isNew) && (
+                    <label className="flex items-start gap-2.5 pt-2 border-t border-neutral-200 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={saveNewColorsToMaster}
+                        onChange={(e) => setSaveNewColorsToMaster(e.target.checked)}
+                        className="mt-0.5 rounded text-black focus:ring-black"
+                      />
+                      <span className="text-xs text-neutral-700 leading-snug">
+                        <strong>Sumar colores nuevos a la paleta oficial de la tienda:</strong> Se registrarán en la configuración global para que queden disponibles para siempre en futuras prendas.
+                      </span>
+                    </label>
+                  )}
                 </div>
-
-                {/* Option to automatically register new colors to masterColors */}
-                {result.colors.some((c) => c.isNew) && (
-                  <label className="flex items-start gap-2.5 pt-2 border-t border-neutral-200 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={saveNewColorsToMaster}
-                      onChange={(e) => setSaveNewColorsToMaster(e.target.checked)}
-                      className="mt-0.5 rounded text-black focus:ring-black"
-                    />
-                    <span className="text-xs text-neutral-700 leading-snug">
-                      <strong>Sumar colores nuevos a la paleta oficial de la tienda:</strong> Se registrarán en la configuración global para que queden disponibles para siempre en futuras prendas.
-                    </span>
-                  </label>
-                )}
-              </div>
+              )}
             </div>
           ) : (
             /* STEP 1: UPLOAD PHOTOS & CATEGORY */

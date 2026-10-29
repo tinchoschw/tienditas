@@ -79,6 +79,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
 
   // Helper to get max available stock for a cart item
   const getItemMaxStock = (item: CartItem): number => {
+    if (item.unlimited) return 999999;
     const prod = products.find((p) => p.id === item.productId);
     if (!prod) return 999;
     const variant = prod.variants.find(
@@ -87,6 +88,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
         (v.color.toLowerCase() === item.color.toLowerCase() &&
           v.size.toLowerCase() === item.size.toLowerCase())
     );
+    if (variant?.unlimited) return 999999;
     return variant ? Math.max(0, Number(variant.stock || 0)) : 999;
   };
 
@@ -109,7 +111,8 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     }
 
     cart.forEach((item) => {
-      text += `• ${item.quantity}x ${item.productName} (Talle ${item.size}, ${item.color}) = $${(item.price * item.quantity).toLocaleString('es-AR')}\n`;
+      const summary = item.attributeSummary || [item.color, item.size ? `Talle ${item.size}` : ''].filter(Boolean).join(', ');
+      text += `• ${item.quantity}x ${item.productName}${summary ? ` (${summary})` : ''} = $${(item.price * item.quantity).toLocaleString('es-AR')}\n`;
     });
     text += `\n*Total Estimado:* $${subtotal.toLocaleString('es-AR')}`;
     text += `\n\n¡Aguardo su confirmación para coordinar el pago y entrega!`;
@@ -126,12 +129,13 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       return;
     }
 
-    // Check stock availability
+    // Check stock availability (only for limited variants)
     for (const item of cart) {
+      if (item.unlimited) continue;
       const maxStock = getItemMaxStock(item);
       if (item.quantity > maxStock) {
         alert(
-          `No hay suficiente stock para "${item.productName} (${item.color} - Talle ${item.size})". Disponibles: ${maxStock} unidades.`
+          `No hay suficiente stock para "${item.productName}". Disponibles: ${maxStock} unidades.`
         );
         return;
       }
@@ -156,6 +160,8 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
             variantId: it.variantId,
             size: it.size,
             color: it.color,
+            attributeSummary: it.attributeSummary,
+            unlimited: it.unlimited,
             quantity: it.quantity,
             unitPrice: it.price,
             totalPrice: it.price * it.quantity
@@ -191,12 +197,13 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       return;
     }
 
-    // Check stock availability
+    // Check stock availability (only for limited variants)
     for (const item of cart) {
+      if (item.unlimited) continue;
       const maxStock = getItemMaxStock(item);
       if (item.quantity > maxStock) {
         alert(
-          `No hay suficiente stock para "${item.productName} (${item.color} - Talle ${item.size})". Disponibles: ${maxStock} unidades.`
+          `No hay suficiente stock para "${item.productName}". Disponibles: ${maxStock} unidades.`
         );
         return;
       }
@@ -224,6 +231,8 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
               variantId: it.variantId,
               size: it.size,
               color: it.color,
+              attributeSummary: it.attributeSummary,
+              unlimited: it.unlimited,
               quantity: it.quantity,
               unitPrice: it.price,
               totalPrice: it.price * it.quantity
@@ -340,7 +349,8 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
         ) : (
           cart.map((item, idx) => {
             const maxStock = getItemMaxStock(item);
-            const isMax = item.quantity >= maxStock;
+            const isUnlimited = !!item.unlimited || maxStock >= 99999;
+            const isMax = !isUnlimited && item.quantity >= maxStock;
 
             return (
               <div
@@ -368,14 +378,26 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                     {item.productName}
                   </h4>
                   <div className="flex items-center gap-1.5 text-[11px] text-neutral-600 mt-1 flex-wrap">
-                    <span className="px-2 py-0.5 rounded-md bg-white border border-neutral-200 font-medium">
-                      Talle {item.size}
-                    </span>
-                    <span className="px-2 py-0.5 rounded-md bg-white border border-neutral-200 font-medium">
-                      {item.color}
-                    </span>
+                    {item.attributeSummary ? (
+                      <span className="px-2 py-0.5 rounded-md bg-white border border-neutral-200 font-medium">
+                        {item.attributeSummary}
+                      </span>
+                    ) : (
+                      <>
+                        {item.size && (
+                          <span className="px-2 py-0.5 rounded-md bg-white border border-neutral-200 font-medium">
+                            Talle {item.size}
+                          </span>
+                        )}
+                        {item.color && (
+                          <span className="px-2 py-0.5 rounded-md bg-white border border-neutral-200 font-medium">
+                            {item.color}
+                          </span>
+                        )}
+                      </>
+                    )}
                     <span className={`text-[10px] ${isMax ? 'text-amber-700 font-semibold' : 'text-neutral-400'}`}>
-                      (Disp: {maxStock} u.)
+                      {isUnlimited ? '(Stock ilimitado)' : `(Disp: ${maxStock} u.)`}
                     </span>
                   </div>
 

@@ -1,8 +1,15 @@
 import React, { useState, useMemo } from 'react';
-import { Product, StoreSettings, MasterSize, MasterColor, StoreFeatureFlags } from '../types';
+import { Product, StoreSettings, StoreFeatureFlags, StoreAttribute, StoreAttributeOption } from '../types';
 import { ProductEditModal } from './ProductEditModal';
 import { AiProductModal } from './AiProductModal';
+import { AttributeConfirmationModal } from './AttributeConfirmationModal';
 import { useModalHistory } from '../hooks/useModalHistory';
+import {
+  ensureStoreAttributes,
+  getOptionLabel,
+  formatVariantLine,
+  fuseProductVariants
+} from '../utils/attributeUtils';
 
 interface InventoryViewProps {
   products: Product[];
@@ -21,30 +28,53 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   onUpdateSettings,
   featureFlags
 }) => {
-  const [selectedSubTab, setSelectedSubTab] = useState<'products' | 'categories' | 'sizes' | 'colors'>('products');
+  const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
+
+  const [selectedSubTab, setSelectedSubTab] = useState<'products' | 'categories' | 'attr1' | 'attr2'>('products');
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('Todas');
   const [statusFilter, setStatusFilter] = useState('all');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
 
-  // In-app deletion confirmation dialog states (avoids window.confirm blocking in iframe)
+  // In-app deletion confirmation dialog states
   const [categoryToDelete, setCategoryToDelete] = useState<string | null>(null);
-  const [sizeToDelete, setSizeToDelete] = useState<string | null>(null);
-  const [colorToDelete, setColorToDelete] = useState<string | null>(null);
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+
+  // Generic attribute confirmation modal state
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    affectedList?: string[];
+    affectedListTitle?: string;
+    confirmLabel: string;
+    confirmColor?: 'red' | 'black';
+    onConfirm: () => Promise<void> | void;
+  } | null>(null);
 
   // Management states for categories
   const [newCategoryName, setNewCategoryName] = useState('');
   const [editingCategory, setEditingCategory] = useState<{ original: string; current: string } | null>(null);
 
-  // Management states for sizes
-  const [newSizeName, setNewSizeName] = useState('');
-  const [newSizeEnabled, setNewSizeEnabled] = useState(true);
+  // Form states for adding options to attribute1 & attribute2
+  const [newAttr1Label, setNewAttr1Label] = useState('');
+  const [newAttr1Hex, setNewAttr1Hex] = useState('#1A1A1A');
 
-  // Management states for colors
-  const [newColorName, setNewColorName] = useState('');
-  const [newColorHex, setNewColorHex] = useState('#1A1A1A');
+  const [newAttr2Label, setNewAttr2Label] = useState('');
+  const [newAttr2Hex, setNewAttr2Hex] = useState('#1A1A1A');
+
+  // Inline editing state for attribute options
+  const [editingOption, setEditingOption] = useState<{
+    attrId: 'attr1' | 'attr2';
+    optionId: string;
+    label: string;
+    hex?: string;
+  } | null>(null);
+
+  // Session-dismissed warnings for unused attributes
+  const [dismissedWarnings, setDismissedWarnings] = useState<Record<string, boolean>>({});
+  const [neverShowWarningChecked, setNeverShowWarningChecked] = useState<Record<string, boolean>>({});
 
   // Feedback notifications
   const [flashMessage, setFlashMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -82,15 +112,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   });
 
   useModalHistory({
-    isOpen: Boolean(sizeToDelete),
-    onClose: () => setSizeToDelete(null),
-    modalKey: 'confirm-delete-size'
-  });
-
-  useModalHistory({
-    isOpen: Boolean(colorToDelete),
-    onClose: () => setColorToDelete(null),
-    modalKey: 'confirm-delete-color'
+    isOpen: Boolean(confirmModal?.isOpen),
+    onClose: () => setConfirmModal(null),
+    modalKey: 'confirm-attribute-action'
   });
 
   // Filtered Products
@@ -104,20 +128,24 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       const matchesCategory =
         categoryFilter === 'Todas' || prod.category.toLowerCase() === categoryFilter.toLowerCase();
 
+      const isProdInStock = prod.isUnlimited || prod.variants.some((v) => v.unlimited) || prod.totalStock > 0;
+
       let matchesStatus = true;
-      if (statusFilter === 'active') matchesStatus = prod.enabledOnline && prod.totalStock > 0;
+      if (statusFilter === 'active') matchesStatus = prod.enabledOnline && isProdInStock;
       if (statusFilter === 'draft') matchesStatus = !prod.enabledOnline;
-      if (statusFilter === 'out_of_stock') matchesStatus = prod.totalStock <= 0;
+      if (statusFilter === 'out_of_stock') matchesStatus = !isProdInStock;
 
       return matchesSearch && matchesCategory && matchesStatus;
     });
   }, [products, searchQuery, categoryFilter, statusFilter]);
 
-  // Out of stock alert count
-  const outOfStockCount = products.filter((p) => p.totalStock <= 0).length;
+  // Out of stock alert count (excluding unlimited products)
+  const outOfStockCount = products.filter(
+    (p) => !p.isUnlimited && !p.variants.some((v) => v.unlimited) && p.totalStock <= 0
+  ).length;
   const totalSkuCount = products.reduce((acc, p) => acc + p.variants.length, 0);
 
-  // Usage counts
+  // Category usage
   const categoryUsage = useMemo(() => {
     const map: Record<string, number> = {};
     products.forEach((p) => {
@@ -126,23 +154,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     return map;
   }, [products]);
 
-  const sizeUsage = useMemo(() => {
-    const map: Record<string, number> = {};
-    products.forEach((p) => {
-      p.variants.forEach((v) => {
-        const key = v.size.toUpperCase();
-        map[key] = (map[key] || 0) + 1;
-      });
-    });
-    return map;
+  // Check which products use attribute1 and attribute2
+  const productsUsingAttr1 = useMemo(() => {
+    return products.filter((p) => p.attributesUsed?.includes('attr1'));
   }, [products]);
 
-  const colorUsage = useMemo(() => {
+  const productsUsingAttr2 = useMemo(() => {
+    return products.filter((p) => p.attributesUsed?.includes('attr2'));
+  }, [products]);
+
+  // Option usage counts
+  const optionUsage = useMemo(() => {
     const map: Record<string, number> = {};
     products.forEach((p) => {
       p.variants.forEach((v) => {
-        const key = v.color.toLowerCase();
-        map[key] = (map[key] || 0) + 1;
+        if (v.attributeOptionId1) {
+          map[v.attributeOptionId1] = (map[v.attributeOptionId1] || 0) + 1;
+        }
+        if (v.attributeOptionId2) {
+          map[v.attributeOptionId2] = (map[v.attributeOptionId2] || 0) + 1;
+        }
       });
     });
     return map;
@@ -170,10 +201,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
   const handleCreateNewProduct = () => {
     if (isMaxProductsReached) {
-      alert(`Has alcanzado el límite de ${featureFlags?.maxProducts} prendas establecido para esta tienda. Para agregar más prendas, elimina productos existentes o solicita una ampliación al administrador.`);
+      alert(`Has alcanzado el límite de ${featureFlags?.maxProducts} prendas establecido para esta tienda.`);
       return;
     }
     const defaultCategory = settings.categories.find((c) => c !== 'Todas') || 'Vestidos';
+    
+    // Default attributes used: whichever are enabled in store
+    const defaultAttrs: ('attr1' | 'attr2')[] = [];
+    if (attribute1.enabled) defaultAttrs.push('attr1');
+    if (attribute2.enabled) defaultAttrs.push('attr2');
+
     const newProd: Product = {
       id: `prod-${Date.now()}`,
       name: '',
@@ -188,6 +225,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       images: [],
       coverIndex: 0,
       totalStock: 0,
+      attributesUsed: defaultAttrs,
       variants: [],
       createdAt: new Date().toISOString()
     };
@@ -203,48 +241,43 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     newColorsToSave: Array<{ name: string; hex: string }>;
     tags: string[];
   }) => {
-    // 1. Guardar nuevos colores en la paleta oficial de la tienda si fueron aprobados
-    if (aiData.newColorsToSave.length > 0 && onUpdateSettings) {
-      const existingNames = new Set(settings.masterColors.map((c) => c.name.trim().toLowerCase()));
-      const toAdd = aiData.newColorsToSave.filter((c) => !existingNames.has(c.name.trim().toLowerCase()));
+    // Only save new colors if store has an enabled color attribute
+    const colorAttrId = (attribute1.enabled && attribute1.type === 'color')
+      ? 'attr1'
+      : (attribute2.enabled && attribute2.type === 'color')
+      ? 'attr2'
+      : null;
+
+    if (colorAttrId && aiData.newColorsToSave.length > 0 && onUpdateSettings) {
+      const targetAttr = colorAttrId === 'attr1' ? attribute1 : attribute2;
+      const existingLabels = new Set(targetAttr.options.map((o) => o.label.trim().toLowerCase()));
+      const toAdd = aiData.newColorsToSave.filter((c) => !existingLabels.has(c.name.trim().toLowerCase()));
+
       if (toAdd.length > 0) {
-        const updatedMasterColors = [
-          ...settings.masterColors,
-          ...toAdd.map((c) => ({
-            name: c.name,
-            hex: c.hex,
-            active: true
+        const updatedOptions: StoreAttributeOption[] = [
+          ...targetAttr.options,
+          ...toAdd.map((c, i) => ({
+            id: `opt-${Date.now()}-${i}`,
+            label: c.name,
+            hex: c.hex
           }))
         ];
         try {
-          await onUpdateSettings({ masterColors: updatedMasterColors });
+          await onUpdateSettings({
+            [colorAttrId]: {
+              ...targetAttr,
+              options: updatedOptions
+            }
+          });
         } catch (e) {
-          console.error('Error saving new colors to settings:', e);
+          console.error('Error saving new color options:', e);
         }
       }
     }
 
-    // 2. Generar variantes iniciales con los colores identificados y los talles habilitados
-    const activeSizes = settings.masterSizes.filter((s) => s.enabled).map((s) => s.name);
-    const sizeList = activeSizes.length > 0 ? activeSizes : ['S', 'M', 'L'];
-    const prefix = (aiData.name || 'PR').trim().slice(0, 3).toUpperCase();
-
-    const variants = aiData.selectedColors.flatMap((colName) => {
-      const matched =
-        settings.masterColors.find((c) => c.name.toLowerCase() === colName.toLowerCase()) ||
-        aiData.newColorsToSave.find((c) => c.name.toLowerCase() === colName.toLowerCase());
-      const hex = matched?.hex || '#1A1A1A';
-
-      return sizeList.map((sz) => ({
-        id: `var-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-        color: colName,
-        colorHex: hex,
-        size: sz,
-        sku: `${prefix}-${colName.slice(0, 3).toUpperCase()}-${sz}`,
-        stock: 0,
-        enabled: true
-      }));
-    });
+    const defaultAttrs: ('attr1' | 'attr2')[] = [];
+    if (attribute1.enabled) defaultAttrs.push('attr1');
+    if (attribute2.enabled) defaultAttrs.push('attr2');
 
     const newProd: Product = {
       id: `prod-${Date.now()}`,
@@ -258,13 +291,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       images: aiData.images,
       coverIndex: 0,
       totalStock: 0,
-      variants,
+      attributesUsed: defaultAttrs,
+      variants: [],
       createdAt: new Date().toISOString()
     };
 
-    // 3. Abrir el formulario existente de edición con todos los datos precargados
     setEditingProduct(newProd);
-    showNotification('success', 'Ficha generada con IA. Podés revisar los precios y confirmar el stock.');
+    showNotification('success', 'Ficha generada con IA. Podés revisar los precios y confirmar las opciones.');
   };
 
   const handleDuplicateProduct = async (prod: Product) => {
@@ -273,7 +306,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       ...prod,
       id: newId,
       name: `Copia de ${prod.name}`,
-      enabledOnline: false, // Importante: se crea invisible para protegerlo de la visualización de los clientes
+      enabledOnline: false,
       variants: prod.variants.map((v, idx) => ({
         ...v,
         id: `var-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`
@@ -283,31 +316,45 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     };
 
     try {
-      // Guardar inmediatamente para que el producto ya exista incluso si se cancela la edición
       await onSaveProduct(duplicated);
       showNotification(
         'success',
         `Producto duplicado como "${duplicated.name}". Se guardó invisible/oculto para protegerlo de la visualización de los clientes.`
       );
-      // Abre automáticamente el edit del nuevo producto
       setEditingProduct(duplicated);
     } catch (err) {
       showNotification('error', 'Error al duplicar el producto.');
     }
   };
 
+  // CSV Export with dynamic attributes and unlimited stock labels
   const handleExportCsv = () => {
-    let csv = 'ID,Nombre,Categoria,Precio,Costo,StockTotal,Estado,Variantes\n';
+    const attr1Name = attribute1.name || 'Atributo 1';
+    const attr2Name = attribute2.name || 'Atributo 2';
+    let csv = `ID,Nombre,Categoria,Precio,Costo,StockTotal,Estado,Variantes\n`;
+
     products.forEach((p) => {
-      const vars = p.variants.map((v) => `${v.sku} (${v.color}/${v.size}: ${v.stock}u)`).join('; ');
-      csv += `"${p.id}","${p.name}","${p.category}",${p.price},${p.cost},${p.totalStock},"${p.enabledOnline ? 'Activo' : 'Borrador'}","${vars}"\n`;
+      const vars = p.variants
+        .map((v) => {
+          const val1 = attribute1.enabled ? getOptionLabel(attribute1, v.attributeOptionId1, v.color) : v.color;
+          const val2 = attribute2.enabled ? getOptionLabel(attribute2, v.attributeOptionId2, v.size) : v.size;
+          const combo = [val1, val2].filter(Boolean).join(' / ');
+          const stockText = v.unlimited ? 'Ilimitado' : `${v.stock}u`;
+          return `${v.sku}${combo ? ` (${combo}: ${stockText})` : `: ${stockText}`}`;
+        })
+        .join('; ');
+
+      const totalStockText = p.isUnlimited || p.variants.some((v) => v.unlimited) ? 'Ilimitado' : p.totalStock;
+      csv += `"${p.id}","${p.name}","${p.category}",${p.price},${p.cost},"${totalStockText}","${
+        p.enabledOnline ? 'Activo' : 'Borrador'
+      }","${vars}"\n`;
     });
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `inventario-atelier-${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute('download', `inventario-${settings.storeName || 'tienda'}-${new Date().toISOString().slice(0, 10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -357,7 +404,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         await onUpdateSettings({ categories: updatedCategories });
       }
 
-      // Propagate category rename to existing products
       const productsToUpdate = products.filter((p) => p.category === original);
       for (const p of productsToUpdate) {
         await onSaveProduct({ ...p, category: trimmed });
@@ -373,14 +419,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
-  const handleDeleteCategory = (categoryName: string) => {
-    if (categoryName === 'Todas') {
-      showNotification('error', 'La categoría "Todas" es un filtro global del sistema y no puede eliminarse.');
-      return;
-    }
-    setCategoryToDelete(categoryName);
-  };
-
   const executeDeleteCategory = async (categoryName: string) => {
     try {
       const updatedCategories = settings.categories.filter((c) => c !== categoryName);
@@ -393,173 +431,581 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
-  // SIZE ACTIONS
-  const handleAddSize = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newSizeName.trim().toUpperCase();
-    if (!trimmed) return;
+  // =========================================================================
+  // ATTRIBUTE ACTIONS (attribute1 & attribute2)
+  // =========================================================================
 
-    if (settings.masterSizes.some((s) => s.name.toUpperCase() === trimmed)) {
-      showNotification('error', `El talle "${trimmed}" ya existe en los talles maestros.`);
+  // Rename an attribute without asking confirmation
+  const handleRenameAttribute = async (attrId: 'attr1' | 'attr2', newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || !onUpdateSettings) return;
+    const currentAttr = attrId === 'attr1' ? attribute1 : attribute2;
+    await onUpdateSettings({
+      [attrId]: {
+        ...currentAttr,
+        name: trimmed
+      }
+    });
+    showNotification('success', `Atributo renombrado a "${trimmed}".`);
+  };
+
+  // Change attribute type (text <-> color)
+  const handleChangeAttributeType = async (attrId: 'attr1' | 'attr2', newType: 'text' | 'color') => {
+    if (!onUpdateSettings) return;
+    const currentAttr = attrId === 'attr1' ? attribute1 : attribute2;
+    if (currentAttr.type === newType) return;
+
+    // If changing text -> color, assign #FFFFFF to each existing option
+    const updatedOptions = currentAttr.options.map((o) => ({
+      ...o,
+      hex: newType === 'color' ? (o.hex || '#FFFFFF') : undefined
+    }));
+
+    await onUpdateSettings({
+      [attrId]: {
+        ...currentAttr,
+        type: newType,
+        options: updatedOptions
+      }
+    });
+    showNotification(
+      'success',
+      `Tipo de "${currentAttr.name}" cambiado a ${newType === 'color' ? 'Color' : 'Texto'}.`
+    );
+  };
+
+  // Toggle attribute enabled/disabled at store level
+  const handleToggleAttribute = (attrId: 'attr1' | 'attr2') => {
+    const currentAttr = attrId === 'attr1' ? attribute1 : attribute2;
+
+    if (!currentAttr.enabled) {
+      // Enabling: doesn't modify existing products
+      if (onUpdateSettings) {
+        onUpdateSettings({
+          [attrId]: { ...currentAttr, enabled: true }
+        });
+      }
+      showNotification('success', `Atributo "${currentAttr.name}" habilitado en la tienda.`);
       return;
     }
 
-    try {
-      const updatedSizes: MasterSize[] = [...settings.masterSizes, { name: trimmed, enabled: newSizeEnabled }];
+    // Disabling: check if any products use it -> apply stock fusion!
+    const affectedProducts = products.filter((p) => p.attributesUsed?.includes(attrId));
+
+    if (affectedProducts.length === 0) {
       if (onUpdateSettings) {
-        await onUpdateSettings({ masterSizes: updatedSizes });
+        onUpdateSettings({
+          [attrId]: { ...currentAttr, enabled: false }
+        });
       }
-      setNewSizeName('');
-      showNotification('success', `Talle maestro "${trimmed}" agregado exitosamente.`);
-    } catch (err) {
-      showNotification('error', 'Error al guardar el nuevo talle maestro.');
-    }
-  };
-
-  const handleToggleSize = async (sizeName: string) => {
-    try {
-      const updatedSizes = settings.masterSizes.map((s) =>
-        s.name.toUpperCase() === sizeName.toUpperCase() ? { ...s, enabled: !s.enabled } : s
-      );
-      if (onUpdateSettings) {
-        await onUpdateSettings({ masterSizes: updatedSizes });
-      }
-    } catch (err) {
-      showNotification('error', 'Error al actualizar el estado del talle.');
-    }
-  };
-
-  const handleDeleteSize = (sizeName: string) => {
-    setSizeToDelete(sizeName);
-  };
-
-  const executeDeleteSize = async (sizeName: string) => {
-    try {
-      const updatedSizes = settings.masterSizes.filter((s) => s.name.toUpperCase() !== sizeName.toUpperCase());
-      if (onUpdateSettings) {
-        await onUpdateSettings({ masterSizes: updatedSizes });
-      }
-      showNotification('success', `Talle maestro "${sizeName}" eliminado.`);
-    } catch (err) {
-      showNotification('error', 'Error al eliminar el talle maestro.');
-    }
-  };
-
-  // COLOR ACTIONS
-  const handleAddColor = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newColorName.trim();
-    if (!trimmed) return;
-
-    let hex = newColorHex.trim();
-    if (!hex.startsWith('#')) hex = '#' + hex;
-
-    if (settings.masterColors.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) {
-      showNotification('error', `El color "${trimmed}" ya existe en los colores maestros.`);
+      showNotification('success', `Atributo "${currentAttr.name}" deshabilitado.`);
       return;
     }
 
-    try {
-      const updatedColors: MasterColor[] = [...settings.masterColors, { name: trimmed, hex }];
-      if (onUpdateSettings) {
-        await onUpdateSettings({ masterColors: updatedColors });
+    // Prepare fusion preview
+    const otherAttrId = attrId === 'attr1' ? 'attr2' : 'attr1';
+    const otherAttr = otherAttrId === 'attr1' ? attribute1 : attribute2;
+
+    const allSummaryLines: string[] = [];
+    const fusedProductUpdates: Product[] = [];
+
+    affectedProducts.forEach((prod) => {
+      const remaining: ('attr1' | 'attr2')[] = (prod.attributesUsed || []).filter((id) => id !== attrId && (id === otherAttrId ? otherAttr.enabled : false));
+      const { updatedProduct, summaryLines } = fuseProductVariants(prod, remaining, settings);
+      allSummaryLines.push(...summaryLines);
+      fusedProductUpdates.push(updatedProduct);
+    });
+
+    setConfirmModal({
+      isOpen: true,
+      title: `Deshabilitar "${currentAttr.name}" y fusionar variantes`,
+      message: `Hay ${affectedProducts.length} producto(s) usando este atributo. Al deshabilitarlo a nivel tienda, se aplicará la consolidación de stock sobre las opciones restantes:`,
+      affectedList: allSummaryLines,
+      affectedListTitle: 'Variantes resultantes de la fusión',
+      confirmLabel: 'Deshabilitar y fusionar variantes',
+      confirmColor: 'black',
+      onConfirm: async () => {
+        for (const fp of fusedProductUpdates) {
+          await onSaveProduct(fp);
+        }
+        if (onUpdateSettings) {
+          await onUpdateSettings({
+            [attrId]: { ...currentAttr, enabled: false }
+          });
+        }
+        setConfirmModal(null);
+        showNotification(
+          'success',
+          `Atributo deshabilitado y variantes fusionadas en ${fusedProductUpdates.length} producto(s).`
+        );
       }
-      setNewColorName('');
-      setNewColorHex('#1A1A1A');
-      showNotification('success', `Color maestro "${trimmed}" (${hex}) guardado con éxito.`);
-    } catch (err) {
-      showNotification('error', 'Error al guardar el nuevo color maestro.');
+    });
+  };
+
+  // Add option to an attribute
+  const handleAddOption = async (attrId: 'attr1' | 'attr2', e: React.FormEvent) => {
+    e.preventDefault();
+    const currentAttr = attrId === 'attr1' ? attribute1 : attribute2;
+    const label = (attrId === 'attr1' ? newAttr1Label : newAttr2Label).trim();
+    if (!label) return;
+
+    if (currentAttr.options.some((o) => o.label.toLowerCase() === label.toLowerCase())) {
+      showNotification('error', `La opción "${label}" ya existe en "${currentAttr.name}".`);
+      return;
     }
+
+    const hexVal = attrId === 'attr1' ? newAttr1Hex : newAttr2Hex;
+    const cleanHex = hexVal.startsWith('#') ? hexVal : `#${hexVal}`;
+
+    const newOption: StoreAttributeOption = {
+      id: `opt-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      label,
+      hex: currentAttr.type === 'color' ? cleanHex : undefined
+    };
+
+    const updatedOptions = [...currentAttr.options, newOption];
+    if (onUpdateSettings) {
+      await onUpdateSettings({
+        [attrId]: {
+          ...currentAttr,
+          options: updatedOptions
+        }
+      });
+    }
+
+    if (attrId === 'attr1') {
+      setNewAttr1Label('');
+      setNewAttr1Hex('#1A1A1A');
+    } else {
+      setNewAttr2Label('');
+      setNewAttr2Hex('#1A1A1A');
+    }
+
+    showNotification('success', `Opción "${label}" agregada a "${currentAttr.name}".`);
   };
 
-  const handleDeleteColor = (colorName: string) => {
-    setColorToDelete(colorName);
-  };
+  // Edit existing option label or hex directly
+  const handleSaveOptionEdit = async (attrId: 'attr1' | 'attr2', optionId: string, label: string, hex?: string) => {
+    const trimmed = label.trim();
+    if (!trimmed || !onUpdateSettings) return;
 
-  const executeDeleteColor = async (colorName: string) => {
-    try {
-      const updatedColors = settings.masterColors.filter(
-        (c) => c.name.toLowerCase() !== colorName.toLowerCase()
-      );
-      if (onUpdateSettings) {
-        await onUpdateSettings({ masterColors: updatedColors });
+    const currentAttr = attrId === 'attr1' ? attribute1 : attribute2;
+    const updatedOptions = currentAttr.options.map((o) =>
+      o.id === optionId ? { ...o, label: trimmed, hex: currentAttr.type === 'color' ? hex || o.hex : undefined } : o
+    );
+
+    await onUpdateSettings({
+      [attrId]: {
+        ...currentAttr,
+        options: updatedOptions
       }
-      showNotification('success', `Color maestro "${colorName}" eliminado.`);
-    } catch (err) {
-      showNotification('error', 'Error al eliminar el color maestro.');
-    }
+    });
+
+    setEditingOption(null);
+    showNotification('success', `Opción actualizada.`);
   };
 
-  return (
-    <div className="w-full flex flex-col">
-      {/* Sub-header Breadcrumb & Operational Context Bar */}
-      <section className="w-full bg-[#f5f3f3] border-b border-[#efeded] px-4 sm:px-8 py-3.5">
-        <div className="max-w-[1600px] mx-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-          <div className="flex items-center gap-1.5 text-xs text-[#5f5e5b] flex-wrap">
-            <span>Catálogo Maestro</span>
-            <span className="material-symbols-outlined text-[14px]">chevron_right</span>
-            <span>{settings.storeName || 'Atelier Studio'}</span>
-            <span className="material-symbols-outlined text-[14px]">chevron_right</span>
-            <span className="text-black font-semibold">
-              {selectedSubTab === 'products' && 'Productos e Inventario'}
-              {selectedSubTab === 'categories' && 'Categorías de Colección'}
-              {selectedSubTab === 'sizes' && 'Talles Maestros'}
-              {selectedSubTab === 'colors' && 'Colores Maestros'}
-            </span>
+  // Delete an option from an attribute
+  const handleDeleteOption = (attrId: 'attr1' | 'attr2', option: StoreAttributeOption) => {
+    const currentAttr = attrId === 'attr1' ? attribute1 : attribute2;
+
+    // Check which products have variants referencing this option
+    const affectedLines: string[] = [];
+    const productsToModify: { product: Product; newVariants: any[] }[] = [];
+
+    products.forEach((prod) => {
+      const remainingVariants = prod.variants.filter((v) => {
+        const matchesOption =
+          attrId === 'attr1'
+            ? v.attributeOptionId1 === option.id || (!v.attributeOptionId1 && v.color.toLowerCase() === option.label.toLowerCase())
+            : v.attributeOptionId2 === option.id || (!v.attributeOptionId2 && v.size.toLowerCase() === option.label.toLowerCase());
+
+        if (matchesOption) {
+          affectedLines.push(formatVariantLine(prod.name, v, attribute1, attribute2));
+          return false;
+        }
+        return true;
+      });
+
+      if (remainingVariants.length !== prod.variants.length) {
+        productsToModify.push({ product: prod, newVariants: remainingVariants });
+      }
+    });
+
+    if (affectedLines.length > 0) {
+      setConfirmModal({
+        isOpen: true,
+        title: `Eliminar opción "${option.label}"`,
+        message: `Esta opción está en uso en ${affectedLines.length} variante(s). Si la eliminas, se borrarán las siguientes variantes de tus productos:`,
+        affectedList: affectedLines,
+        affectedListTitle: 'Variantes afectadas que serán eliminadas',
+        confirmLabel: 'Eliminar opción y variantes',
+        confirmColor: 'red',
+        onConfirm: async () => {
+          for (const item of productsToModify) {
+            const totalStock = item.newVariants.reduce(
+              (acc, v) => (v.enabled !== false && !v.unlimited ? acc + Number(v.stock || 0) : acc),
+              0
+            );
+            await onSaveProduct({
+              ...item.product,
+              variants: item.newVariants,
+              totalStock,
+              isUnlimited: item.newVariants.length > 0 && item.newVariants.every((v) => v.unlimited)
+            });
+          }
+
+          const updatedOptions = currentAttr.options.filter((o) => o.id !== option.id);
+          if (onUpdateSettings) {
+            await onUpdateSettings({
+              [attrId]: { ...currentAttr, options: updatedOptions }
+            });
+          }
+
+          setConfirmModal(null);
+          showNotification('success', `Opción "${option.label}" y sus variantes asociadas han sido eliminadas.`);
+        }
+      });
+      return;
+    }
+
+    // No products affected: delete directly
+    const updatedOptions = currentAttr.options.filter((o) => o.id !== option.id);
+    if (onUpdateSettings) {
+      onUpdateSettings({
+        [attrId]: { ...currentAttr, options: updatedOptions }
+      });
+    }
+    showNotification('success', `Opción "${option.label}" eliminada.`);
+  };
+
+  // Helper to render Attribute Management Subtab
+  const renderAttributeSubTab = (attrId: 'attr1' | 'attr2') => {
+    const attr = attrId === 'attr1' ? attribute1 : attribute2;
+    const isAttr1 = attrId === 'attr1';
+    const newLabel = isAttr1 ? newAttr1Label : newAttr2Label;
+    const setNewLabel = isAttr1 ? setNewAttr1Label : setNewAttr2Label;
+    const newHex = isAttr1 ? newAttr1Hex : newAttr2Hex;
+    const setNewHex = isAttr1 ? setNewAttr1Hex : setNewAttr2Hex;
+
+    return (
+      <div className="flex flex-col gap-6 animate-in fade-in duration-200">
+        {/* Attribute Settings Card */}
+        <div className="bg-white rounded-2xl p-5 border border-[#efeded] shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-5">
+          <div className="flex-1 space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded-md bg-neutral-900 text-white text-[10px] font-bold uppercase tracking-wider">
+                {attrId === 'attr1' ? 'Atributo 1' : 'Atributo 2'}
+              </span>
+              <span className="text-xs text-neutral-400">• Configuración principal de tienda</span>
+            </div>
+
+            {/* Inline Rename */}
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1 max-w-sm">
+                <label className="text-[11px] font-bold text-neutral-600 uppercase tracking-wider block mb-1">
+                  Nombre del Atributo
+                </label>
+                <input
+                  type="text"
+                  defaultValue={attr.name}
+                  onBlur={(e) => handleRenameAttribute(attrId, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  className="w-full px-3 py-2 bg-[#f5f3f3] border border-neutral-200 rounded-xl text-sm font-bold text-black focus:bg-white focus:outline-none focus:ring-1 focus:ring-black"
+                  placeholder="Ej: Color, Talle, Tamaño, Modelo..."
+                />
+              </div>
+
+              {/* Type Switcher */}
+              <div className="flex flex-col">
+                <label className="text-[11px] font-bold text-neutral-600 uppercase tracking-wider block mb-1">
+                  Tipo de Atributo
+                </label>
+                <div className="flex items-center bg-[#f5f3f3] p-1 rounded-xl border border-neutral-200">
+                  <button
+                    type="button"
+                    onClick={() => handleChangeAttributeType(attrId, 'text')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      attr.type === 'text' ? 'bg-black text-white shadow-xs' : 'text-neutral-600 hover:text-black'
+                    }`}
+                  >
+                    Texto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleChangeAttributeType(attrId, 'color')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      attr.type === 'color' ? 'bg-black text-white shadow-xs' : 'text-neutral-600 hover:text-black'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-tr from-amber-400 via-rose-500 to-indigo-500"></span>
+                    <span>Color (#HEX)</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2.5 text-xs text-[#5f5e5b] flex-wrap">
-            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-white rounded-lg shadow-2xs border border-neutral-200">
-              <span className="w-2 h-2 rounded-full bg-emerald-600"></span> Base Sincronizada
-            </span>
-            <span className="hidden sm:inline">SKU Activos: {totalSkuCount}</span>
-            <span className="hidden sm:inline">•</span>
-            <span className="text-red-700 font-semibold flex items-center gap-1">
-              <span className="material-symbols-outlined text-[14px]">warning</span>
-              Alerta: {outOfStockCount} {outOfStockCount === 1 ? 'ítem' : 'ítems'} con quiebre
+          {/* Enable / Disable Attribute Switch */}
+          <div className="pt-4 md:pt-0 md:pl-6 border-t md:border-t-0 md:border-l border-neutral-100 flex flex-col justify-center items-start md:items-end gap-2 shrink-0">
+            <span className="text-xs font-semibold text-neutral-700">Estado en la tienda</span>
+            <button
+              type="button"
+              onClick={() => handleToggleAttribute(attrId)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer ${
+                attr.enabled
+                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  : 'bg-neutral-200 hover:bg-neutral-300 text-neutral-800'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">
+                {attr.enabled ? 'check_circle' : 'pause_circle'}
+              </span>
+              <span>{attr.enabled ? 'Habilitado' : 'Deshabilitado'}</span>
+            </button>
+            <span className="text-[11px] text-neutral-400">
+              {attr.options.length} opciones configuradas
             </span>
           </div>
         </div>
-      </section>
 
-      {/* Main Management Control Layer */}
-      <section className="w-full px-4 sm:px-8 pt-6 pb-16 max-w-[1600px] mx-auto flex flex-col gap-6">
-        {/* Flash Message Banner */}
-        {flashMessage && (
-          <div
-            className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${
-              flashMessage.type === 'success'
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                : 'bg-red-50 border-red-200 text-red-900'
-            }`}
-          >
-            <div className="flex items-center gap-2 text-xs font-semibold">
-              <span className="material-symbols-outlined text-[18px]">
-                {flashMessage.type === 'success' ? 'check_circle' : 'error'}
-              </span>
-              <span>{flashMessage.text}</span>
-            </div>
-            <button
-              onClick={() => setFlashMessage(null)}
-              className="text-neutral-400 hover:text-black p-1"
-            >
-              <span className="material-symbols-outlined text-[16px]">close</span>
-            </button>
+        {/* Quick Add Option Form */}
+        <form
+          onSubmit={(e) => handleAddOption(attrId, e)}
+          className="bg-white rounded-2xl p-4 shadow-xs border border-[#efeded] flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
+        >
+          <div className="relative flex-1">
+            <span className="material-symbols-outlined text-[18px] text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2">
+              {attr.type === 'color' ? 'palette' : 'label'}
+            </span>
+            <input
+              type="text"
+              placeholder={attr.type === 'color' ? `Nombre del color (ej: Verde Oliva, Arena...)` : `Etiqueta de ${attr.name} (ej: S, M, XL, 500ml...)`}
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 transition-all font-medium"
+            />
           </div>
-        )}
 
-        {/* Navigation Tabs (Intermedio) */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar border-b border-neutral-200">
+          {attr.type === 'color' && (
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 p-1 bg-[#f5f3f3] rounded-xl border border-neutral-200">
+                <input
+                  type="color"
+                  value={newHex}
+                  onChange={(e) => setNewHex(e.target.value)}
+                  className="w-7 h-7 rounded border-0 cursor-pointer p-0 bg-transparent"
+                  title="Elegir muestra visual"
+                />
+                <input
+                  type="text"
+                  value={newHex}
+                  onChange={(e) => setNewHex(e.target.value)}
+                  placeholder="#1A1A1A"
+                  className="w-20 px-1.5 py-1 bg-transparent text-xs font-mono font-semibold text-black uppercase focus:outline-none"
+                />
+              </div>
+              <div
+                className="w-8 h-8 rounded-full border border-neutral-300 shadow-2xs shrink-0"
+                style={{ backgroundColor: newHex }}
+              ></div>
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={!newLabel.trim()}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-neutral-900 hover:bg-black disabled:opacity-40 text-white text-xs font-semibold shadow-xs hover:shadow transition-all active:scale-[0.98] cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            <span>Nueva Opción</span>
+          </button>
+        </form>
+
+        {/* Options Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {attr.options.map((option) => {
+            const usageCount = optionUsage[option.id] || 0;
+            const isEditing = editingOption?.attrId === attrId && editingOption?.optionId === option.id;
+
+            return (
+              <div
+                key={option.id}
+                className="bg-white rounded-2xl p-4 border border-[#efeded] shadow-xs flex flex-col justify-between gap-3 hover:border-neutral-300 transition-all"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    {attr.type === 'color' && (
+                      <div
+                        className="w-9 h-9 rounded-full border border-neutral-300 shadow-2xs shrink-0"
+                        style={{ backgroundColor: option.hex || '#000000' }}
+                      />
+                    )}
+
+                    {isEditing ? (
+                      <div className="flex-1 space-y-1">
+                        <input
+                          type="text"
+                          value={editingOption.label}
+                          onChange={(e) =>
+                            setEditingOption({ ...editingOption, label: e.target.value })
+                          }
+                          className="w-full px-2 py-1 text-xs font-bold border border-neutral-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black"
+                        />
+                        {attr.type === 'color' && (
+                          <input
+                            type="text"
+                            value={editingOption.hex || '#000000'}
+                            onChange={(e) =>
+                              setEditingOption({ ...editingOption, hex: e.target.value })
+                            }
+                            className="w-20 px-2 py-0.5 text-[10px] font-mono border border-neutral-300 rounded focus:outline-none"
+                          />
+                        )}
+                        <div className="flex items-center gap-1 pt-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleSaveOptionEdit(attrId, option.id, editingOption.label, editingOption.hex)
+                            }
+                            className="px-2 py-0.5 bg-black text-white text-[10px] font-bold rounded"
+                          >
+                            OK
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingOption(null)}
+                            className="px-2 py-0.5 bg-neutral-100 text-neutral-600 text-[10px] rounded"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-black truncate">{option.label}</div>
+                        {attr.type === 'color' && option.hex && (
+                          <span className="text-[10px] font-mono text-neutral-500 bg-[#f5f3f3] px-1.5 py-0.5 rounded">
+                            {option.hex}
+                          </span>
+                        )}
+                        <div className="text-[11px] text-neutral-400 mt-0.5">
+                          {usageCount} {usageCount === 1 ? 'variante' : 'variantes'}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {!isEditing && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingOption({
+                            attrId,
+                            optionId: option.id,
+                            label: option.label,
+                            hex: option.hex
+                          })
+                        }
+                        className="p-1 rounded-lg text-neutral-400 hover:text-black hover:bg-neutral-100 transition-colors"
+                        title="Editar opción"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">edit</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteOption(attrId, option)}
+                        className="p-1 rounded-lg text-neutral-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                        title="Eliminar opción"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">delete</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="w-full flex flex-col px-4 sm:px-8 py-6 max-w-[1600px] mx-auto gap-6 animate-in fade-in duration-200">
+      {/* Toast Flash Messages */}
+      {flashMessage && (
+        <div
+          className={`fixed top-20 right-4 sm:right-8 z-50 text-white text-xs px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-200 ${
+            flashMessage.type === 'success' ? 'bg-neutral-900 border border-neutral-700' : 'bg-red-600'
+          }`}
+        >
+          <span className="material-symbols-outlined text-[18px]">
+            {flashMessage.type === 'success' ? 'check_circle' : 'error'}
+          </span>
+          <span className="font-medium">{flashMessage.text}</span>
+        </div>
+      )}
+
+      {/* Header Context & Primary Actions */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-1.5 text-[#5f5e5b] text-xs font-semibold uppercase tracking-wider mb-1">
+            <span>Operaciones de Tienda</span>
+            <span className="material-symbols-outlined text-[14px]">chevron_right</span>
+            <span className="text-black font-bold">Catálogo & Stock Físico</span>
+          </div>
+          <div className="flex items-baseline gap-3 flex-wrap">
+            <h1 className="font-headline-lg text-2xl sm:text-3xl text-black font-bold tracking-tight">
+              Gestión de Productos e Inventario
+            </h1>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#efeded] text-[#444748] text-xs font-medium">
+              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
+              Base Sincronizada
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {featureFlags?.aiAssistant !== false && (
+            <button
+              onClick={() => setIsAiModalOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white text-xs sm:text-sm font-semibold transition-all shadow-xs hover:shadow active:scale-[0.98] cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
+              <span>Cargar Producto con IA</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleCreateNewProduct}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs sm:text-sm font-semibold transition-all shadow-xs hover:shadow active:scale-[0.98] cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            <span>Nuevo Producto</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Subtab Navigator */}
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center gap-2 border-b border-[#efeded] overflow-x-auto pb-px">
+          {/* Subtab 1: Productos */}
           <button
             onClick={() => setSelectedSubTab('products')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-t-lg text-xs font-semibold transition-all border-b-2 ${
+            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-t-xl text-xs font-semibold transition-all border-b-2 ${
               selectedSubTab === 'products'
                 ? 'bg-black text-white border-black shadow-xs'
                 : 'bg-white text-neutral-600 hover:text-black hover:bg-neutral-50 border-transparent'
             }`}
           >
             <span className="material-symbols-outlined text-[18px]">inventory_2</span>
-            <span>Productos e Inventario</span>
+            <span>Productos</span>
             <span
               className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] ${
                 selectedSubTab === 'products' ? 'bg-white/20 text-white' : 'bg-neutral-100 text-neutral-600'
@@ -569,9 +1015,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             </span>
           </button>
 
+          {/* Subtab 2: Categorías */}
           <button
             onClick={() => setSelectedSubTab('categories')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-t-lg text-xs font-semibold transition-all border-b-2 ${
+            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-t-xl text-xs font-semibold transition-all border-b-2 ${
               selectedSubTab === 'categories'
                 ? 'bg-black text-white border-black shadow-xs'
                 : 'bg-white text-neutral-600 hover:text-black hover:bg-neutral-50 border-transparent'
@@ -588,42 +1035,58 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             </span>
           </button>
 
+          {/* Subtab 3: Dynamic Attribute 1 */}
           <button
-            onClick={() => setSelectedSubTab('sizes')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-t-lg text-xs font-semibold transition-all border-b-2 ${
-              selectedSubTab === 'sizes'
+            onClick={() => setSelectedSubTab('attr1')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-t-xl text-xs font-semibold transition-all border-b-2 ${
+              selectedSubTab === 'attr1'
                 ? 'bg-black text-white border-black shadow-xs'
                 : 'bg-white text-neutral-600 hover:text-black hover:bg-neutral-50 border-transparent'
             }`}
           >
-            <span className="material-symbols-outlined text-[18px]">straighten</span>
-            <span>Talles Maestros</span>
+            <span className="material-symbols-outlined text-[18px]">
+              {attribute1.type === 'color' ? 'palette' : 'label'}
+            </span>
+            <span>{attribute1.name}</span>
             <span
               className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] ${
-                selectedSubTab === 'sizes' ? 'bg-white/20 text-white' : 'bg-neutral-100 text-neutral-600'
+                selectedSubTab === 'attr1' ? 'bg-white/20 text-white' : 'bg-neutral-100 text-neutral-600'
               }`}
             >
-              {settings.masterSizes.length}
+              {attribute1.options.length}
             </span>
+            {!attribute1.enabled && (
+              <span className="ml-1 px-1 py-0.2 rounded bg-amber-100 text-amber-900 text-[9px] font-bold">
+                Pausado
+              </span>
+            )}
           </button>
 
+          {/* Subtab 4: Dynamic Attribute 2 */}
           <button
-            onClick={() => setSelectedSubTab('colors')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-t-lg text-xs font-semibold transition-all border-b-2 ${
-              selectedSubTab === 'colors'
+            onClick={() => setSelectedSubTab('attr2')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-t-xl text-xs font-semibold transition-all border-b-2 ${
+              selectedSubTab === 'attr2'
                 ? 'bg-black text-white border-black shadow-xs'
                 : 'bg-white text-neutral-600 hover:text-black hover:bg-neutral-50 border-transparent'
             }`}
           >
-            <span className="material-symbols-outlined text-[18px]">palette</span>
-            <span>Colores Maestros</span>
+            <span className="material-symbols-outlined text-[18px]">
+              {attribute2.type === 'color' ? 'palette' : 'straighten'}
+            </span>
+            <span>{attribute2.name}</span>
             <span
               className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] ${
-                selectedSubTab === 'colors' ? 'bg-white/20 text-white' : 'bg-neutral-100 text-neutral-600'
+                selectedSubTab === 'attr2' ? 'bg-white/20 text-white' : 'bg-neutral-100 text-neutral-600'
               }`}
             >
-              {settings.masterColors.length}
+              {attribute2.options.length}
             </span>
+            {!attribute2.enabled && (
+              <span className="ml-1 px-1 py-0.2 rounded bg-amber-100 text-amber-900 text-[9px] font-bold">
+                Pausado
+              </span>
+            )}
           </button>
         </div>
 
@@ -632,8 +1095,135 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         {/* ========================================================================= */}
         {selectedSubTab === 'products' && (
           <div className="flex flex-col gap-6">
+            {/* Unused Attribute Warning Banners */}
+            {attribute1.enabled && !attribute1.hideUnusedWarning && !dismissedWarnings['attr1'] && productsUsingAttr1.length === 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-in fade-in duration-200">
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-amber-600 text-2xl shrink-0 mt-0.5">
+                    info
+                  </span>
+                  <div>
+                    <h4 className="text-xs font-bold text-amber-900">
+                      "{attribute1.name}" está habilitado pero ningún producto lo usa.
+                    </h4>
+                    <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                      ¿Desea deshabilitarlo para simplificar la carga de productos?
+                    </p>
+                    <label className="flex items-center gap-1.5 mt-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(neverShowWarningChecked['attr1'])}
+                        onChange={(e) =>
+                          setNeverShowWarningChecked((prev) => ({ ...prev, attr1: e.target.checked }))
+                        }
+                        className="rounded text-black focus:ring-0 cursor-pointer"
+                      />
+                      <span className="text-[10px] font-medium text-amber-900">
+                        No volver a mostrar esta advertencia para este atributo
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (neverShowWarningChecked['attr1'] && onUpdateSettings) {
+                        onUpdateSettings({
+                          attribute1: { ...attribute1, hideUnusedWarning: true }
+                        });
+                      }
+                      setDismissedWarnings((prev) => ({ ...prev, attr1: true }));
+                    }}
+                    className="px-3 py-1.5 rounded-xl text-xs font-semibold text-neutral-700 hover:bg-amber-100 transition-colors"
+                  >
+                    Continuar así
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (neverShowWarningChecked['attr1'] && onUpdateSettings) {
+                        onUpdateSettings({
+                          attribute1: { ...attribute1, hideUnusedWarning: true, enabled: false }
+                        });
+                      } else {
+                        handleToggleAttribute('attr1');
+                      }
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-900 hover:bg-black text-white text-xs font-bold transition-all shadow-xs"
+                  >
+                    Deshabilitar atributo
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {attribute2.enabled && !attribute2.hideUnusedWarning && !dismissedWarnings['attr2'] && productsUsingAttr2.length === 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-in fade-in duration-200">
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-amber-600 text-2xl shrink-0 mt-0.5">
+                    info
+                  </span>
+                  <div>
+                    <h4 className="text-xs font-bold text-amber-900">
+                      "{attribute2.name}" está habilitado pero ningún producto lo usa.
+                    </h4>
+                    <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                      ¿Desea deshabilitarlo para simplificar la carga de productos?
+                    </p>
+                    <label className="flex items-center gap-1.5 mt-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(neverShowWarningChecked['attr2'])}
+                        onChange={(e) =>
+                          setNeverShowWarningChecked((prev) => ({ ...prev, attr2: e.target.checked }))
+                        }
+                        className="rounded text-black focus:ring-0 cursor-pointer"
+                      />
+                      <span className="text-[10px] font-medium text-amber-900">
+                        No volver a mostrar esta advertencia para este atributo
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (neverShowWarningChecked['attr2'] && onUpdateSettings) {
+                        onUpdateSettings({
+                          attribute2: { ...attribute2, hideUnusedWarning: true }
+                        });
+                      }
+                      setDismissedWarnings((prev) => ({ ...prev, attr2: true }));
+                    }}
+                    className="px-3 py-1.5 rounded-xl text-xs font-semibold text-neutral-700 hover:bg-amber-100 transition-colors"
+                  >
+                    Continuar así
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (neverShowWarningChecked['attr2'] && onUpdateSettings) {
+                        onUpdateSettings({
+                          attribute2: { ...attribute2, hideUnusedWarning: true, enabled: false }
+                        });
+                      } else {
+                        handleToggleAttribute('attr2');
+                      }
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-900 hover:bg-black text-white text-xs font-bold transition-all shadow-xs"
+                  >
+                    Deshabilitar atributo
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Action & Search Toolbar */}
-            <div className="bg-white rounded-xl p-4 shadow-xs border border-[#efeded] flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+            <div className="bg-white rounded-2xl p-4 shadow-xs border border-[#efeded] flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
               <div className="flex flex-1 flex-col sm:flex-row items-stretch sm:items-center gap-3">
                 {/* Live Search Input */}
                 <div className="relative flex-1 min-w-[240px]">
@@ -642,21 +1232,29 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   </span>
                   <input
                     type="text"
-                    placeholder="Buscar por título, código o SKU..."
+                    placeholder="Buscar por nombre, SKU o categoría..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 bg-[#f5f3f3] rounded-lg text-xs text-black placeholder:text-neutral-400 focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 transition-all"
+                    className="w-full pl-9 pr-4 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 transition-all font-medium"
                   />
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-black"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">close</span>
+                    </button>
+                  )}
                 </div>
 
-                {/* Category Selector Filter */}
+                {/* Category Filter */}
                 <div className="relative">
                   <select
                     value={categoryFilter}
                     onChange={(e) => setCategoryFilter(e.target.value)}
-                    className="w-full sm:w-auto appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] rounded-lg text-xs text-black focus:outline-none cursor-pointer border border-transparent focus:border-neutral-300"
+                    className="w-full sm:w-auto appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none cursor-pointer border border-transparent focus:border-neutral-300 font-medium"
                   >
-                    <option value="Todas">Todas las Colecciones</option>
+                    <option value="Todas">Todas las Categorías</option>
                     {settings.categories
                       .filter((c) => c !== 'Todas')
                       .map((cat) => (
@@ -675,10 +1273,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   <select
                     value={statusFilter}
                     onChange={(e) => setStatusFilter(e.target.value)}
-                    className="w-full sm:w-auto appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] rounded-lg text-xs text-black focus:outline-none cursor-pointer border border-transparent focus:border-neutral-300"
+                    className="w-full sm:w-auto appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none cursor-pointer border border-transparent focus:border-neutral-300 font-medium"
                   >
                     <option value="all">Todos los Estados</option>
-                    <option value="active">Solo Activos</option>
+                    <option value="active">Solo Activos (con stock)</option>
                     <option value="draft">Deshabilitados / Borradores</option>
                     <option value="out_of_stock">Agotados</option>
                   </select>
@@ -690,134 +1288,59 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
               {/* Primary Trigger Buttons */}
               <div className="flex items-center gap-2 flex-wrap">
-                {/* Max Products Capacity Badge */}
-                {typeof featureFlags?.maxProducts === 'number' && featureFlags.maxProducts > 0 && (
-                  <div
-                    className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold ${
-                      isMaxProductsReached
-                        ? 'bg-red-50 border-red-200 text-red-700'
-                        : 'bg-neutral-100 border-neutral-200 text-neutral-700'
-                    }`}
-                    title={isMaxProductsReached ? 'Cupo máximo alcanzado' : 'Capacidad de prendas asignada'}
-                  >
-                    <span className="material-symbols-outlined text-[16px]">
-                      {isMaxProductsReached ? 'warning' : 'inventory_2'}
-                    </span>
-                    <span>
-                      {products.length} / {featureFlags.maxProducts} prendas
-                    </span>
-                    {isMaxProductsReached && (
-                      <span className="text-[10px] font-bold uppercase bg-red-200 text-red-800 px-1.5 py-0.2 rounded-md">
-                        Lleno
-                      </span>
-                    )}
-                  </div>
-                )}
-
                 {featureFlags?.exportProducts !== false && (
                   <button
                     onClick={handleExportCsv}
-                    className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-[#efeded] hover:bg-[#e4e2e2] text-black text-xs font-medium transition-colors"
-                    title="Descargar CSV con variantes y stock"
+                    className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#efeded] hover:bg-[#e4e2e2] text-black text-xs font-medium transition-colors"
+                    title="Exportar inventario y existencias a CSV"
                   >
-                    <span className="material-symbols-outlined text-[18px]">file_download</span>
+                    <span className="material-symbols-outlined text-[16px]">file_download</span>
                     <span>Exportar Planilla</span>
                   </button>
                 )}
-
-                {featureFlags?.aiAssistant !== false && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (isMaxProductsReached) {
-                        alert(`Has alcanzado el límite de ${featureFlags?.maxProducts} prendas permitido.`);
-                        return;
-                      }
-                      setIsAiModalOpen(true);
-                    }}
-                    className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl text-white text-xs font-semibold shadow-xs hover:shadow transition-all active:scale-[0.98] cursor-pointer ${
-                      isMaxProductsReached
-                        ? 'bg-neutral-400 opacity-60 cursor-not-allowed'
-                        : 'bg-gradient-to-r from-amber-600 via-amber-700 to-neutral-900 hover:from-amber-500 hover:to-black'
-                    }`}
-                    title="Crear ficha de producto automáticamente a partir de fotos con IA (Gemini 2.5 Flash)"
-                  >
-                    <span className="material-symbols-outlined text-[18px] text-amber-300">
-                      auto_awesome
-                    </span>
-                    <span>Nuevo producto con IA</span>
-                  </button>
-                )}
-
-                <button
-                  onClick={handleCreateNewProduct}
-                  className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-white text-xs font-semibold shadow-xs hover:shadow transition-all active:scale-[0.98] cursor-pointer ${
-                    isMaxProductsReached
-                      ? 'bg-neutral-500 hover:bg-neutral-600'
-                      : 'bg-neutral-900 hover:bg-black'
-                  }`}
-                  title={isMaxProductsReached ? 'Cupo máximo alcanzado' : 'Crear nuevo producto'}
-                >
-                  <span className="material-symbols-outlined text-[18px]">add</span>
-                  <span>Nuevo Producto</span>
-                </button>
               </div>
             </div>
 
-            {/* General Inventory Table */}
-            <div className="bg-white rounded-xl shadow-xs border border-[#efeded] overflow-hidden">
-              <div className="p-3.5 flex items-center justify-between bg-[#f5f3f3] border-b border-[#efeded]">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-black">
-                    Índice Operativo de Inventario
-                  </span>
-                  <span className="px-2 py-0.5 rounded-lg bg-[#efeded] text-[11px] font-medium text-neutral-600">
-                    {filteredProducts.length} de {products.length} resultados
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1 text-xs text-neutral-500">
-                  <span>Orden: Más recientes</span>
-                  <span className="material-symbols-outlined text-[16px]">swap_vert</span>
-                </div>
-              </div>
-
+            {/* Products Table Card */}
+            <div className="bg-white rounded-2xl shadow-xs border border-[#efeded] overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
+                <table className="w-full text-left border-collapse text-xs">
                   <thead>
-                    <tr className="border-b border-[#efeded] text-[11px] font-semibold text-neutral-500 uppercase tracking-wider bg-white">
-                      <th className="py-3 px-4">Prenda / Ficha</th>
-                      <th className="py-3 px-4">Colección / Categoría</th>
+                    <tr className="bg-[#f5f3f3] border-b border-[#efeded] text-[#444748] font-bold uppercase tracking-wider text-[11px] h-11">
+                      <th className="py-3 px-4">Prenda / Modelo</th>
+                      <th className="py-3 px-4">Categoría</th>
                       <th className="py-3 px-4">Precio Venta</th>
-                      <th className="py-3 px-4">Costo Prod.</th>
+                      <th className="py-3 px-4">Costo Producción</th>
                       <th className="py-3 px-4">Variantes & Stock</th>
                       <th className="py-3 px-4">Disponibilidad Online</th>
                       <th className="py-3 px-4 text-right">Acciones</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#efeded] text-xs">
+                  <tbody className="divide-y divide-[#efeded]">
                     {filteredProducts.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="text-center py-12 text-neutral-500">
-                          <span className="material-symbols-outlined text-4xl text-neutral-300 block mb-2">
-                            inventory_2
-                          </span>
-                          No se encontraron productos con los filtros seleccionados.
+                        <td colSpan={7} className="py-12 text-center text-neutral-400">
+                          <div className="flex flex-col items-center justify-center gap-2">
+                            <span className="material-symbols-outlined text-[36px] text-neutral-300">
+                              inventory_2
+                            </span>
+                            <span className="text-sm font-medium">No se encontraron productos con los filtros aplicados.</span>
+                          </div>
                         </td>
                       </tr>
                     ) : (
                       filteredProducts.map((prod) => {
-                        const coverImg =
-                          prod.images && prod.images.length > 0
-                            ? prod.images[prod.coverIndex || 0] || prod.images[0]
-                            : null;
+                        const coverImg = prod.images[prod.coverIndex || 0] || prod.images[0] || '';
+                        const hasNoVariants = prod.variants.length === 0;
+                        const isAllUnlimited = prod.isUnlimited || (prod.variants.length > 0 && prod.variants.every((v) => v.unlimited));
+                        const hasSomeUnlimited = prod.variants.some((v) => v.unlimited);
 
                         return (
-                          <tr key={prod.id} className="hover:bg-[#faf9f8] transition-colors group">
+                          <tr key={prod.id} className="hover:bg-[#faf9f8] transition-colors">
                             {/* Product Info */}
                             <td className="py-3.5 px-4">
                               <div className="flex items-center gap-3">
-                                <div className="w-12 h-14 rounded-lg bg-[#f5f3f3] border border-neutral-200 overflow-hidden flex items-center justify-center shrink-0">
+                                <div className="w-12 h-14 rounded-lg bg-[#efeded] overflow-hidden shrink-0 border border-neutral-200">
                                   {coverImg ? (
                                     <img
                                       src={coverImg}
@@ -825,26 +1348,25 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                       className="w-full h-full object-cover"
                                     />
                                   ) : (
-                                    <span className="material-symbols-outlined text-neutral-400 text-lg">
-                                      styler
-                                    </span>
+                                    <div className="w-full h-full flex items-center justify-center text-neutral-400">
+                                      <span className="material-symbols-outlined text-[18px]">image</span>
+                                    </div>
                                   )}
                                 </div>
-                                <div>
-                                  <div className="font-semibold text-black group-hover:underline cursor-pointer"
-                                       onClick={() => setEditingProduct(prod)}>
-                                    {prod.name || 'Sin nombre'}
-                                  </div>
-                                  <div className="text-[11px] text-neutral-400 font-mono mt-0.5">
-                                    ID: {prod.id}
-                                  </div>
+                                <div className="flex flex-col min-w-0">
+                                  <span className="font-bold text-black text-sm truncate max-w-[220px]">
+                                    {prod.name}
+                                  </span>
+                                  <span className="text-[11px] text-neutral-500 mt-0.5 truncate max-w-[220px]">
+                                    {prod.description || 'Sin descripción'}
+                                  </span>
                                 </div>
                               </div>
                             </td>
 
                             {/* Category */}
-                            <td className="py-3.5 px-4">
-                              <span className="px-2.5 py-1 rounded-md bg-[#f5f3f3] text-neutral-700 text-xs font-medium">
+                            <td className="py-3.5 px-4 font-semibold text-neutral-700">
+                              <span className="px-2.5 py-1 rounded-lg bg-[#f5f3f3] text-[11px] font-medium text-black">
                                 {prod.category}
                               </span>
                             </td>
@@ -861,37 +1383,57 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
                             {/* Variants & Stock */}
                             <td className="py-3.5 px-4">
-                              <div className="flex flex-col gap-1">
-                                <div className="flex items-center gap-1.5">
-                                  <span
-                                    className={`w-2 h-2 rounded-full ${
-                                      prod.totalStock > 0 ? 'bg-emerald-500' : 'bg-red-500'
-                                    }`}
-                                  ></span>
-                                  <span className="font-bold text-black">{prod.totalStock} unidades</span>
+                              {hasNoVariants ? (
+                                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-[11px] font-bold">
+                                  <span className="material-symbols-outlined text-[15px] text-amber-600">warning</span>
+                                  <span>Sin variantes: no se ve en la tienda</span>
                                 </div>
-                                <span className="text-[10px] text-neutral-400">
-                                  {prod.variants.length} variantes cargadas
-                                </span>
-                              </div>
+                              ) : (
+                                <div className="flex flex-col gap-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span
+                                      className={`w-2 h-2 rounded-full ${
+                                        isAllUnlimited || prod.totalStock > 0 ? 'bg-emerald-500' : 'bg-red-500'
+                                      }`}
+                                    ></span>
+                                    <span className="font-bold text-black">
+                                      {isAllUnlimited
+                                        ? '∞ Ilimitado'
+                                        : hasSomeUnlimited
+                                        ? `${prod.totalStock} u. + variantes ilimitadas`
+                                        : `${prod.totalStock} unidades`}
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-neutral-400">
+                                    {prod.variants.length} variantes cargadas
+                                  </span>
+                                </div>
+                              )}
                             </td>
 
                             {/* Status */}
                             <td className="py-3.5 px-4">
-                              <span
-                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold ${
-                                  prod.enabledOnline
-                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                    : 'bg-neutral-100 text-neutral-600 border border-neutral-200'
-                                }`}
-                              >
+                              {hasNoVariants ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-neutral-100 text-neutral-500 border border-neutral-200">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-neutral-400"></span>
+                                  Oculto (requiere variantes)
+                                </span>
+                              ) : (
                                 <span
-                                  className={`w-1.5 h-1.5 rounded-full ${
-                                    prod.enabledOnline ? 'bg-emerald-600' : 'bg-neutral-400'
+                                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold ${
+                                    prod.enabledOnline
+                                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                      : 'bg-neutral-100 text-neutral-600 border border-neutral-200'
                                   }`}
-                                ></span>
-                                {prod.enabledOnline ? 'Visible en Tienda' : 'Oculto / Borrador'}
-                              </span>
+                                >
+                                  <span
+                                    className={`w-1.5 h-1.5 rounded-full ${
+                                      prod.enabledOnline ? 'bg-emerald-600' : 'bg-neutral-400'
+                                    }`}
+                                  ></span>
+                                  {prod.enabledOnline ? 'Visible en Tienda' : 'Oculto / Borrador'}
+                                </span>
+                              )}
                             </td>
 
                             {/* Actions */}
@@ -901,7 +1443,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                   type="button"
                                   onClick={() => handleDuplicateProduct(prod)}
                                   className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#efeded] hover:bg-neutral-200 text-black text-xs font-medium transition-colors cursor-pointer"
-                                  title="Duplicar producto (guarda una copia oculta y abre su edición)"
+                                  title="Duplicar producto"
                                 >
                                   <span className="material-symbols-outlined text-[15px]">content_copy</span>
                                   <span>Duplicar</span>
@@ -961,10 +1503,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         {/* ========================================================================= */}
         {selectedSubTab === 'categories' && (
           <div className="flex flex-col gap-6">
-            {/* Pedagogical / Functional explanation banner */}
-            <div className="bg-white rounded-xl p-5 border border-[#efeded] shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="bg-white rounded-2xl p-5 border border-[#efeded] shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div className="flex items-start gap-3.5">
-                <div className="w-10 h-10 rounded-lg bg-black text-white flex items-center justify-center shrink-0 mt-0.5">
+                <div className="w-10 h-10 rounded-xl bg-black text-white flex items-center justify-center shrink-0 mt-0.5">
                   <span className="material-symbols-outlined text-[22px]">category</span>
                 </div>
                 <div>
@@ -972,12 +1513,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     ¿Para qué sirven las Categorías?
                   </h3>
                   <p className="text-xs text-[#5f5e5b] mt-1 max-w-3xl leading-relaxed">
-                    Las <strong className="text-black">categorías</strong> organizan tu catálogo comercial y colecciones. Permiten a los clientes filtrar prendas en la tienda online (ej: <em>Vestidos de Fiesta, Sastrería, Tops, Accesorios</em>) y aparecen en el desplegable al crear o editar cualquier prenda.
+                    Las <strong className="text-black">categorías</strong> organizan tu catálogo comercial y colecciones. Permiten a los clientes filtrar prendas en la tienda online y aparecen en el desplegable al crear o editar cualquier prenda.
                   </p>
                 </div>
               </div>
 
-              <div className="px-3.5 py-1.5 rounded-lg bg-[#f5f3f3] border border-neutral-200 text-xs font-semibold text-neutral-700 whitespace-nowrap">
+              <div className="px-3.5 py-1.5 rounded-xl bg-[#f5f3f3] border border-neutral-200 text-xs font-semibold text-neutral-700 whitespace-nowrap">
                 {settings.categories.filter((c) => c !== 'Todas').length} categorías configuradas
               </div>
             </div>
@@ -985,7 +1526,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             {/* Quick Add Category Bar */}
             <form
               onSubmit={handleAddCategory}
-              className="bg-white rounded-xl p-4 shadow-xs border border-[#efeded] flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
+              className="bg-white rounded-2xl p-4 shadow-xs border border-[#efeded] flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
             >
               <div className="relative flex-1">
                 <span className="material-symbols-outlined text-[18px] text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2">
@@ -993,10 +1534,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </span>
                 <input
                   type="text"
-                  placeholder="Nombre de la nueva categoría (ej. Faldas & Minifaldas, Ropa de Playa...)"
+                  placeholder="Nombre de la nueva categoría (ej. Faldas, Calzado, Carteras...)"
                   value={newCategoryName}
                   onChange={(e) => setNewCategoryName(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 bg-[#f5f3f3] rounded-lg text-xs text-black placeholder:text-neutral-400 focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 transition-all font-medium"
+                  className="w-full pl-9 pr-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 transition-all font-medium"
                 />
               </div>
 
@@ -1011,7 +1552,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             </form>
 
             {/* Categories Management Table */}
-            <div className="bg-white rounded-xl shadow-xs border border-[#efeded] overflow-hidden">
+            <div className="bg-white rounded-2xl shadow-xs border border-[#efeded] overflow-hidden">
               <div className="p-3.5 bg-[#f5f3f3] border-b border-[#efeded] flex items-center justify-between">
                 <span className="text-xs font-bold text-black">
                   Colecciones y Categorías Activas en la Tienda
@@ -1047,84 +1588,51 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                               onChange={(e) =>
                                 setEditingCategory({ ...editingCategory, current: e.target.value })
                               }
-                              className="flex-1 px-3 py-1.5 rounded-lg border border-neutral-300 text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-black"
-                              autoFocus
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleSaveRenameCategory();
-                                if (e.key === 'Escape') setEditingCategory(null);
-                              }}
+                              className="flex-1 px-3 py-1.5 rounded-xl border border-neutral-300 text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-black"
                             />
                             <button
                               type="button"
                               onClick={handleSaveRenameCategory}
-                              className="px-3 py-1.5 rounded-lg bg-black text-white text-xs font-semibold hover:bg-neutral-800"
+                              className="px-3 py-1.5 rounded-xl bg-black text-white text-xs font-semibold"
                             >
                               Guardar
                             </button>
                             <button
                               type="button"
                               onClick={() => setEditingCategory(null)}
-                              className="px-2.5 py-1.5 rounded-lg bg-neutral-200 text-neutral-700 text-xs font-medium hover:bg-neutral-300"
+                              className="px-2.5 py-1.5 rounded-xl bg-neutral-200 text-neutral-700 text-xs"
                             >
                               Cancelar
                             </button>
                           </div>
                         ) : (
                           <div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-bold text-black">{cat}</span>
-                              {isGlobalFilter && (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-neutral-200 text-neutral-700">
-                                  Filtro del Sistema
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[11px] text-neutral-500">
-                              {count} {count === 1 ? 'prenda asociada' : 'prendas asociadas'} en inventario
+                            <span className="text-xs font-bold text-black">{cat}</span>
+                            <span className="text-[11px] text-neutral-400 ml-2">
+                              {count} {count === 1 ? 'prenda' : 'prendas'}
                             </span>
                           </div>
                         )}
                       </div>
 
-                      {/* Action buttons */}
-                      {!isEditingThis && (
-                        <div className="flex items-center gap-2 self-end sm:self-center">
-                          {/* Filter products by this category */}
+                      {!isGlobalFilter && !isEditingThis && (
+                        <div className="flex items-center gap-1.5">
                           <button
                             type="button"
-                            onClick={() => {
-                              setCategoryFilter(cat);
-                              setSelectedSubTab('products');
-                            }}
-                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#efeded] hover:bg-neutral-200 text-black text-xs font-medium transition-colors"
-                            title="Ver productos con esta categoría"
+                            onClick={() => setEditingCategory({ original: cat, current: cat })}
+                            className="p-1.5 rounded-lg text-neutral-400 hover:text-black hover:bg-neutral-100 transition-colors"
+                            title="Renombrar categoría"
                           >
-                            <span className="material-symbols-outlined text-[15px]">visibility</span>
-                            <span>Ver prendas</span>
+                            <span className="material-symbols-outlined text-[16px]">edit</span>
                           </button>
-
-                          {!isGlobalFilter && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => setEditingCategory({ original: cat, current: cat })}
-                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 hover:bg-neutral-100 text-neutral-700 text-xs font-medium transition-colors"
-                                title="Renombrar categoría"
-                              >
-                                <span className="material-symbols-outlined text-[15px]">edit</span>
-                                <span>Renombrar</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteCategory(cat)}
-                                className="p-1.5 rounded-lg text-neutral-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-100 transition-colors"
-                                title="Eliminar categoría"
-                              >
-                                <span className="material-symbols-outlined text-[16px]">delete</span>
-                              </button>
-                            </>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => setCategoryToDelete(cat)}
+                            className="p-1.5 rounded-lg text-neutral-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                            title="Eliminar categoría"
+                          >
+                            <span className="material-symbols-outlined text-[16px]">delete</span>
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1136,261 +1644,45 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         )}
 
         {/* ========================================================================= */}
-        {/* SUBTAB 3: GESTIÓN DE TALLES MAESTROS                                      */}
+        {/* SUBTAB 3: ATRIBUTO 1                                                      */}
         {/* ========================================================================= */}
-        {selectedSubTab === 'sizes' && (
-          <div className="flex flex-col gap-6">
-            {/* Pedagogical / Functional explanation banner */}
-            <div className="bg-white rounded-xl p-5 border border-[#efeded] shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-              <div className="flex items-start gap-3.5">
-                <div className="w-10 h-10 rounded-lg bg-black text-white flex items-center justify-center shrink-0 mt-0.5">
-                  <span className="material-symbols-outlined text-[22px]">straighten</span>
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-black">
-                    ¿Para qué sirven los Talles Maestros?
-                  </h3>
-                  <p className="text-xs text-[#5f5e5b] mt-1 max-w-3xl leading-relaxed">
-                    Los <strong className="text-black">talles maestros</strong> son las medidas o numeraciones oficiales estandarizadas de tu boutique (ej: <em>XS, S, M, L, XL</em> o <em>36, 38, 40</em> o <em>Talle Único</em>). Al dar de alta prendas o variantes de stock, el sistema te ofrece esta lista maestra para que no tengas que escribir cada talle de memoria ni cometer errores de tipeo.
-                  </p>
-                </div>
-              </div>
-
-              <div className="px-3.5 py-1.5 rounded-lg bg-[#f5f3f3] border border-neutral-200 text-xs font-semibold text-neutral-700 whitespace-nowrap">
-                {settings.masterSizes.length} talles configurados
-              </div>
-            </div>
-
-            {/* Quick Add Size Bar */}
-            <form
-              onSubmit={handleAddSize}
-              className="bg-white rounded-xl p-4 shadow-xs border border-[#efeded] flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
-            >
-              <div className="relative flex-1">
-                <span className="material-symbols-outlined text-[18px] text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2">
-                  straighten
-                </span>
-                <input
-                  type="text"
-                  placeholder="Nombre del talle (ej. XXL, 38, 40, Único...)"
-                  value={newSizeName}
-                  onChange={(e) => setNewSizeName(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 bg-[#f5f3f3] rounded-lg text-xs text-black placeholder:text-neutral-400 focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 transition-all font-medium uppercase"
-                />
-              </div>
-
-              <label className="flex items-center gap-2 text-xs text-neutral-600 cursor-pointer select-none px-2">
-                <input
-                  type="checkbox"
-                  checked={newSizeEnabled}
-                  onChange={(e) => setNewSizeEnabled(e.target.checked)}
-                  className="rounded text-black focus:ring-0 cursor-pointer"
-                />
-                <span>Habilitado para matrices automáticas</span>
-              </label>
-
-              <button
-                type="submit"
-                disabled={!newSizeName.trim()}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-neutral-900 hover:bg-black disabled:opacity-40 text-white text-xs font-semibold shadow-xs hover:shadow transition-all active:scale-[0.98] cursor-pointer"
-              >
-                <span className="material-symbols-outlined text-[18px]">add</span>
-                <span>Nuevo Talle</span>
-              </button>
-            </form>
-
-            {/* Master Sizes Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {settings.masterSizes.map((size) => {
-                const assignedVariants = sizeUsage[size.name.toUpperCase()] || 0;
-
-                return (
-                  <div
-                    key={size.name}
-                    className="bg-white rounded-xl p-4 border border-[#efeded] shadow-xs flex flex-col justify-between gap-3 hover:border-neutral-300 transition-colors"
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="w-11 h-11 rounded-lg bg-black text-white font-bold text-sm flex items-center justify-center tracking-tight shadow-xs">
-                          {size.name}
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold text-black">Talle {size.name}</div>
-                          <div className="text-[11px] text-neutral-500">
-                            {assignedVariants} {assignedVariants === 1 ? 'variante' : 'variantes'} con stock
-                          </div>
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteSize(size.name)}
-                        className="text-neutral-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition-colors"
-                        title="Eliminar talle maestro"
-                      >
-                        <span className="material-symbols-outlined text-[17px]">delete</span>
-                      </button>
-                    </div>
-
-                    <div className="pt-2 border-t border-neutral-100 flex items-center justify-between text-xs">
-                      <span className="text-[11px] text-neutral-500">Generación automática</span>
-                      <button
-                        type="button"
-                        onClick={() => handleToggleSize(size.name)}
-                        className={`px-2.5 py-1 rounded-full text-[10px] font-semibold transition-colors ${
-                          size.enabled
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-neutral-100 text-neutral-600'
-                        }`}
-                      >
-                        {size.enabled ? 'Activo' : 'Pausado'}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        {selectedSubTab === 'attr1' && renderAttributeSubTab('attr1')}
 
         {/* ========================================================================= */}
-        {/* SUBTAB 4: GESTIÓN DE COLORES MAESTROS                                     */}
+        {/* SUBTAB 4: ATRIBUTO 2                                                      */}
         {/* ========================================================================= */}
-        {selectedSubTab === 'colors' && (
-          <div className="flex flex-col gap-6">
-            {/* Pedagogical / Functional explanation banner */}
-            <div className="bg-white rounded-xl p-5 border border-[#efeded] shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-              <div className="flex items-start gap-3.5">
-                <div className="w-10 h-10 rounded-lg bg-black text-white flex items-center justify-center shrink-0 mt-0.5">
-                  <span className="material-symbols-outlined text-[22px]">palette</span>
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-black">
-                    ¿Para qué sirven los Colores Maestros?
-                  </h3>
-                  <p className="text-xs text-[#5f5e5b] mt-1 max-w-3xl leading-relaxed">
-                    Los <strong className="text-black">colores maestros</strong> definen la carta cromática oficial de tu marca. Cada color posee un nombre comercial (ej. <em>Negro Azabache, Crema Natural, Terracota</em>) y su código hexadecimal (<em>#HEX</em>). Al crear variantes de prendas, el cliente ve los círculos de colores reales en la tienda online para seleccionar su combinación exacta.
-                  </p>
-                </div>
-              </div>
+        {selectedSubTab === 'attr2' && renderAttributeSubTab('attr2')}
+      </div>
 
-              <div className="px-3.5 py-1.5 rounded-lg bg-[#f5f3f3] border border-neutral-200 text-xs font-semibold text-neutral-700 whitespace-nowrap">
-                {settings.masterColors.length} colores configurados
-              </div>
-            </div>
-
-            {/* Quick Add Color Bar */}
-            <form
-              onSubmit={handleAddColor}
-              className="bg-white rounded-xl p-4 shadow-xs border border-[#efeded] flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
-            >
-              {/* Color Name Input */}
-              <div className="relative flex-1">
-                <span className="material-symbols-outlined text-[18px] text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2">
-                  palette
-                </span>
-                <input
-                  type="text"
-                  placeholder="Nombre comercial del color (ej. Verde Eucalipto, Arena Camel...)"
-                  value={newColorName}
-                  onChange={(e) => setNewColorName(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 bg-[#f5f3f3] rounded-lg text-xs text-black placeholder:text-neutral-400 focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 transition-all font-medium"
-                />
-              </div>
-
-              {/* Native Color Picker + Hex Input */}
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1.5 p-1 bg-[#f5f3f3] rounded-lg border border-neutral-200">
-                  <input
-                    type="color"
-                    value={newColorHex}
-                    onChange={(e) => setNewColorHex(e.target.value)}
-                    className="w-7 h-7 rounded border-0 cursor-pointer p-0 bg-transparent"
-                    title="Elegir muestra visual de color"
-                  />
-                  <input
-                    type="text"
-                    value={newColorHex}
-                    onChange={(e) => setNewColorHex(e.target.value)}
-                    placeholder="#1A1A1A"
-                    className="w-20 px-1.5 py-1 bg-transparent text-xs font-mono font-semibold text-black uppercase focus:outline-none"
-                  />
-                </div>
-
-                {/* Swatch circle preview */}
-                <div
-                  className="w-8 h-8 rounded-full border border-neutral-300 shadow-2xs shrink-0"
-                  style={{ backgroundColor: newColorHex }}
-                  title="Vista previa del color"
-                ></div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={!newColorName.trim()}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-neutral-900 hover:bg-black disabled:opacity-40 text-white text-xs font-semibold shadow-xs hover:shadow transition-all active:scale-[0.98] cursor-pointer"
-              >
-                <span className="material-symbols-outlined text-[18px]">palette</span>
-                <span>Guardar Color</span>
-              </button>
-            </form>
-
-            {/* Master Colors Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {settings.masterColors.map((color) => {
-                const assignedVariants = colorUsage[color.name.toLowerCase()] || 0;
-
-                return (
-                  <div
-                    key={color.name}
-                    className="bg-white rounded-xl p-4 border border-[#efeded] shadow-xs flex items-center justify-between gap-3 hover:border-neutral-300 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      {/* Circle Swatch */}
-                      <div
-                        className="w-10 h-10 rounded-full border border-neutral-300 shadow-xs shrink-0"
-                        style={{ backgroundColor: color.hex }}
-                      ></div>
-
-                      <div>
-                        <div className="text-xs font-bold text-black">{color.name}</div>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <span className="text-[10px] font-mono text-neutral-500 bg-[#f5f3f3] px-1.5 py-0.5 rounded">
-                            {color.hex}
-                          </span>
-                          <span className="text-[10px] text-neutral-400">
-                            • {assignedVariants} {assignedVariants === 1 ? 'variante' : 'variantes'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteColor(color.name)}
-                      className="text-neutral-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
-                      title="Eliminar color maestro"
-                    >
-                      <span className="material-symbols-outlined text-[17px]">delete</span>
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </section>
-
-      {/* Focused Slide-Over / Management Modal: Edición de Producto */}
+      {/* Product Edit Modal */}
       {editingProduct && (
         <ProductEditModal
           product={editingProduct}
-          isOpen={!!editingProduct}
+          isOpen={Boolean(editingProduct)}
           onClose={() => setEditingProduct(null)}
-          onSave={onSaveProduct}
+          onSave={async (saved) => {
+            await onSaveProduct(saved);
+            setEditingProduct(null);
+            showNotification('success', `Producto "${saved.name}" guardado exitosamente.`);
+          }}
           settings={settings}
           allowDevicePhotos={featureFlags?.uploadDevicePhotos !== false}
           existingTags={allExistingTags}
+        />
+      )}
+
+      {/* Attribute Generic Confirmation Modal */}
+      {confirmModal && (
+        <AttributeConfirmationModal
+          isOpen={confirmModal.isOpen}
+          onClose={() => setConfirmModal(null)}
+          title={confirmModal.title}
+          message={confirmModal.message}
+          affectedList={confirmModal.affectedList}
+          affectedListTitle={confirmModal.affectedListTitle}
+          confirmLabel={confirmModal.confirmLabel}
+          confirmColor={confirmModal.confirmColor}
+          onConfirm={confirmModal.onConfirm}
         />
       )}
 
@@ -1399,7 +1691,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-neutral-200 animate-in fade-in zoom-in-95">
             <div className="w-12 h-12 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-4">
-              <span className="material-symbols-outlined text-2xl">folder_delete</span>
+              <span className="material-symbols-outlined text-2xl">category</span>
             </div>
             <h3 className="text-base font-bold text-neutral-900 mb-1">
               ¿Eliminar categoría "{categoryToDelete}"?
@@ -1407,10 +1699,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             <p className="text-xs text-neutral-500 mb-5 leading-relaxed">
               {(categoryUsage[categoryToDelete] || 0) > 0 ? (
                 <>
-                  Hay <strong className="text-neutral-800 font-semibold">{categoryUsage[categoryToDelete]} prenda(s)</strong> con esta categoría asignada que quedarán sin clasificar en el catálogo.
+                  Hay <strong className="text-neutral-800 font-semibold">{categoryUsage[categoryToDelete]} prenda(s)</strong> asociadas a esta categoría. Al eliminarla, las prendas conservarán su información pero la categoría ya no figurará en los filtros de la tienda.
                 </>
               ) : (
-                'Esta categoría se eliminará de las opciones y filtros de tu tienda.'
+                'Esta categoría ya no estará disponible para catalogar prendas.'
               )}
             </p>
             <div className="flex items-center justify-end gap-2.5">
@@ -1431,92 +1723,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 className="px-4 py-2 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors shadow-xs cursor-pointer"
               >
                 Eliminar Categoría
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirmation Modal: Eliminar Talle Maestro */}
-      {sizeToDelete && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-neutral-200 animate-in fade-in zoom-in-95">
-            <div className="w-12 h-12 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-4">
-              <span className="material-symbols-outlined text-2xl">straighten</span>
-            </div>
-            <h3 className="text-base font-bold text-neutral-900 mb-1">
-              ¿Eliminar talle maestro "{sizeToDelete}"?
-            </h3>
-            <p className="text-xs text-neutral-500 mb-5 leading-relaxed">
-              {(sizeUsage[sizeToDelete.toUpperCase()] || 0) > 0 ? (
-                <>
-                  Hay <strong className="text-neutral-800 font-semibold">{sizeUsage[sizeToDelete.toUpperCase()]} variante(s)</strong> registradas con este talle en el inventario.
-                </>
-              ) : (
-                'Este talle ya no aparecerá sugerido al cargar nuevas prendas.'
-              )}
-            </p>
-            <div className="flex items-center justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={() => setSizeToDelete(null)}
-                className="px-4 py-2 text-xs font-semibold text-neutral-700 hover:bg-neutral-100 rounded-xl transition-colors cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  const s = sizeToDelete;
-                  setSizeToDelete(null);
-                  await executeDeleteSize(s);
-                }}
-                className="px-4 py-2 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors shadow-xs cursor-pointer"
-              >
-                Eliminar Talle
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirmation Modal: Eliminar Color Maestro */}
-      {colorToDelete && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-neutral-200 animate-in fade-in zoom-in-95">
-            <div className="w-12 h-12 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-4">
-              <span className="material-symbols-outlined text-2xl">palette</span>
-            </div>
-            <h3 className="text-base font-bold text-neutral-900 mb-1">
-              ¿Eliminar color maestro "{colorToDelete}"?
-            </h3>
-            <p className="text-xs text-neutral-500 mb-5 leading-relaxed">
-              {(colorUsage[colorToDelete.toLowerCase()] || 0) > 0 ? (
-                <>
-                  Hay <strong className="text-neutral-800 font-semibold">{colorUsage[colorToDelete.toLowerCase()]} variante(s)</strong> registradas con este color en el inventario.
-                </>
-              ) : (
-                'Este color ya no aparecerá en la paleta maestra al crear variantes.'
-              )}
-            </p>
-            <div className="flex items-center justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={() => setColorToDelete(null)}
-                className="px-4 py-2 text-xs font-semibold text-neutral-700 hover:bg-neutral-100 rounded-xl transition-colors cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  const c = colorToDelete;
-                  setColorToDelete(null);
-                  await executeDeleteColor(c);
-                }}
-                className="px-4 py-2 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors shadow-xs cursor-pointer"
-              >
-                Eliminar Color
               </button>
             </div>
           </div>
@@ -1561,7 +1767,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         </div>
       )}
 
-      {/* Modal: Nuevo Producto con IA (Gemini Flash) */}
+      {/* Modal: Nuevo Producto con IA */}
       <AiProductModal
         isOpen={isAiModalOpen}
         onClose={() => setIsAiModalOpen(false)}

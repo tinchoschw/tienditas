@@ -1,13 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { Product, ProductVariant, StoreSettings } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Product, ProductVariant, StoreSettings, StoreAttribute, StoreAttributeOption } from '../types';
 import { compressImageFile, optimizeProductImages } from '../utils/imageOptimizer';
+import { ensureStoreAttributes, getOptionLabel, getOptionHex, fuseProductVariants } from '../utils/attributeUtils';
+import { AttributeConfirmationModal } from './AttributeConfirmationModal';
 
 /**
  * Converts Google Drive sharing links into direct Google CDN image URLs
  */
 export function convertDriveUrlToDirectLink(url: string): { directUrl: string; wasConverted: boolean } {
   const trimmed = url.trim();
-  // Match file id from Google Drive share or open links
   const driveRegex = /(?:drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?(?:.*&)?id=)|drive\.google\.com\/uc\?export=view&id=)([a-zA-Z0-9_-]{20,})/;
   const match = trimmed.match(driveRegex);
   if (match && match[1]) {
@@ -61,6 +62,16 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
   allowDevicePhotos = true,
   existingTags = []
 }) => {
+  const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
+
+  // Which attributes are enabled at store level
+  const storeEnabledAttrs = useMemo(() => {
+    const list: ('attr1' | 'attr2')[] = [];
+    if (attribute1.enabled) list.push('attr1');
+    if (attribute2.enabled) list.push('attr2');
+    return list;
+  }, [attribute1, attribute2]);
+
   const [product, setProduct] = useState<Product>({ ...initialProduct });
   const [draggedImgIndex, setDraggedImgIndex] = useState<number | null>(null);
   const [newTagInput, setNewTagInput] = useState('');
@@ -71,18 +82,66 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
   const [driveNotice, setDriveNotice] = useState<string | null>(null);
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [showUnlimitedTooltip, setShowUnlimitedTooltip] = useState(false);
 
-  // Pre-selection states for sizes and colors
-  const [selectedSizeNames, setSelectedSizeNames] = useState<string[]>(() => {
-    const fromVariants = Array.from(new Set(initialProduct.variants.map((v) => v.size)));
-    if (fromVariants.length > 0) return fromVariants;
-    return settings.masterSizes.filter((s) => s.enabled).map((s) => s.name);
+  // Modal confirmation for attribute add/remove
+  const [attrConfirmModal, setAttrConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    affectedList?: string[];
+    affectedListTitle?: string;
+    confirmLabel: string;
+    confirmColor?: 'red' | 'black';
+    onConfirm: () => void;
+  } | null>(null);
+
+  // Attributes used by this product (subset of store enabled attributes)
+  const [attributesUsed, setAttributesUsed] = useState<('attr1' | 'attr2')[]>(() => {
+    if (initialProduct.attributesUsed && Array.isArray(initialProduct.attributesUsed)) {
+      return initialProduct.attributesUsed.filter((id) =>
+        id === 'attr1' ? attribute1.enabled : id === 'attr2' ? attribute2.enabled : false
+      );
+    }
+    return storeEnabledAttrs;
   });
 
-  const [selectedColorNames, setSelectedColorNames] = useState<string[]>(() => {
-    const fromVariants = Array.from(new Set(initialProduct.variants.map((v) => v.color)));
+  // Selected option IDs for attribute 1
+  const [selectedOptIds1, setSelectedOptIds1] = useState<string[]>(() => {
+    const fromVariants = Array.from(
+      new Set(
+        initialProduct.variants
+          .map((v) => {
+            if (v.attributeOptionId1) return v.attributeOptionId1;
+            const match = attribute1.options.find(
+              (o) => o.label.toLowerCase() === (v.color || '').toLowerCase()
+            );
+            return match ? match.id : null;
+          })
+          .filter(Boolean) as string[]
+      )
+    );
     if (fromVariants.length > 0) return fromVariants;
-    return settings.masterColors.slice(0, 3).map((c) => c.name);
+    return attribute1.options.slice(0, 4).map((o) => o.id);
+  });
+
+  // Selected option IDs for attribute 2
+  const [selectedOptIds2, setSelectedOptIds2] = useState<string[]>(() => {
+    const fromVariants = Array.from(
+      new Set(
+        initialProduct.variants
+          .map((v) => {
+            if (v.attributeOptionId2) return v.attributeOptionId2;
+            const match = attribute2.options.find(
+              (o) => o.label.toLowerCase() === (v.size || '').toLowerCase()
+            );
+            return match ? match.id : null;
+          })
+          .filter(Boolean) as string[]
+      )
+    );
+    if (fromVariants.length > 0) return fromVariants;
+    return attribute2.options.map((o) => o.id);
   });
 
   useEffect(() => {
@@ -92,24 +151,41 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
     setActiveColorPickerTag(null);
     setNewImageUrl('');
 
-    const fromVariantsSizes = Array.from(new Set(initialProduct.variants.map((v) => v.size)));
-    setSelectedSizeNames(
-      fromVariantsSizes.length > 0
-        ? fromVariantsSizes
-        : settings.masterSizes.filter((s) => s.enabled).map((s) => s.name)
+    const initialAttrs = (initialProduct.attributesUsed || storeEnabledAttrs).filter((id) =>
+      id === 'attr1' ? attribute1.enabled : id === 'attr2' ? attribute2.enabled : false
     );
+    setAttributesUsed(initialAttrs);
 
-    const fromVariantsColors = Array.from(new Set(initialProduct.variants.map((v) => v.color)));
-    setSelectedColorNames(
-      fromVariantsColors.length > 0
-        ? fromVariantsColors
-        : settings.masterColors.slice(0, 3).map((c) => c.name)
+    const fromVariants1 = Array.from(
+      new Set(
+        initialProduct.variants
+          .map((v) => {
+            if (v.attributeOptionId1) return v.attributeOptionId1;
+            const match = attribute1.options.find(
+              (o) => o.label.toLowerCase() === (v.color || '').toLowerCase()
+            );
+            return match ? match.id : null;
+          })
+          .filter(Boolean) as string[]
+      )
     );
-  }, [initialProduct, isOpen, settings.masterSizes, settings.masterColors]);
+    setSelectedOptIds1(fromVariants1.length > 0 ? fromVariants1 : attribute1.options.slice(0, 4).map((o) => o.id));
 
-  // Available colors and sizes for matrix generation
-  const activeColors = Array.from(new Set(product.variants.map((v) => v.color)));
-  const activeSizes = Array.from(new Set(product.variants.map((v) => v.size)));
+    const fromVariants2 = Array.from(
+      new Set(
+        initialProduct.variants
+          .map((v) => {
+            if (v.attributeOptionId2) return v.attributeOptionId2;
+            const match = attribute2.options.find(
+              (o) => o.label.toLowerCase() === (v.size || '').toLowerCase()
+            );
+            return match ? match.id : null;
+          })
+          .filter(Boolean) as string[]
+      )
+    );
+    setSelectedOptIds2(fromVariants2.length > 0 ? fromVariants2 : attribute2.options.map((o) => o.id));
+  }, [initialProduct, isOpen, attribute1, attribute2, storeEnabledAttrs]);
 
   if (!isOpen) return null;
 
@@ -124,7 +200,13 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
   // Margin calculation based on effective selling price
   const marginGross = effectivePrice > 0 ? effectivePrice - product.cost : 0;
   const marginPercent = effectivePrice > 0 ? ((marginGross / effectivePrice) * 100).toFixed(1) : '0';
-  const totalStock = product.variants.reduce((acc, v) => acc + ((v.enabled !== false && (v.enabled as any) !== 'false') ? Number(v.stock || 0) : 0), 0);
+
+  const totalStock = product.variants.reduce(
+    (acc, v) => acc + (v.enabled !== false && !v.unlimited ? Number(v.stock || 0) : 0),
+    0
+  );
+  const isAllUnlimited = product.variants.length > 0 && product.variants.every((v) => v.unlimited);
+  const hasSomeUnlimited = product.variants.some((v) => v.unlimited);
 
   // Tag helpers
   const handleAddTag = (nameToAdd?: string, colorToAdd?: string) => {
@@ -178,24 +260,13 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
     });
   };
 
-  const handleUpdateTagColor = (tag: string, color: string) => {
+  const handleAddImageUrl = () => {
+    if (!newImageUrl.trim()) return;
+    const { directUrl, wasConverted } = convertDriveUrlToDirectLink(newImageUrl);
     setProduct({
       ...product,
-      tagColors: {
-        ...(product.tagColors || {}),
-        [tag]: color
-      }
+      images: [...product.images, directUrl]
     });
-    setActiveColorPickerTag(null);
-  };
-
-  const handleAddImage = (url: string) => {
-    if (!url.trim()) return;
-    const { directUrl, wasConverted } = convertDriveUrlToDirectLink(url);
-    setProduct((prev) => ({
-      ...prev,
-      images: [...prev.images, directUrl]
-    }));
     setNewImageUrl('');
     if (wasConverted) {
       setDriveNotice('Enlace de Google Drive detectado y vinculado directamente como imagen.');
@@ -265,6 +336,231 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
     });
   };
 
+  // =========================================================================
+  // ATTRIBUTE TOGGLING FOR THIS PRODUCT (0, 1 or 2 attributes)
+  // =========================================================================
+
+  const handleToggleProductAttribute = (attrId: 'attr1' | 'attr2') => {
+    const attrName = attrId === 'attr1' ? attribute1.name : attribute2.name;
+    const isCurrentlyUsed = attributesUsed.includes(attrId);
+
+    if (isCurrentlyUsed) {
+      // Removing attribute: apply Stock Fusion!
+      const remaining = attributesUsed.filter((id) => id !== attrId);
+
+      if (product.variants.length > 0) {
+        const { updatedProduct, summaryLines } = fuseProductVariants(product, remaining, settings);
+
+        setAttrConfirmModal({
+          isOpen: true,
+          title: `Quitar atributo "${attrName}" y fusionar variantes`,
+          message: `Al quitar este atributo, las variantes actuales se combinarán según las opciones que quedan, consolidando el stock:`,
+          affectedList: summaryLines,
+          affectedListTitle: 'Variantes resultantes de la consolidación',
+          confirmLabel: 'Quitar atributo y fusionar variantes',
+          confirmColor: 'black',
+          onConfirm: () => {
+            setAttributesUsed(remaining);
+            setProduct(updatedProduct);
+            setAttrConfirmModal(null);
+          }
+        });
+        return;
+      }
+
+      setAttributesUsed(remaining);
+      setProduct({ ...product, attributesUsed: remaining });
+    } else {
+      // Adding attribute: if product has variants, warn user that existing variants will be reset
+      const newAttrs = [...attributesUsed, attrId];
+
+      if (product.variants.length > 0) {
+        setAttrConfirmModal({
+          isOpen: true,
+          title: `Agregar atributo "${attrName}"`,
+          message: `Al agregar un nuevo atributo a esta prenda, se reconfigurará la estructura de variantes. Deberás seleccionar las opciones deseadas y presionar "Generar combinaciones".`,
+          confirmLabel: 'Agregar atributo y reconfigurar',
+          confirmColor: 'black',
+          onConfirm: () => {
+            setAttributesUsed(newAttrs);
+            setProduct({ ...product, attributesUsed: newAttrs, variants: [] });
+            setAttrConfirmModal(null);
+          }
+        });
+        return;
+      }
+
+      setAttributesUsed(newAttrs);
+      setProduct({ ...product, attributesUsed: newAttrs });
+    }
+  };
+
+  // =========================================================================
+  // VARIANT MATRIX GENERATION
+  // =========================================================================
+
+  const handleGenerateCombinations = () => {
+    const prefix = (product.name || 'PR').trim().slice(0, 3).toUpperCase();
+    const uses1 = attributesUsed.includes('attr1');
+    const uses2 = attributesUsed.includes('attr2');
+
+    // Case 1: 0 attributes used -> Simple Product
+    if (!uses1 && !uses2) {
+      const existingSimple = product.variants[0];
+      const single: ProductVariant = {
+        id: existingSimple?.id || `var-${Date.now()}`,
+        color: '',
+        size: '',
+        sku: existingSimple?.sku || `${prefix}-SIMPLE`,
+        stock: existingSimple ? existingSimple.stock : 10,
+        enabled: true,
+        unlimited: existingSimple ? existingSimple.unlimited : false
+      };
+      setProduct({ ...product, variants: [single] });
+      return;
+    }
+
+    // Case 2: Only 1 attribute used
+    if (uses1 && !uses2) {
+      if (selectedOptIds1.length === 0) {
+        alert(`Por favor selecciona al menos una opción de ${attribute1.name}.`);
+        return;
+      }
+      const generated: ProductVariant[] = selectedOptIds1.map((optId) => {
+        const opt = attribute1.options.find((o) => o.id === optId) || { id: optId, label: 'Opción' };
+        const existing = product.variants.find((v) => v.attributeOptionId1 === optId || v.color === opt.label);
+
+        if (existing) {
+          return {
+            ...existing,
+            attributeOptionId1: optId,
+            attributeOptionId2: undefined
+          };
+        }
+
+        return {
+          id: `var-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          color: attribute1.type === 'color' ? opt.label : '',
+          colorHex: opt.hex,
+          size: attribute1.type === 'text' ? opt.label : '',
+          sku: `${prefix}-${opt.label.slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '')}`,
+          stock: 0,
+          enabled: true,
+          unlimited: false,
+          attributeOptionId1: optId,
+          attributeOptionId2: undefined
+        };
+      });
+
+      setProduct({ ...product, variants: generated });
+      return;
+    }
+
+    if (!uses1 && uses2) {
+      if (selectedOptIds2.length === 0) {
+        alert(`Por favor selecciona al menos una opción de ${attribute2.name}.`);
+        return;
+      }
+      const generated: ProductVariant[] = selectedOptIds2.map((optId) => {
+        const opt = attribute2.options.find((o) => o.id === optId) || { id: optId, label: 'Opción' };
+        const existing = product.variants.find((v) => v.attributeOptionId2 === optId || v.size === opt.label);
+
+        if (existing) {
+          return {
+            ...existing,
+            attributeOptionId1: undefined,
+            attributeOptionId2: optId
+          };
+        }
+
+        return {
+          id: `var-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          color: attribute2.type === 'color' ? opt.label : '',
+          colorHex: opt.hex,
+          size: attribute2.type === 'text' ? opt.label : '',
+          sku: `${prefix}-${opt.label.slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '')}`,
+          stock: 0,
+          enabled: true,
+          unlimited: false,
+          attributeOptionId1: undefined,
+          attributeOptionId2: optId
+        };
+      });
+
+      setProduct({ ...product, variants: generated });
+      return;
+    }
+
+    // Case 3: Both attributes used -> Combinations Matrix (opt1 × opt2)
+    if (selectedOptIds1.length === 0 || selectedOptIds2.length === 0) {
+      alert(`Por favor selecciona al menos una opción de ${attribute1.name} y una de ${attribute2.name}.`);
+      return;
+    }
+
+    const generated: ProductVariant[] = [];
+
+    selectedOptIds1.forEach((id1) => {
+      const opt1 = attribute1.options.find((o) => o.id === id1) || { id: id1, label: 'Op1' };
+
+      selectedOptIds2.forEach((id2) => {
+        const opt2 = attribute2.options.find((o) => o.id === id2) || { id: id2, label: 'Op2' };
+
+        const existing = product.variants.find(
+          (v) =>
+            (v.attributeOptionId1 === id1 && v.attributeOptionId2 === id2) ||
+            (v.color.toLowerCase() === opt1.label.toLowerCase() && v.size.toLowerCase() === opt2.label.toLowerCase())
+        );
+
+        if (existing) {
+          generated.push({
+            ...existing,
+            attributeOptionId1: id1,
+            attributeOptionId2: id2,
+            colorHex: opt1.hex || existing.colorHex
+          });
+        } else {
+          const skuCode = `${prefix}-${opt1.label.slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, '')}-${opt2.label.slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+          generated.push({
+            id: `var-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            color: attribute1.type === 'color' ? opt1.label : attribute2.type === 'color' ? opt2.label : opt1.label,
+            colorHex: opt1.hex || opt2.hex,
+            size: attribute1.type === 'text' ? opt1.label : opt2.label,
+            sku: skuCode,
+            stock: 0,
+            enabled: true,
+            unlimited: false,
+            attributeOptionId1: id1,
+            attributeOptionId2: id2
+          });
+        }
+      });
+    });
+
+    setProduct({ ...product, variants: generated });
+  };
+
+  // Mass actions on variants
+  const handleMarkAllUnlimited = () => {
+    const updated = product.variants.map((v) => ({ ...v, unlimited: true }));
+    setProduct({ ...product, variants: updated, isUnlimited: true });
+  };
+
+  const handleMarkAllLimited = () => {
+    const updated = product.variants.map((v) => ({ ...v, unlimited: false }));
+    setProduct({ ...product, variants: updated, isUnlimited: false });
+  };
+
+  const handleVariantUnlimitedToggle = (index: number) => {
+    const updated = [...product.variants];
+    const curr = !!updated[index].unlimited;
+    updated[index] = { ...updated[index], unlimited: !curr };
+    setProduct({
+      ...product,
+      variants: updated,
+      isUnlimited: updated.length > 0 && updated.every((v) => v.unlimited)
+    });
+  };
+
   const handleVariantStockChange = (index: number, newStock: number) => {
     const updated = [...product.variants];
     updated[index] = { ...updated[index], stock: Math.max(0, newStock) };
@@ -289,54 +585,17 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
     setProduct({ ...product, variants: updated });
   };
 
-  const handleGenerateSelectedCombinations = () => {
-    if (selectedSizeNames.length === 0 || selectedColorNames.length === 0) {
-      alert('Por favor selecciona al menos un talle y un color para generar las combinaciones.');
-      return;
-    }
-
-    const prefix = (product.name || 'PR').trim().slice(0, 3).toUpperCase();
-    const generated: ProductVariant[] = [];
-
-    selectedColorNames.forEach((colName) => {
-      const masterCol = settings.masterColors.find((c) => c.name.toLowerCase() === colName.toLowerCase());
-      const hex = masterCol?.hex || '#000000';
-
-      selectedSizeNames.forEach((szName) => {
-        // Keep existing stock, SKU and toggle if this combination was already configured
-        const existing = product.variants.find(
-          (v) => v.color.toLowerCase() === colName.toLowerCase() && v.size.toUpperCase() === szName.toUpperCase()
-        );
-
-        if (existing) {
-          generated.push(existing);
-        } else {
-          generated.push({
-            id: `var-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-            color: colName,
-            colorHex: hex,
-            size: szName,
-            sku: `${prefix}-${colName.slice(0, 3).toUpperCase()}-${szName}`,
-            stock: 0,
-            enabled: true
-          });
-        }
-      });
-    });
-
-    setProduct({ ...product, variants: generated });
-  };
-
   const handleSave = async () => {
     setSaving(true);
     setSaveError(null);
     try {
-      // Optimize any base64 images so the document stays comfortably under Firestore's 1MB limit
       const optimizedImages = await optimizeProductImages(product.images);
       await onSave({
         ...product,
         images: optimizedImages,
-        totalStock
+        attributesUsed,
+        totalStock,
+        isUnlimited: product.variants.length > 0 && product.variants.every((v) => v.unlimited)
       });
       onClose();
     } catch (e: any) {
@@ -353,7 +612,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
         {/* Panel Header Bar */}
         <div className="px-6 py-4 bg-[#fbf9f8] border-b border-[#efeded] flex items-center justify-between z-10">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-[#efeded] flex items-center justify-center text-black">
+            <div className="w-10 h-10 rounded-xl bg-[#efeded] flex items-center justify-center text-black">
               <span className="material-symbols-outlined text-[24px]">styler</span>
             </div>
             <div>
@@ -372,7 +631,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-[#5f5e5b]">
-                {product.name} • Código Interno: {product.variants[0]?.sku || 'BZ-2025-CLX'}
+                {product.name || 'Sin título'} • Código Interno: {product.variants[0]?.sku || 'PR-SIMPLE'}
               </p>
             </div>
           </div>
@@ -380,7 +639,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
           <div className="flex items-center gap-1.5">
             <button
               onClick={onClose}
-              className="p-2 rounded-lg text-[#5f5e5b] hover:text-black hover:bg-[#efeded] transition-colors"
+              className="p-2 rounded-xl text-[#5f5e5b] hover:text-black hover:bg-[#efeded] transition-colors cursor-pointer"
               title="Cerrar modal"
             >
               <span className="material-symbols-outlined text-[22px]">close</span>
@@ -388,10 +647,10 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
           </div>
         </div>
 
-        {/* Scrollable Editorial Form Work Surface */}
+        {/* Scrollable Form Work Surface */}
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-8 bg-[#fbf9f8]">
           {/* ================= SECCIÓN 1: DATOS GENERALES ================= */}
-          <section className="bg-white p-5 rounded-xl border border-[#efeded] space-y-4 shadow-xs">
+          <section className="bg-white p-5 rounded-2xl border border-[#efeded] space-y-4 shadow-xs">
             <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
               <div className="flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-[#efeded] flex items-center justify-center text-xs font-bold text-black">
@@ -421,17 +680,17 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                   type="text"
                   value={product.name}
                   onChange={(e) => setProduct({ ...product, name: e.target.value })}
-                  className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-sm text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
+                  className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-sm text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
                 />
               </div>
 
-              {/* Internal Category Tagging */}
+              {/* Category */}
               <div className="md:col-span-4 flex flex-col gap-1">
                 <label className="text-xs font-semibold text-neutral-700">Categoría Principal</label>
                 <select
                   value={product.category}
                   onChange={(e) => setProduct({ ...product, category: e.target.value })}
-                  className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-sm text-black focus:outline-none cursor-pointer"
+                  className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-sm text-black focus:outline-none cursor-pointer"
                 >
                   {settings.categories
                     .filter((c) => c !== 'Todas')
@@ -452,246 +711,101 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                   rows={3}
                   value={product.description}
                   onChange={(e) => setProduct({ ...product, description: e.target.value })}
-                  className="w-full p-3 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-sm text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black leading-relaxed"
+                  className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-xs text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black leading-relaxed"
                 />
               </div>
 
-              {/* Multiselection Tags & Color Tagging */}
-              <div className="md:col-span-12 flex flex-col gap-2.5">
+              {/* Tags Section */}
+              <div className="md:col-span-12 flex flex-col gap-2 pt-1 border-t border-neutral-100">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-neutral-800 flex items-center gap-1.5">
+                  <label className="text-xs font-semibold text-neutral-700 flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-[16px] text-neutral-500">label</span>
-                    <span>Colecciones y Etiquetas de Búsqueda</span>
+                    <span>Etiquetas Destacadas & Badges</span>
                   </label>
                   <span className="text-[11px] text-neutral-400">
-                    Aparecen flotando en la foto de tus productos y como filtros
+                    Se muestran como distintivos de color sobre la foto en el catálogo
                   </span>
                 </div>
 
-                {/* Active tags on this product */}
-                <div className="min-h-[46px] p-2.5 bg-[#fbf9f8] border border-neutral-200 rounded-xl flex flex-wrap items-center gap-2">
-                  {product.tags && product.tags.length > 0 ? (
-                    product.tags.map((tag) => {
-                      const tagColor = product.tagColors?.[tag] || '#475569';
-                      const isColorPickerOpen = activeColorPickerTag === tag;
-                      return (
-                        <div key={tag} className="relative inline-flex items-center">
-                          <span
-                            className="inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-lg text-white text-xs font-semibold shadow-xs"
-                            style={{ backgroundColor: tagColor }}
-                          >
-                            <span>{tag}</span>
-                            {/* Color changer trigger */}
-                            <button
-                              type="button"
-                              onClick={() => setActiveColorPickerTag(isColorPickerOpen ? null : tag)}
-                              className="w-3.5 h-3.5 rounded-full border border-white/60 hover:scale-115 transition-transform cursor-pointer"
-                              style={{ backgroundColor: tagColor }}
-                              title="Cambiar color de etiqueta"
-                            />
-                            {/* Remove tag */}
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveTag(tag)}
-                              className="text-white/80 hover:text-white hover:bg-black/20 rounded p-0.5 transition-colors focus:outline-none cursor-pointer"
-                              title="Quitar etiqueta"
-                            >
-                              <span className="material-symbols-outlined text-[13px] leading-none">close</span>
-                            </button>
-                          </span>
-
-                          {/* Mini inline color picker popover */}
-                          {isColorPickerOpen && (
-                            <div className="absolute top-full left-0 mt-1.5 z-30 p-2 bg-white rounded-xl shadow-xl border border-neutral-200 flex items-center gap-1.5 animate-in fade-in zoom-in-95">
-                              {TAG_COLOR_PALETTE.map((pal) => (
-                                <button
-                                  key={pal.hex}
-                                  type="button"
-                                  onClick={() => handleUpdateTagColor(tag, pal.hex)}
-                                  className={`w-5 h-5 rounded-full transition-transform hover:scale-115 cursor-pointer ${
-                                    tagColor === pal.hex ? 'ring-2 ring-black ring-offset-1' : ''
-                                  }`}
-                                  style={{ backgroundColor: pal.hex }}
-                                  title={pal.label}
-                                />
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <span className="text-xs text-neutral-400 italic">
-                      Sin etiquetas asignadas. Podés elegir existentes abajo o crear una nueva.
-                    </span>
-                  )}
+                <div className="flex flex-wrap gap-1.5">
+                  {(product.tags || []).map((tag) => {
+                    const tagColor = product.tagColors?.[tag] || TAG_COLOR_PALETTE[0].hex;
+                    return (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold text-white shadow-2xs"
+                        style={{ backgroundColor: tagColor }}
+                      >
+                        <span>{tag}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveTag(tag)}
+                          className="hover:opacity-75 transition-opacity"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    );
+                  })}
                 </div>
 
-                {/* Existing Tags in Store to Reuse */}
-                {(() => {
-                  const combined = Array.from(
-                    new Map(
-                      [...DEFAULT_SUGGESTED_TAGS, ...existingTags].map((t) => [t.name, t])
-                    ).values()
-                  );
-                  if (combined.length === 0) return null;
-                  return (
-                    <div className="flex flex-col gap-1.5 pt-1">
-                      <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">
-                        Reutilizar etiquetas existentes (click para asignar/desasignar):
-                      </span>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {combined.map((item) => {
-                          const isAssigned = (product.tags || []).includes(item.name);
-                          const color = item.color || TAG_COLOR_PALETTE[0].hex;
-                          return (
-                            <button
-                              key={item.name}
-                              type="button"
-                              onClick={() => handleToggleExistingTag(item.name, color)}
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                                isAssigned
-                                  ? 'text-white shadow-xs ring-2 ring-offset-1 ring-neutral-900'
-                                  : 'bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-200 hover:border-neutral-300'
-                              }`}
-                              style={isAssigned ? { backgroundColor: color } : undefined}
-                            >
-                              <span
-                                className="w-2.5 h-2.5 rounded-full shrink-0"
-                                style={{ backgroundColor: color }}
-                              />
-                              <span>{item.name}</span>
-                              {isAssigned && (
-                                <span className="material-symbols-outlined text-[13px] leading-none">check</span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {/* Creator for new tag with emojis and color selection */}
-                <div className="bg-[#f5f3f3] p-3 rounded-xl border border-neutral-200/80 flex flex-col gap-2.5 mt-1">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-neutral-800">
-                      Crear nueva etiqueta personalizada:
-                    </span>
-                    {/* Quick Emojis */}
-                    <div className="flex items-center gap-1 flex-wrap">
-                      <span className="text-[10px] text-neutral-500 font-semibold mr-1">Emojis:</span>
-                      {QUICK_EMOJIS.map((emoji) => (
-                        <button
-                          key={emoji}
-                          type="button"
-                          onClick={() => setNewTagInput((prev) => `${prev}${emoji} `)}
-                          className="px-1.5 py-0.5 rounded-md bg-white hover:bg-neutral-200 text-xs shadow-2xs transition-transform hover:scale-110 cursor-pointer"
-                        >
-                          {emoji}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Color palette selector for the new tag */}
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[11px] font-medium text-neutral-600">Color:</span>
-                    <div className="flex items-center gap-1.5">
-                      {TAG_COLOR_PALETTE.map((pal) => (
-                        <button
-                          key={pal.hex}
-                          type="button"
-                          onClick={() => setSelectedTagColor(pal.hex)}
-                          className={`w-5 h-5 rounded-full transition-transform hover:scale-115 cursor-pointer ${
-                            selectedTagColor === pal.hex ? 'ring-2 ring-black ring-offset-1 scale-110' : 'opacity-85'
-                          }`}
-                          style={{ backgroundColor: pal.hex }}
-                          title={pal.label}
-                        />
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Input field + Add button */}
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <span
-                        className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full shrink-0"
-                        style={{ backgroundColor: selectedTagColor }}
-                      />
-                      <input
-                        type="text"
-                        placeholder="Ej: 🔥 Edición Limitada o 🌱 100% Algodón..."
-                        value={newTagInput}
-                        onChange={(e) => setNewTagInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
-                        className="w-full pl-8 pr-3 py-2 bg-white border border-neutral-300 rounded-lg text-xs font-medium text-black focus:outline-none focus:ring-1 focus:ring-black placeholder:text-neutral-400"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleAddTag()}
-                      disabled={!newTagInput.trim()}
-                      className="px-4 py-2 bg-neutral-900 hover:bg-black disabled:opacity-40 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer shrink-0"
-                    >
-                      Añadir Etiqueta
-                    </button>
-                  </div>
+                {/* Input field + Add button */}
+                <div className="flex items-center gap-2 mt-1">
+                  <input
+                    type="text"
+                    placeholder="Ej: 🔥 Hot Sale o 🌱 Algodón Orgánico..."
+                    value={newTagInput}
+                    onChange={(e) => setNewTagInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
+                    className="flex-1 px-3 py-1.5 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-xs text-black focus:outline-none focus:bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleAddTag()}
+                    disabled={!newTagInput.trim()}
+                    className="px-4 py-1.5 bg-neutral-900 hover:bg-black disabled:opacity-40 text-white rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer"
+                  >
+                    Añadir Etiqueta
+                  </button>
                 </div>
               </div>
 
-              {/* Pricing Structure: 3 Columns on the same line */}
-              <div className="md:col-span-12 grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-2">
+              {/* Pricing Structure */}
+              <div className="md:col-span-12 grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-2 border-t border-neutral-100">
                 {/* 1. Precio Regular */}
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-semibold text-neutral-700">
-                    Precio Regular / Lista (ARS)
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-500 font-semibold">
-                      $
-                    </span>
-                    <input
-                      type="number"
-                      min={0}
-                      value={product.price || ''}
-                      onChange={(e) => setProduct({ ...product, price: Number(e.target.value) })}
-                      className="w-full pl-8 pr-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-base font-bold text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
-                    />
-                  </div>
-                  <span className="text-[11px] text-neutral-500">
-                    Precio base de venta en catálogo
-                  </span>
+                  <label className="text-xs font-semibold text-neutral-700">Precio Regular (ARS)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={product.price || ''}
+                    onChange={(e) => setProduct({ ...product, price: Number(e.target.value) })}
+                    className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-base font-bold text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
+                  />
+                  <span className="text-[11px] text-neutral-500">Precio de venta en catálogo</span>
                 </div>
 
                 {/* 2. Precio c/Descuento */}
                 <div className="flex flex-col gap-1">
                   <label className="text-xs font-semibold text-neutral-700 flex items-center justify-between">
-                    <span>Precio c/Descuento (ARS)</span>
+                    <span>Precio Oferta (ARS)</span>
                     <span className="text-[10px] text-neutral-400 font-normal">Opcional</span>
                   </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-emerald-600 font-semibold">
-                      $
-                    </span>
-                    <input
-                      type="number"
-                      min={0}
-                      placeholder="Ej: 18500"
-                      value={product.discountPrice !== undefined && product.discountPrice !== null && product.discountPrice > 0 ? product.discountPrice : ''}
-                      onChange={(e) => {
-                        const val = e.target.value ? Number(e.target.value) : undefined;
-                        setProduct({ ...product, discountPrice: val });
-                      }}
-                      className="w-full pl-8 pr-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-base font-bold text-emerald-700 focus:outline-none focus:bg-white focus:ring-1 focus:ring-emerald-600"
-                    />
-                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    placeholder="Ej: 18500"
+                    value={product.discountPrice !== undefined && product.discountPrice !== null && product.discountPrice > 0 ? product.discountPrice : ''}
+                    onChange={(e) => {
+                      const val = e.target.value ? Number(e.target.value) : undefined;
+                      setProduct({ ...product, discountPrice: val });
+                    }}
+                    className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-base font-bold text-emerald-700 focus:outline-none focus:bg-white focus:ring-1 focus:ring-emerald-600"
+                  />
                   {product.discountPrice && product.discountPrice > 0 && product.price > 0 ? (
                     product.discountPrice < product.price ? (
-                      <span className="text-[11px] font-semibold text-emerald-600 flex items-center gap-1">
-                        <span>🔥</span>
-                        <span>Activo: {Math.round(((product.price - product.discountPrice) / product.price) * 100)}% OFF en tienda</span>
+                      <span className="text-[11px] font-semibold text-emerald-600">
+                        🔥 Activo: {Math.round(((product.price - product.discountPrice) / product.price) * 100)}% OFF
                       </span>
                     ) : (
                       <span className="text-[11px] text-amber-600 font-medium">
@@ -699,31 +813,22 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                       </span>
                     )
                   ) : (
-                    <span className="text-[11px] text-neutral-400">
-                      Si se completa, será el precio final en el catálogo
-                    </span>
+                    <span className="text-[11px] text-neutral-400">Si se completa, reemplaza el precio</span>
                   )}
                 </div>
 
                 {/* 3. Costo de Producción */}
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-semibold text-neutral-700">
-                    Precio de Costo de Producción (ARS)
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-500 font-semibold">
-                      $
-                    </span>
-                    <input
-                      type="number"
-                      min={0}
-                      value={product.cost || ''}
-                      onChange={(e) => setProduct({ ...product, cost: Number(e.target.value) })}
-                      className="w-full pl-8 pr-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-lg text-base font-medium text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
-                    />
-                  </div>
+                  <label className="text-xs font-semibold text-neutral-700">Costo de Producción (ARS)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={product.cost || ''}
+                    onChange={(e) => setProduct({ ...product, cost: Number(e.target.value) })}
+                    className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-base font-medium text-black focus:outline-none focus:bg-white"
+                  />
                   <span className="text-[11px] text-neutral-500">
-                    Margen neto proyectado: <strong className="text-black">{marginPercent}%</strong> (${marginGross.toLocaleString('es-AR')})
+                    Margen: <strong className="text-black">{marginPercent}%</strong> (${marginGross.toLocaleString('es-AR')})
                   </span>
                 </div>
               </div>
@@ -731,430 +836,370 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
           </section>
 
           {/* ================= SECCIÓN 2: FOTOS DEL PRODUCTO ================= */}
-          <section className="bg-white p-5 rounded-xl border border-[#efeded] space-y-4 shadow-xs">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-neutral-100 pb-3">
+          <section className="bg-white p-5 rounded-2xl border border-[#efeded] space-y-4 shadow-xs">
+            <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
               <div className="flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-[#efeded] flex items-center justify-center text-xs font-bold text-black">
                   2
                 </span>
-                <div>
-                  <h3 className="text-sm font-semibold text-black">Fotografía & Curaduría Visual</h3>
-                  <span className="text-[11px] text-[#5f5e5b]">
-                    Relación 3:4 recomendada • Máximo 8MB por archivo JPG/PNG/WEBP
-                  </span>
-                </div>
+                <h3 className="text-sm font-semibold text-black">Fotografía de la Prenda</h3>
               </div>
-              <span className="px-2.5 py-1 rounded bg-[#f5f3f3] text-xs font-medium text-black self-start sm:self-center">
+              <span className="px-2.5 py-1 rounded-xl bg-[#f5f3f3] text-xs font-medium text-black">
                 {product.images.length} fotos cargadas
               </span>
             </div>
 
-            {/* Drag & Drop / Image Link Box */}
-            <div className="rounded-xl p-5 flex flex-col items-center justify-center text-center bg-[#fbf9f8] border-2 border-dashed border-neutral-200 space-y-3">
-              <div className="w-12 h-12 rounded-full bg-[#efeded] flex items-center justify-center text-black">
-                <span className="material-symbols-outlined text-[24px]">add_photo_alternate</span>
-              </div>
-              <div className="text-xs font-semibold text-black">
-                Adjuntar / Subir Fotos de Lookbook
-              </div>
-
-              {/* Botón de subida directa desde PC / Celular con compresión automática */}
-              {allowDevicePhotos ? (
-                <div>
-                  <label
-                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs font-semibold cursor-pointer transition-all shadow-xs active:scale-[0.98] ${
-                      isUploadingFiles ? 'opacity-70 pointer-events-none' : ''
-                    }`}
-                  >
-                    {isUploadingFiles ? (
-                      <>
-                        <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        <span>Optimizando fotos...</span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="material-symbols-outlined text-[16px]">upload_file</span>
-                        <span>Subir Fotos desde tu Dispositivo (PC o Celular)</span>
-                      </>
-                    )}
-                    <input
-                      type="file"
-                      multiple
-                      accept="image/*"
-                      disabled={isUploadingFiles}
-                      onChange={handleDirectFileUpload}
-                      className="hidden"
-                    />
-                  </label>
-                  <p className="text-[11px] text-neutral-500 mt-1">
-                    Las fotos se comprimen y optimizan automáticamente para carga ultra-veloz.
-                  </p>
-                </div>
-              ) : (
-                <div className="w-full max-w-md p-3 rounded-xl bg-amber-50 border border-amber-200/80 text-amber-900 text-xs flex items-start gap-2.5">
-                  <span className="material-symbols-outlined text-[18px] text-amber-600 mt-0.5">info</span>
-                  <div>
-                    <span className="font-semibold block">Subida desde dispositivo desactivada</span>
-                    <span className="text-[11px] text-amber-800">
-                      Para este comercio, ingresá las fotos mediante enlaces directos o links públicos de Google Drive a continuación.
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              <div className="w-full max-w-md pt-2 border-t border-neutral-200">
-                <span className="text-[10px] uppercase font-bold text-neutral-400 tracking-wider block mb-1">
-                  O pegar enlace directo / Google Drive
-                </span>
-                <div className="flex items-center gap-2">
+            {/* Upload Toolbar */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              {allowDevicePhotos && (
+                <label className="flex items-center justify-center gap-2 px-4 py-2 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold cursor-pointer transition-all shadow-xs shrink-0">
+                  <span className="material-symbols-outlined text-[18px]">add_photo_alternate</span>
+                  <span>{isUploadingFiles ? 'Procesando...' : 'Subir Fotos'}</span>
                   <input
-                    type="text"
-                    placeholder="https://drive.google.com/file/d/... o URL directa"
-                    value={newImageUrl}
-                    onChange={(e) => setNewImageUrl(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddImage(newImageUrl))}
-                    className="flex-1 px-3 py-1.5 bg-white border border-neutral-300 rounded-lg text-xs text-black focus:outline-none"
+                    type="file"
+                    multiple
+                    accept="image/*"
+                    disabled={isUploadingFiles}
+                    onChange={handleDirectFileUpload}
+                    className="hidden"
                   />
-                  <button
-                    type="button"
-                    onClick={() => handleAddImage(newImageUrl)}
-                    className="px-3 py-1.5 rounded-lg bg-black text-white text-xs font-medium hover:bg-neutral-800 transition-colors shrink-0"
+                </label>
+              )}
+
+              <div className="flex-1 flex items-center gap-2">
+                <input
+                  type="url"
+                  placeholder="O pegar URL directa o enlace de Google Drive..."
+                  value={newImageUrl}
+                  onChange={(e) => setNewImageUrl(e.target.value)}
+                  className="flex-1 px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-xs text-black focus:outline-none focus:bg-white"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddImageUrl}
+                  disabled={!newImageUrl.trim()}
+                  className="px-3 py-2 bg-neutral-200 hover:bg-neutral-300 disabled:opacity-40 text-black rounded-xl text-xs font-semibold transition-colors"
+                >
+                  Vincular
+                </button>
+              </div>
+            </div>
+
+            {driveNotice && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800">
+                {driveNotice}
+              </div>
+            )}
+
+            {/* Photos Grid */}
+            {product.images.length === 0 ? (
+              <div className="p-8 rounded-2xl bg-[#fbf9f8] border border-neutral-200 text-center text-xs text-neutral-400">
+                Aún no has agregado fotos. Podés subir desde tu dispositivo o pegar un enlace arriba.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                {product.images.map((imgUrl, idx) => (
+                  <div
+                    key={imgUrl + idx}
+                    className="relative group rounded-xl overflow-hidden bg-[#efeded] aspect-[3/4] shadow-xs border border-neutral-200"
                   >
-                    Agregar
-                  </button>
-                </div>
+                    <img src={imgUrl} alt={`Foto ${idx + 1}`} className="w-full h-full object-cover" />
+                    {idx === 0 && (
+                      <span className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/80 text-white text-[9px] font-bold uppercase tracking-wider">
+                        Portada
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveImage(idx)}
+                      className="absolute top-2 right-2 p-1 bg-white/90 hover:bg-red-50 text-red-600 rounded-lg shadow-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">delete</span>
+                    </button>
+                  </div>
+                ))}
               </div>
-
-              {driveNotice && (
-                <div className="p-2 px-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-semibold flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[16px]">check_circle</span>
-                  <span>{driveNotice}</span>
-                </div>
-              )}
-
-              <div className="flex items-center gap-1.5 text-[11px] text-[#5f5e5b]">
-                <span className="material-symbols-outlined text-[15px] text-emerald-600">cloud_done</span>
-                <span>Soporta enlaces compartidos de <strong>Google Drive</strong> sin necesidad de otro hosting</span>
-              </div>
-            </div>
-
-            {/* Photo Gallery & Drag-and-Drop Reordering */}
-            <div className="space-y-2.5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                <span className="text-xs font-semibold text-black flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[16px] text-neutral-600">collections</span>
-                  <span>Secuencia de Galería</span>
-                </span>
-                {product.images.length > 1 && (
-                  <span className="text-[11px] text-neutral-500 flex items-center gap-1">
-                    <span className="material-symbols-outlined text-[14px]">swap_horiz</span>
-                    <span>Arrastrá las fotos para ordenarlas. La 1ª foto es siempre la <strong>PORTADA</strong>.</span>
-                  </span>
-                )}
-              </div>
-
-              {product.images.length === 0 ? (
-                <div className="p-6 rounded-xl bg-[#fbf9f8] border border-neutral-200 text-center text-xs text-neutral-400">
-                  Aún no has agregado fotos. Podés subir desde tu dispositivo o pegar un enlace arriba.
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
-                  {product.images.map((imgUrl, idx) => {
-                    const isCover = idx === 0;
-                    const isBeingDragged = draggedImgIndex === idx;
-
-                    return (
-                      <div
-                        key={imgUrl + idx}
-                        draggable
-                        onDragStart={(e) => {
-                          setDraggedImgIndex(idx);
-                          e.dataTransfer.effectAllowed = 'move';
-                          e.dataTransfer.setData('text/plain', String(idx));
-                        }}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          e.dataTransfer.dropEffect = 'move';
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          if (draggedImgIndex !== null && draggedImgIndex !== idx) {
-                            handleReorderImages(draggedImgIndex, idx);
-                          }
-                          setDraggedImgIndex(null);
-                        }}
-                        onDragEnd={() => setDraggedImgIndex(null)}
-                        className={`relative group rounded-xl overflow-hidden bg-[#efeded] aspect-[3/4] shadow-xs border transition-all cursor-grab active:cursor-grabbing select-none ${
-                          isBeingDragged
-                            ? 'opacity-40 border-dashed border-neutral-600 scale-95'
-                            : isCover
-                            ? 'border-neutral-900 ring-2 ring-neutral-900/10'
-                            : 'border-neutral-200 hover:border-neutral-400'
-                        }`}
-                        title="Arrastrá para reordenar"
-                      >
-                        <img
-                          src={imgUrl}
-                          alt={`Foto ${idx + 1}`}
-                          className="w-full h-full object-cover pointer-events-none"
-                        />
-
-                        {/* Cover Tag on position 0 */}
-                        {isCover && (
-                          <div className="absolute top-2 left-2 z-10 pointer-events-none">
-                            <span className="px-2 py-0.5 rounded-md bg-black/90 backdrop-blur-xs text-white text-[9px] font-bold tracking-wider uppercase shadow-xs flex items-center gap-1">
-                              <span className="material-symbols-outlined text-[12px] text-amber-400">star</span>
-                              <span>Portada</span>
-                            </span>
-                          </div>
-                        )}
-
-                        {/* Order index pill */}
-                        <span className="absolute bottom-2 left-2 z-10 w-5 h-5 rounded-md bg-black/60 backdrop-blur-xs text-white text-[10px] font-bold flex items-center justify-center pointer-events-none shadow-xs">
-                          {idx + 1}
-                        </span>
-
-                        {/* Drag Handle Indicator (Top-Right) */}
-                        <div className="absolute top-2 right-2 z-10 opacity-70 group-hover:opacity-100 transition-opacity pointer-events-none">
-                          <span className="p-1 rounded-md bg-black/60 text-white flex items-center justify-center shadow-xs">
-                            <span className="material-symbols-outlined text-[15px] leading-none">drag_indicator</span>
-                          </span>
-                        </div>
-
-                        {/* Hover Overlay with Reorder Arrows & Delete Button */}
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-between p-2">
-                          <div className="h-6" /> {/* Spacer */}
-
-                          {/* Center: Shift Left / Shift Right buttons */}
-                          <div className="flex items-center justify-center gap-2">
-                            {idx > 0 && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleReorderImages(idx, idx - 1);
-                                }}
-                                className="w-7 h-7 bg-white/95 hover:bg-white rounded-lg text-black shadow-xs flex items-center justify-center transition-transform hover:scale-110 cursor-pointer"
-                                title="Mover a la izquierda"
-                              >
-                                <span className="material-symbols-outlined text-[16px] leading-none">arrow_back</span>
-                              </button>
-                            )}
-                            {idx < product.images.length - 1 && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleReorderImages(idx, idx + 1);
-                                }}
-                                className="w-7 h-7 bg-white/95 hover:bg-white rounded-lg text-black shadow-xs flex items-center justify-center transition-transform hover:scale-110 cursor-pointer"
-                                title="Mover a la derecha"
-                              >
-                                <span className="material-symbols-outlined text-[16px] leading-none">arrow_forward</span>
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Bottom Right: Delete Photo */}
-                          <div className="flex justify-end">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleRemoveImage(idx);
-                              }}
-                              className="p-1.5 bg-white/95 hover:bg-red-50 text-red-600 rounded-lg shadow-xs transition-transform hover:scale-110 cursor-pointer"
-                              title="Eliminar foto"
-                            >
-                              <span className="material-symbols-outlined text-[16px] leading-none">delete</span>
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            )}
           </section>
 
-          {/* ================= SECCIÓN 3: MATRIZ DE VARIANTES TALLE × COLOR ================= */}
-          <section className="bg-white p-5 rounded-xl border border-[#efeded] space-y-4 shadow-xs">
+          {/* ================= SECCIÓN 3: ATRIBUTOS Y VARIANTES ================= */}
+          <section className="bg-white p-5 rounded-2xl border border-[#efeded] space-y-5 shadow-xs">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-neutral-100 pb-3">
               <div className="flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-[#efeded] flex items-center justify-center text-xs font-bold text-black">
                   3
                 </span>
                 <div>
-                  <h3 className="text-sm font-semibold text-black">
-                    Matriz de Variantes Talle × Color
-                  </h3>
+                  <h3 className="text-sm font-semibold text-black">Atributos y Variantes de Stock</h3>
                   <span className="text-[11px] text-[#5f5e5b]">
-                    Control dimensional y existencias físicas sincronizadas
+                    Configura opciones dimensionales o maneja stock ilimitado
                   </span>
                 </div>
               </div>
-              <div className="px-3 py-1 rounded-xl bg-black text-white flex items-center gap-2 shadow-xs">
+
+              <div className="px-3.5 py-1.5 rounded-xl bg-black text-white flex items-center gap-2 shadow-xs self-start sm:self-center">
                 <span className="material-symbols-outlined text-[16px]">inventory</span>
-                <span className="text-xs font-medium">Total Stock Consolidado:</span>
-                <span className="text-xs font-bold">{totalStock} unidades</span>
+                <span className="text-xs font-medium">Total Stock:</span>
+                <span className="text-xs font-bold">
+                  {isAllUnlimited
+                    ? '∞ Ilimitado'
+                    : hasSomeUnlimited
+                    ? `${totalStock} u. + ilimitadas`
+                    : `${totalStock} unidades`}
+                </span>
               </div>
             </div>
 
-            {/* Preselección de Talles y Colores */}
-            <div className="bg-[#fbf9f8] p-5 rounded-xl border border-neutral-200 space-y-4">
-              <div>
-                <span className="text-xs font-bold text-black uppercase tracking-wider block">
-                  Pre-selección de Talles y Colores para esta Prenda
-                </span>
-                <p className="text-[11px] text-neutral-500 mt-1 leading-relaxed">
-                  Elige en qué talles y colores tienes disponibilidad para este modelo. Luego presiona el botón para armar o actualizar la lista de combinaciones.
-                </p>
+            {/* Atributos Habilitados para esta Prenda */}
+            <div className="bg-[#fbf9f8] p-4 rounded-2xl border border-neutral-200 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <span className="text-xs font-bold text-black uppercase tracking-wider block">
+                    ¿Qué atributos utiliza este producto?
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    Elegí si esta prenda utiliza uno, ambos o ninguno de los atributos de la tienda.
+                  </span>
+                </div>
+
+                {/* Attribute Selector Toggles */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {attribute1.enabled && (
+                    <button
+                      type="button"
+                      onClick={() => handleToggleProductAttribute('attr1')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                        attributesUsed.includes('attr1')
+                          ? 'bg-black text-white border-black shadow-xs'
+                          : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-100'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[15px]">
+                        {attributesUsed.includes('attr1') ? 'check' : 'add'}
+                      </span>
+                      <span>{attribute1.name}</span>
+                    </button>
+                  )}
+
+                  {attribute2.enabled && (
+                    <button
+                      type="button"
+                      onClick={() => handleToggleProductAttribute('attr2')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                        attributesUsed.includes('attr2')
+                          ? 'bg-black text-white border-black shadow-xs'
+                          : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-100'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[15px]">
+                        {attributesUsed.includes('attr2') ? 'check' : 'add'}
+                      </span>
+                      <span>{attribute2.name}</span>
+                    </button>
+                  )}
+
+                  {attributesUsed.length === 0 && (
+                    <span className="text-xs text-neutral-500 font-medium">
+                      (Producto simple sin atributos)
+                    </span>
+                  )}
+                </div>
               </div>
 
-              {/* Talles Selector Chips */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-black flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-[16px]">straighten</span>
-                    <span>Talles de este modelo ({selectedSizeNames.length}):</span>
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedSizeNames(settings.masterSizes.map((s) => s.name))}
-                      className="text-[11px] text-black font-semibold hover:underline"
-                    >
-                      Seleccionar todos
-                    </button>
-                    <span className="text-neutral-300">•</span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedSizeNames([])}
-                      className="text-[11px] text-neutral-500 hover:text-black hover:underline"
-                    >
-                      Limpiar
-                    </button>
+              {/* Options Chips for Attr 1 */}
+              {attributesUsed.includes('attr1') && attribute1.enabled && (
+                <div className="pt-2 border-t border-neutral-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-black">
+                      Opciones de {attribute1.name} para esta prenda ({selectedOptIds1.length}):
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedOptIds1(attribute1.options.map((o) => o.id))}
+                        className="text-[11px] text-black font-semibold hover:underline"
+                      >
+                        Todas
+                      </button>
+                      <span className="text-neutral-300">•</span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedOptIds1([])}
+                        className="text-[11px] text-neutral-500 hover:text-black hover:underline"
+                      >
+                        Limpiar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {attribute1.options.map((opt) => {
+                      const isSelected = selectedOptIds1.includes(opt.id);
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedOptIds1((prev) =>
+                              isSelected ? prev.filter((id) => id !== opt.id) : [...prev, opt.id]
+                            );
+                          }}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                            isSelected
+                              ? 'bg-black text-white border-black shadow-xs'
+                              : 'bg-white text-neutral-700 hover:bg-neutral-100 border-neutral-300'
+                          }`}
+                        >
+                          {attribute1.type === 'color' && opt.hex && (
+                            <span
+                              className="w-3 h-3 rounded-full border border-black/15 shrink-0"
+                              style={{ backgroundColor: opt.hex }}
+                            />
+                          )}
+                          <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
+              )}
 
-                <div className="flex flex-wrap gap-2">
-                  {settings.masterSizes.map((size) => {
-                    const isSelected = selectedSizeNames.includes(size.name);
-                    return (
+              {/* Options Chips for Attr 2 */}
+              {attributesUsed.includes('attr2') && attribute2.enabled && (
+                <div className="pt-2 border-t border-neutral-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-black">
+                      Opciones de {attribute2.name} para esta prenda ({selectedOptIds2.length}):
+                    </span>
+                    <div className="flex items-center gap-2">
                       <button
-                        key={size.name}
                         type="button"
-                        onClick={() => {
-                          setSelectedSizeNames((prev) =>
-                            isSelected ? prev.filter((s) => s !== size.name) : [...prev, size.name]
-                          );
-                        }}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
-                          isSelected
-                            ? 'bg-black text-white border-black shadow-xs'
-                            : 'bg-white text-neutral-700 hover:bg-neutral-100 border-neutral-300'
-                        }`}
+                        onClick={() => setSelectedOptIds2(attribute2.options.map((o) => o.id))}
+                        className="text-[11px] text-black font-semibold hover:underline"
                       >
-                        {size.name}
+                        Todas
                       </button>
-                    );
-                  })}
-                </div>
-              </div>
+                      <span className="text-neutral-300">•</span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedOptIds2([])}
+                        className="text-[11px] text-neutral-500 hover:text-black hover:underline"
+                      >
+                        Limpiar
+                      </button>
+                    </div>
+                  </div>
 
-              {/* Colores Selector Chips */}
-              <div className="space-y-1.5 pt-2 border-t border-neutral-200">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-black flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-[16px]">palette</span>
-                    <span>Colores de este modelo ({selectedColorNames.length}):</span>
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedColorNames(settings.masterColors.map((c) => c.name))}
-                      className="text-[11px] text-black font-semibold hover:underline"
-                    >
-                      Seleccionar todos
-                    </button>
-                    <span className="text-neutral-300">•</span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedColorNames([])}
-                      className="text-[11px] text-neutral-500 hover:text-black hover:underline"
-                    >
-                      Limpiar
-                    </button>
+                  <div className="flex flex-wrap gap-1.5">
+                    {attribute2.options.map((opt) => {
+                      const isSelected = selectedOptIds2.includes(opt.id);
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedOptIds2((prev) =>
+                              isSelected ? prev.filter((id) => id !== opt.id) : [...prev, opt.id]
+                            );
+                          }}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                            isSelected
+                              ? 'bg-black text-white border-black shadow-xs'
+                              : 'bg-white text-neutral-700 hover:bg-neutral-100 border-neutral-300'
+                          }`}
+                        >
+                          {attribute2.type === 'color' && opt.hex && (
+                            <span
+                              className="w-3 h-3 rounded-full border border-black/15 shrink-0"
+                              style={{ backgroundColor: opt.hex }}
+                            />
+                          )}
+                          <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
+              )}
 
-                <div className="flex flex-wrap gap-2">
-                  {settings.masterColors.map((color) => {
-                    const isSelected = selectedColorNames.includes(color.name);
-                    return (
-                      <button
-                        key={color.name}
-                        type="button"
-                        onClick={() => {
-                          setSelectedColorNames((prev) =>
-                            isSelected ? prev.filter((c) => c !== color.name) : [...prev, color.name]
-                          );
-                        }}
-                        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
-                          isSelected
-                            ? 'bg-black text-white border-black shadow-xs'
-                            : 'bg-white text-neutral-700 hover:bg-neutral-100 border-neutral-300'
-                        }`}
-                      >
-                        <span
-                          className="w-3.5 h-3.5 rounded-full border border-black/10 shrink-0"
-                          style={{ backgroundColor: color.hex }}
-                        ></span>
-                        <span>{color.name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Botón de Generar combinaciones elegidas */}
-              <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-neutral-200">
+              {/* Button to Generate / Sync Combinations */}
+              <div className="pt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-neutral-200">
                 <span className="text-[11px] text-neutral-500">
-                  {selectedColorNames.length * selectedSizeNames.length} combinaciones seleccionadas
+                  {attributesUsed.length === 0
+                    ? 'Genera una única variante para este producto simple'
+                    : attributesUsed.length === 1
+                    ? `${(attributesUsed[0] === 'attr1' ? selectedOptIds1 : selectedOptIds2).length} variantes a generar`
+                    : `${selectedOptIds1.length * selectedOptIds2.length} combinaciones a generar`}
                 </span>
 
                 <button
                   type="button"
-                  onClick={handleGenerateSelectedCombinations}
-                  disabled={selectedColorNames.length === 0 || selectedSizeNames.length === 0}
-                  className="px-4 py-2 rounded-lg bg-black hover:bg-neutral-800 disabled:opacity-40 text-white text-xs font-semibold shadow-xs flex items-center justify-center gap-1.5 transition-colors"
+                  onClick={handleGenerateCombinations}
+                  className="px-4 py-2 rounded-xl bg-black hover:bg-neutral-800 text-white text-xs font-bold shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <span className="material-symbols-outlined text-[16px]">sync</span>
-                  <span>Generar / Actualizar combinaciones seleccionadas</span>
+                  <span>Generar / Actualizar combinaciones</span>
                 </button>
               </div>
             </div>
 
             {/* Matrix Variant Table */}
-            <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden space-y-2">
-              <div className="p-3 bg-[#f5f3f3] border-b border-neutral-200 flex items-center justify-between">
-                <span className="text-xs font-bold text-black">
-                  Combinaciones Cargadas ({product.variants.length})
-                </span>
-                <span className="text-[11px] text-neutral-500">
-                  Ajusta el stock real, activa/desactiva visibilidad o pon stock en 0
-                </span>
+            <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden space-y-2">
+              {/* Header with Mass Actions & Tooltip */}
+              <div className="p-3.5 bg-[#f5f3f3] border-b border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-black">
+                    Combinaciones Cargadas ({product.variants.length})
+                  </span>
+
+                  {/* Help Tooltip ? for Unlimited Stock */}
+                  <div className="relative inline-block">
+                    <button
+                      type="button"
+                      onClick={() => setShowUnlimitedTooltip(!showUnlimitedTooltip)}
+                      onMouseEnter={() => setShowUnlimitedTooltip(true)}
+                      onMouseLeave={() => setShowUnlimitedTooltip(false)}
+                      className="w-5 h-5 rounded-full bg-neutral-200 hover:bg-neutral-300 text-neutral-700 text-[11px] font-bold flex items-center justify-center cursor-pointer transition-colors"
+                      title="¿Qué es el stock ilimitado?"
+                    >
+                      ?
+                    </button>
+                    {showUnlimitedTooltip && (
+                      <div className="absolute left-6 top-1/2 -translate-y-1/2 w-64 p-3 bg-neutral-900 text-white text-[11px] rounded-xl shadow-xl z-20 leading-relaxed pointer-events-none animate-in fade-in zoom-in-95 duration-150">
+                        <strong>Stock Ilimitado:</strong> Estas variantes nunca figurarán agotadas en la tienda ni bloquearán la compra. Tampoco se descontará stock al registrar ventas por Mercado Pago, WhatsApp o mostrador.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Mass Actions */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleMarkAllUnlimited}
+                    className="px-2.5 py-1 bg-white hover:bg-neutral-100 text-neutral-800 border border-neutral-300 rounded-lg text-[11px] font-semibold transition-colors shadow-2xs"
+                  >
+                    Marcar todas como ilimitadas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleMarkAllLimited}
+                    className="px-2.5 py-1 bg-white hover:bg-neutral-100 text-neutral-800 border border-neutral-300 rounded-lg text-[11px] font-semibold transition-colors shadow-2xs"
+                  >
+                    Volver a todas limitadas
+                  </button>
+                </div>
               </div>
 
+              {/* Table */}
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="bg-white text-neutral-600 font-semibold uppercase tracking-wider h-9 border-b border-neutral-200">
-                      <th className="py-2 px-3">Variante (Color / Talle)</th>
+                      <th className="py-2 px-3">Variante</th>
                       <th className="py-2 px-3">Código SKU</th>
-                      <th className="py-2 px-3 w-36">Stock en Unidades</th>
-                      <th className="py-2 px-3 text-center">Estado en Tienda</th>
+                      <th className="py-2 px-3 text-center">Stock Ilimitado</th>
+                      <th className="py-2 px-3 w-36">Stock Unidades</th>
                       <th className="py-2 px-3 text-center">Visible</th>
                       <th className="py-2 px-3 text-right">Quitar</th>
                     </tr>
@@ -1163,13 +1208,31 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                     {product.variants.length === 0 ? (
                       <tr>
                         <td colSpan={6} className="py-8 text-center text-neutral-500">
-                          No hay combinaciones cargadas aún. Selecciona talles y colores arriba y presiona "Generar".
+                          <div className="flex flex-col items-center gap-1">
+                            <span className="font-semibold text-neutral-700">Sin variantes: no se ve en la tienda</span>
+                            <span className="text-[11px] text-neutral-400">
+                              Selecciona opciones arriba y presiona "Generar / Actualizar combinaciones".
+                            </span>
+                          </div>
                         </td>
                       </tr>
                     ) : (
                       product.variants.map((variant, idx) => {
                         const isEnabled = variant.enabled !== false && (variant.enabled as any) !== 'false';
-                        const isOutOfStock = Number(variant.stock) <= 0;
+                        const isUnlimited = !!variant.unlimited;
+                        const isOutOfStock = !isUnlimited && Number(variant.stock) <= 0;
+
+                        // Display label for variant
+                        const label1 = attribute1.enabled
+                          ? getOptionLabel(attribute1, variant.attributeOptionId1, variant.color)
+                          : variant.color;
+                        const label2 = attribute2.enabled
+                          ? getOptionLabel(attribute2, variant.attributeOptionId2, variant.size)
+                          : variant.size;
+                        const hex = variant.colorHex || (attribute1.type === 'color' ? getOptionHex(attribute1, variant.attributeOptionId1) : undefined);
+
+                        const displayTitle = [label1, label2].filter(Boolean).join(' / ') || 'Producto Simple';
+
                         return (
                           <tr
                             key={variant.id || idx}
@@ -1183,13 +1246,13 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                           >
                             <td className="py-2.5 px-3">
                               <div className="flex items-center gap-2">
-                                <span
-                                  className="w-3.5 h-3.5 rounded-full border border-black/10 shrink-0"
-                                  style={{ backgroundColor: variant.colorHex || '#000' }}
-                                ></span>
-                                <span className="font-semibold text-black">
-                                  {variant.color} / <strong className="font-bold">{variant.size}</strong>
-                                </span>
+                                {hex && (
+                                  <span
+                                    className="w-3.5 h-3.5 rounded-full border border-black/10 shrink-0"
+                                    style={{ backgroundColor: hex }}
+                                  />
+                                )}
+                                <span className="font-semibold text-black">{displayTitle}</span>
                               </div>
                             </td>
 
@@ -1202,52 +1265,58 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                               />
                             </td>
 
-                            <td className="py-2.5 px-3">
-                              <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => handleVariantStockChange(idx, variant.stock - 1)}
-                                  className="w-6 h-6 rounded bg-[#efeded] hover:bg-neutral-300 flex items-center justify-center font-bold text-black"
-                                >
-                                  -
-                                </button>
+                            {/* Unlimited Stock Toggle */}
+                            <td className="py-2.5 px-3 text-center">
+                              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
                                 <input
-                                  type="number"
-                                  min={0}
-                                  value={variant.stock}
-                                  onChange={(e) =>
-                                    handleVariantStockChange(idx, Number(e.target.value))
-                                  }
-                                  className="w-14 text-center py-1 bg-[#fbf9f8] border border-neutral-200 rounded text-xs font-semibold text-black focus:outline-none"
+                                  type="checkbox"
+                                  checked={isUnlimited}
+                                  onChange={() => handleVariantUnlimitedToggle(idx)}
+                                  className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
                                 />
-                                <button
-                                  type="button"
-                                  onClick={() => handleVariantStockChange(idx, variant.stock + 1)}
-                                  className="w-6 h-6 rounded bg-[#efeded] hover:bg-neutral-300 flex items-center justify-center font-bold text-black"
-                                >
-                                  +
-                                </button>
-                                <span className="text-[10px] text-neutral-400 pl-0.5">u.</span>
-                              </div>
+                                <span className={`text-[11px] font-bold ${isUnlimited ? 'text-black' : 'text-neutral-400'}`}>
+                                  {isUnlimited ? '∞ Ilimitado' : 'Limitado'}
+                                </span>
+                              </label>
                             </td>
 
-                            <td className="py-2.5 px-3 text-center">
-                              {!isEnabled ? (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-200 text-neutral-600 text-[10px] font-medium">
-                                  Oculta en tienda
-                                </span>
-                              ) : isOutOfStock ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-bold">
-                                  <span className="material-symbols-outlined text-[12px]">warning</span>
-                                  Stock en 0 (Agotado)
-                                </span>
+                            {/* Stock Quantity */}
+                            <td className="py-2.5 px-3">
+                              {isUnlimited ? (
+                                <div className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded inline-block">
+                                  ∞ Ilimitado
+                                </div>
                               ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-semibold">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span> Con stock ({variant.stock})
-                                </span>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleVariantStockChange(idx, variant.stock - 1)}
+                                    className="w-6 h-6 rounded bg-[#efeded] hover:bg-neutral-300 flex items-center justify-center font-bold text-black"
+                                  >
+                                    -
+                                  </button>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={variant.stock}
+                                    onChange={(e) =>
+                                      handleVariantStockChange(idx, Number(e.target.value))
+                                    }
+                                    className="w-14 text-center py-1 bg-[#fbf9f8] border border-neutral-200 rounded text-xs font-semibold text-black focus:outline-none"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleVariantStockChange(idx, variant.stock + 1)}
+                                    className="w-6 h-6 rounded bg-[#efeded] hover:bg-neutral-300 flex items-center justify-center font-bold text-black"
+                                  >
+                                    +
+                                  </button>
+                                  <span className="text-[10px] text-neutral-400 pl-0.5">u.</span>
+                                </div>
                               )}
                             </td>
 
+                            {/* Visible Toggle */}
                             <td className="py-2.5 px-3 text-center">
                               <label className="relative inline-flex items-center cursor-pointer">
                                 <input
@@ -1260,12 +1329,13 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                               </label>
                             </td>
 
+                            {/* Remove Variant */}
                             <td className="py-2.5 px-3 text-right">
                               <button
                                 type="button"
                                 onClick={() => handleRemoveVariant(idx)}
                                 className="p-1 rounded text-neutral-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                                title="Eliminar esta combinación"
+                                title="Eliminar combinación"
                               >
                                 <span className="material-symbols-outlined text-[16px]">delete</span>
                               </button>
@@ -1291,26 +1361,39 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
 
         {/* Action Footer Bar */}
         <div className="px-6 py-4 bg-[#fbf9f8] border-t border-[#efeded] flex items-center justify-end gap-3 z-10">
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 sm:flex-initial px-4 py-2 rounded-lg bg-neutral-200 hover:bg-neutral-300 text-black text-xs font-semibold transition-colors"
-            >
-              Cancelar
-            </button>
-            <button
-              type="button"
-              disabled={saving}
-              onClick={handleSave}
-              className="flex-1 sm:flex-initial px-6 py-2 rounded-lg bg-black hover:bg-neutral-800 text-white text-xs font-semibold transition-all shadow-sm flex items-center justify-center gap-1.5"
-            >
-              <span className="material-symbols-outlined text-[16px]">save</span>
-              <span>{saving ? 'Guardando...' : 'Guardar Cambios'}</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded-xl bg-neutral-200 hover:bg-neutral-300 text-black text-xs font-semibold transition-colors"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={handleSave}
+            className="px-6 py-2 rounded-xl bg-black hover:bg-neutral-800 text-white text-xs font-semibold transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[16px]">save</span>
+            <span>{saving ? 'Guardando...' : 'Guardar Cambios'}</span>
+          </button>
         </div>
       </div>
+
+      {/* Attribute Add/Remove Confirmation Modal */}
+      {attrConfirmModal && (
+        <AttributeConfirmationModal
+          isOpen={attrConfirmModal.isOpen}
+          onClose={() => setAttrConfirmModal(null)}
+          title={attrConfirmModal.title}
+          message={attrConfirmModal.message}
+          affectedList={attrConfirmModal.affectedList}
+          affectedListTitle={attrConfirmModal.affectedListTitle}
+          confirmLabel={attrConfirmModal.confirmLabel}
+          confirmColor={attrConfirmModal.confirmColor}
+          onConfirm={attrConfirmModal.onConfirm}
+        />
+      )}
     </div>
   );
 };

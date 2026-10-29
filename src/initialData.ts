@@ -1,4 +1,36 @@
-import { Product, Sale, StoreSettings, Store, DEFAULT_FEATURE_FLAGS } from './types';
+import { Product, Sale, StoreSettings, Store, DEFAULT_FEATURE_FLAGS, StoreAttribute } from './types';
+
+export const DEFAULT_ATTRIBUTE1: StoreAttribute = {
+  id: 'attr1',
+  name: 'Color',
+  type: 'color',
+  enabled: true,
+  options: [
+    { id: 'opt-col-negro', label: 'Negro Puro', hex: '#1A1A1A' },
+    { id: 'opt-col-blanco', label: 'Blanco Roto', hex: '#E5E5E5' },
+    { id: 'opt-col-arena', label: 'Arena Camel', hex: '#C49A6C' },
+    { id: 'opt-col-azul', label: 'Azul', hex: '#1130ac' }
+  ],
+  hideUnusedWarning: false
+};
+
+export const DEFAULT_ATTRIBUTE2: StoreAttribute = {
+  id: 'attr2',
+  name: 'Talle',
+  type: 'text',
+  enabled: true,
+  options: [
+    { id: 'opt-sz-xs', label: 'XS' },
+    { id: 'opt-sz-s', label: 'S' },
+    { id: 'opt-sz-m', label: 'M' },
+    { id: 'opt-sz-l', label: 'L' },
+    { id: 'opt-sz-xl', label: 'XL' },
+    { id: 'opt-sz-xxl', label: 'XXL' },
+    { id: 'opt-sz-38', label: '38' },
+    { id: 'opt-sz-40', label: '40' }
+  ],
+  hideUnusedWarning: false
+};
 
 export const DEFAULT_STORE: Store = {
   id: 'apolo',
@@ -58,6 +90,8 @@ export const INITIAL_SETTINGS: StoreSettings = {
   secondaryColor: '#353131',
   updatedAt: new Date().toISOString(),
   primaryColor: '#314F2B',
+  attribute1: DEFAULT_ATTRIBUTE1,
+  attribute2: DEFAULT_ATTRIBUTE2,
   masterColors: [
     { name: 'Negro Puro', hex: '#1A1A1A' },
     { name: 'Blanco Roto', hex: '#E5E5E5' },

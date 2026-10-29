@@ -30,6 +30,7 @@ import {
 } from '../types';
 import { INITIAL_PRODUCTS, INITIAL_SALES, INITIAL_SETTINGS, DEFAULT_STORE, SANDBOX_STORE, INITIAL_STORES } from '../initialData';
 import { optimizeProductImages } from '../utils/imageOptimizer';
+import { ensureStoreAttributes, normalizeProductWithAttributes } from '../utils/attributeUtils';
 
 const LOCAL_STORAGE_STORES_KEY = 'atelier_stores_list';
 
@@ -689,9 +690,9 @@ export function subscribeStoreSettings(
   const key = getSettingsKey(storeId);
   const local = getLocalItem<StoreSettings | null>(key, null);
   if (local && (local.storeName || local.logoUrl)) {
-    onData(local);
+    onData(ensureStoreAttributes(local).settings);
   } else if (storeId === 'apolo') {
-    onData(INITIAL_SETTINGS);
+    onData(ensureStoreAttributes(INITIAL_SETTINGS).settings);
   }
 
   try {
@@ -701,7 +702,8 @@ export function subscribeStoreSettings(
       settingsDoc,
       async (snap) => {
         if (snap.exists()) {
-          const data = snap.data() as StoreSettings;
+          const rawData = snap.data() as StoreSettings;
+          const { settings: data } = ensureStoreAttributes(rawData);
           setLocalItem(key, data);
           onData(data);
         } else {
@@ -710,7 +712,8 @@ export function subscribeStoreSettings(
             try {
               const legacySnap = await getDoc(doc(db, 'storeSettings', 'default'));
               if (legacySnap.exists()) {
-                const legacyData = legacySnap.data() as StoreSettings;
+                const legacyRaw = legacySnap.data() as StoreSettings;
+                const { settings: legacyData } = ensureStoreAttributes(legacyRaw);
                 setLocalItem(key, legacyData);
                 onData(legacyData);
                 // Also mirror it to stores/apolo/settings/current
@@ -723,9 +726,10 @@ export function subscribeStoreSettings(
           }
 
           // Otherwise seed settings: prefer existing local changes if available, otherwise INITIAL_SETTINGS
-          const init = (local && (local.storeName || local.mercadoPago?.connected)) 
+          const baseInit = (local && (local.storeName || local.mercadoPago?.connected)) 
             ? local 
             : (storeId === 'apolo' ? INITIAL_SETTINGS : { ...INITIAL_SETTINGS, storeName: storeId });
+          const { settings: init } = ensureStoreAttributes(baseInit);
           try {
             await setDoc(settingsDoc, sanitizeForFirestore(init));
             setLocalItem(key, init);
@@ -740,8 +744,8 @@ export function subscribeStoreSettings(
       },
       (err) => {
         console.warn('Error reading storeSettings from Firestore, using local fallback:', err);
-        if (local) onData(local);
-        else if (storeId === 'apolo') onData(INITIAL_SETTINGS);
+        if (local) onData(ensureStoreAttributes(local).settings);
+        else if (storeId === 'apolo') onData(ensureStoreAttributes(INITIAL_SETTINGS).settings);
       }
     );
     return unsubscribe;
@@ -868,9 +872,13 @@ export function subscribeProducts(
   }
 
   const key = getProductsKey(storeId);
+  const settingsKey = getSettingsKey(storeId);
+  const currentSettings = getLocalItem<StoreSettings>(settingsKey, INITIAL_SETTINGS);
+
   const local = getLocalItem<Product[]>(key, storeId === 'apolo' ? INITIAL_PRODUCTS : []);
   if (local && local.length > 0) {
-    onData(local);
+    const normalizedLocal = local.map((p) => normalizeProductWithAttributes(p, currentSettings));
+    onData(normalizedLocal);
   }
 
   try {
@@ -885,8 +893,9 @@ export function subscribeProducts(
             if (!legacySnap.empty) {
               const legacyList: Product[] = [];
               legacySnap.forEach((d) => legacyList.push({ id: d.id, ...(d.data() as Omit<Product, 'id'>) }));
-              setLocalItem(key, legacyList);
-              onData(legacyList);
+              const normLegacyList = legacyList.map((p) => normalizeProductWithAttributes(p, currentSettings));
+              setLocalItem(key, normLegacyList);
+              onData(normLegacyList);
               return;
             }
           } catch (e) {
@@ -898,12 +907,14 @@ export function subscribeProducts(
         snapshot.forEach((docSnap) => {
           list.push({ id: docSnap.id, ...(docSnap.data() as Omit<Product, 'id'>) });
         });
-        setLocalItem(key, list);
-        onData(list);
+        const normList = list.map((p) => normalizeProductWithAttributes(p, currentSettings));
+        setLocalItem(key, normList);
+        onData(normList);
       },
       (err) => {
         console.warn('Firestore products listener error, using local fallback:', err);
-        onData(local || []);
+        const normFallback = (local || []).map((p) => normalizeProductWithAttributes(p, currentSettings));
+        onData(normFallback);
       }
     );
     return unsubscribe;
@@ -928,7 +939,8 @@ export async function saveProduct(
   }
 
   const key = getProductsKey(storeId);
-  const totalStock = product.variants.reduce((acc, v) => acc + ((v.enabled !== false && (v.enabled as any) !== 'false') ? Number(v.stock || 0) : 0), 0);
+  const totalStock = product.variants.reduce((acc, v) => acc + ((v.enabled !== false && (v.enabled as any) !== 'false' && !v.unlimited) ? Number(v.stock || 0) : 0), 0);
+  const isUnlimited = product.variants.length > 0 && product.variants.every((v) => v.unlimited);
 
   // Automatically compress base64 images so the document stays well within Firestore's 1MB limit (< 750KB total)
   let safeImages = product.images || [];
@@ -944,6 +956,7 @@ export async function saveProduct(
     ...product,
     images: safeImages,
     totalStock,
+    isUnlimited,
     updatedAt: new Date().toISOString()
   };
 
@@ -1080,6 +1093,19 @@ function matchSaleItemToVariant(item: SaleItem, prod: Product, v: ProductVariant
     item.productName.trim().toLowerCase() === prod.name.trim().toLowerCase();
   if (!sameProd) return false;
   if (prod.variants.length === 1) return true;
+
+  if (item.attributeValues) {
+    let matchAttrs = true;
+    if (item.attributeValues.attr1 && v.attributeOptionId1 && item.attributeValues.attr1 !== v.attributeOptionId1) {
+      matchAttrs = false;
+    }
+    if (item.attributeValues.attr2 && v.attributeOptionId2 && item.attributeValues.attr2 !== v.attributeOptionId2) {
+      matchAttrs = false;
+    }
+    if (matchAttrs && (item.attributeValues.attr1 || item.attributeValues.attr2)) {
+      return true;
+    }
+  }
   
   const itemSize = (item.size || '').trim().toLowerCase();
   const vSize = (v.size || '').trim().toLowerCase();
@@ -1144,6 +1170,11 @@ export async function createSale(
   const updatedProducts = currentProducts.map((prod) => {
     let modified = false;
     const variants = prod.variants.map((v) => {
+      // Unlimited variants never decrease stock
+      if (v.unlimited) {
+        return v;
+      }
+
       const soldQty = newSale.items
         .filter((it) => matchSaleItemToVariant(it, prod, v))
         .reduce((sum, it) => sum + it.quantity, 0);
@@ -1158,7 +1189,7 @@ export async function createSale(
     });
 
     if (modified) {
-      const totalStock = variants.reduce((acc, curr) => acc + ((curr.enabled !== false && (curr.enabled as any) !== 'false') ? curr.stock : 0), 0);
+      const totalStock = variants.reduce((acc, curr) => acc + ((curr.enabled !== false && (curr.enabled as any) !== 'false' && !curr.unlimited) ? curr.stock : 0), 0);
       return { ...prod, variants, totalStock, updatedAt: new Date().toISOString() };
     }
     return prod;
@@ -1243,6 +1274,7 @@ export async function confirmPreventaSale(
     : currentProducts.map((prod) => {
         let modified = false;
         const variants = prod.variants.map((v) => {
+          if (v.unlimited) return v;
           const soldQty = targetSale.items
             .filter((it) => matchSaleItemToVariant(it, prod, v))
             .reduce((sum, it) => sum + it.quantity, 0);
@@ -1257,7 +1289,7 @@ export async function confirmPreventaSale(
         });
 
         if (modified) {
-          const totalStock = variants.reduce((acc, curr) => acc + ((curr.enabled !== false && (curr.enabled as any) !== 'false') ? curr.stock : 0), 0);
+          const totalStock = variants.reduce((acc, curr) => acc + ((curr.enabled !== false && (curr.enabled as any) !== 'false' && !curr.unlimited) ? curr.stock : 0), 0);
           return { ...prod, variants, totalStock, updatedAt: new Date().toISOString() };
         }
         return prod;
@@ -1334,6 +1366,7 @@ export async function confirmMercadoPagoOrder(
     : currentProducts.map((prod) => {
         let modified = false;
         const variants = prod.variants.map((v) => {
+          if (v.unlimited) return v;
           const soldQty = targetSale.items
             .filter((it) => matchSaleItemToVariant(it, prod, v))
             .reduce((sum, it) => sum + it.quantity, 0);
@@ -1348,7 +1381,7 @@ export async function confirmMercadoPagoOrder(
         });
 
         if (modified) {
-          const totalStock = variants.reduce((acc, curr) => acc + ((curr.enabled !== false && (curr.enabled as any) !== 'false') ? curr.stock : 0), 0);
+          const totalStock = variants.reduce((acc, curr) => acc + ((curr.enabled !== false && (curr.enabled as any) !== 'false' && !curr.unlimited) ? curr.stock : 0), 0);
           return { ...prod, variants, totalStock, updatedAt: new Date().toISOString() };
         }
         return prod;
@@ -1455,6 +1488,7 @@ export async function cancelSale(
   const updatedProducts = currentProducts.map((prod) => {
     let modified = false;
     const variants = prod.variants.map((v) => {
+      if (v.unlimited) return v;
       const returnedQty = targetSale.items
         .filter((it) => matchSaleItemToVariant(it, prod, v))
         .reduce((sum, it) => sum + it.quantity, 0);
@@ -1468,7 +1502,7 @@ export async function cancelSale(
     });
 
     if (modified) {
-      const totalStock = variants.reduce((acc, curr) => acc + ((curr.enabled !== false && (curr.enabled as any) !== 'false') ? curr.stock : 0), 0);
+      const totalStock = variants.reduce((acc, curr) => acc + ((curr.enabled !== false && (curr.enabled as any) !== 'false' && !curr.unlimited) ? curr.stock : 0), 0);
       return { ...prod, variants, totalStock, updatedAt: new Date().toISOString() };
     }
     return prod;

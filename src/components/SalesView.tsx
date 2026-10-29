@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
-import { Sale, Product, SaleItem, SalePayment, StoreFeatureFlags } from '../types';
+import { Sale, Product, SaleItem, SalePayment, StoreFeatureFlags, StoreSettings } from '../types';
+import { ensureStoreAttributes, formatVariantSummary } from '../utils/attributeUtils';
 
 interface SalesViewProps {
   sales: Sale[];
@@ -11,6 +12,7 @@ interface SalesViewProps {
   onUpdateSaleItems: (saleId: string, items: SaleItem[], newTotal?: number) => Promise<any>;
   onConfirmPreventaSale?: (saleId: string, paidAmount?: number, paymentMethod?: string) => Promise<any>;
   featureFlags?: StoreFeatureFlags;
+  settings?: StoreSettings;
 }
 
 export const SalesView: React.FC<SalesViewProps> = ({
@@ -22,12 +24,15 @@ export const SalesView: React.FC<SalesViewProps> = ({
   onAddPayment,
   onUpdateSaleItems,
   onConfirmPreventaSale,
-  featureFlags
+  featureFlags,
+  settings
 }) => {
   const [showNewSalePanel, setShowNewSalePanel] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sortBy, setSortBy] = useState<'date' | 'debt' | 'total' | 'paid'>('date');
+
+  const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
 
   // Modal to confirm cancellation
   const [cancelModalSale, setCancelModalSale] = useState<Sale | null>(null);
@@ -277,15 +282,22 @@ export const SalesView: React.FC<SalesViewProps> = ({
       selectedProduct.variants.find((v) => v.size.toLowerCase() === itemSelectSize.toLowerCase()) ||
       selectedProduct.variants[0];
 
-    const currentStock = matchedVariant ? Number(matchedVariant.stock || 0) : 0;
+    const isUnlimited = !!matchedVariant?.unlimited;
+    const currentStock = isUnlimited ? 999999 : (matchedVariant ? Number(matchedVariant.stock || 0) : 0);
 
     const doAdd = () => {
+      const summary = matchedVariant
+        ? formatVariantSummary(matchedVariant, attribute1, attribute2, selectedProduct)
+        : [itemSelectColor, itemSelectSize].filter(Boolean).join(' · ');
+
       const newItem: SaleItem = {
         productId: selectedProduct.id,
         productName: selectedProduct.name,
         variantId: matchedVariant?.id,
         size: itemSelectSize || matchedVariant?.size || 'U',
         color: itemSelectColor || matchedVariant?.color || 'Único',
+        attributeSummary: summary,
+        unlimited: isUnlimited,
         quantity: itemSelectQty,
         unitPrice: price,
         totalPrice: price * itemSelectQty
@@ -307,7 +319,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
       setItemSelectQty(1);
     };
 
-    if (itemSelectQty > currentStock) {
+    if (!isUnlimited && itemSelectQty > currentStock) {
       setStockWarningDialog({
         productName: selectedProduct.name,
         color: itemSelectColor || matchedVariant?.color || 'Único',
@@ -431,15 +443,22 @@ export const SalesView: React.FC<SalesViewProps> = ({
       selectedModalProduct.variants.find((v) => v.size.toLowerCase() === modalSelectSize.toLowerCase()) ||
       selectedModalProduct.variants[0];
 
-    const currentStock = matchedVariant ? Number(matchedVariant.stock || 0) : 0;
+    const isUnlimited = !!matchedVariant?.unlimited;
+    const currentStock = isUnlimited ? 999999 : (matchedVariant ? Number(matchedVariant.stock || 0) : 0);
 
     const doAddModal = () => {
+      const summary = matchedVariant
+        ? formatVariantSummary(matchedVariant, attribute1, attribute2, selectedModalProduct)
+        : [modalSelectColor, modalSelectSize].filter(Boolean).join(' · ');
+
       const newItem: SaleItem = {
         productId: selectedModalProduct.id,
         productName: selectedModalProduct.name,
         variantId: matchedVariant?.id,
         size: modalSelectSize || matchedVariant?.size || 'U',
         color: modalSelectColor || matchedVariant?.color || 'Único',
+        attributeSummary: summary,
+        unlimited: isUnlimited,
         quantity: modalSelectQty,
         unitPrice: price,
         totalPrice: price * modalSelectQty
@@ -461,7 +480,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
       setModalSelectQty(1);
     };
 
-    if (modalSelectQty > currentStock) {
+    if (!isUnlimited && modalSelectQty > currentStock) {
       setStockWarningDialog({
         productName: selectedModalProduct.name,
         color: modalSelectColor || matchedVariant?.color || 'Único',
@@ -506,7 +525,10 @@ export const SalesView: React.FC<SalesViewProps> = ({
   const handleExportPlanilla = () => {
     let csv = 'ID,Fecha,Cliente,Contacto,Vencimiento,Total,Cobrado,Saldo,Estado,Prendas\n';
     sales.forEach((s) => {
-      const itemsList = s.items.map((it) => `${it.productName} (${it.color}/${it.size} x${it.quantity})`).join('; ');
+      const itemsList = s.items.map((it) => {
+        const desc = it.attributeSummary || [it.color, it.size].filter(Boolean).join('/');
+        return `${it.productName} (${desc || 'Estándar'} x${it.quantity}${it.unlimited ? ' [ilimitado]' : ''})`;
+      }).join('; ');
       csv += `"${s.id}","${s.date}","${s.customer}","${s.contactInfo}","${s.dueDate}",${s.total},${s.paidTotal},${s.pendingBalance},"${s.status}","${itemsList}"\n`;
     });
 
@@ -896,7 +918,8 @@ export const SalesView: React.FC<SalesViewProps> = ({
                             <div>
                               <div className="text-xs font-bold text-black">{item.productName}</div>
                               <div className="text-[11px] text-neutral-500">
-                                Talle: <strong>{item.size}</strong> · Color: {item.color} · Cant: <strong>{item.quantity}</strong>
+                                {item.attributeSummary || [item.color, item.size ? `Talle ${item.size}` : ''].filter(Boolean).join(' · ')} · Cant: <strong>{item.quantity}</strong>
+                                {item.unlimited && <span className="ml-1 text-emerald-700 font-semibold">(Stock ilimitado)</span>}
                               </div>
                             </div>
                           </div>
@@ -1539,7 +1562,8 @@ export const SalesView: React.FC<SalesViewProps> = ({
                             <div>
                               <div className="text-xs font-bold text-black">{item.productName}</div>
                               <div className="text-[11px] text-neutral-500">
-                                {item.color} · Talle <strong>{item.size}</strong> · ${item.unitPrice.toLocaleString('es-AR')} c/u
+                                {item.attributeSummary || [item.color, item.size ? `Talle ${item.size}` : ''].filter(Boolean).join(' · ')} · ${item.unitPrice.toLocaleString('es-AR')} c/u
+                                {item.unlimited && <span className="ml-1 text-emerald-700 font-semibold">(Stock ilimitado)</span>}
                               </div>
                             </div>
                           </div>

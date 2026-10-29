@@ -60,7 +60,7 @@ const ai = new GoogleGenAI({
 // Endpoint to analyze product images and extract info using Gemini Flash
 app.post('/api/ai/analyze-product', async (req, res) => {
   try {
-    const { images, category } = req.body;
+    const { images, category, includeColors = true } = req.body;
 
     if (!images || !Array.isArray(images) || images.length === 0) {
       return res.status(400).json({ error: 'Debes enviar al menos una imagen de la prenda.' });
@@ -127,7 +127,9 @@ RESPONDER SOLO ESTOS ITEMS, SIN TEXTO ADICIONAL.`;
 
     const userPrompt = `Categoría del producto: "${category || 'General'}".
 Cantidad de fotos adjuntas: ${imageParts.length}.
-Analizá las imágenes y devolvé el nombre del producto, la descripción armoniosa y la lista de colores determinantes con su nombre comercial en español (ej. Negro, Blanco, Beige, Terracota, Verde Oliva) y código hexadecimal (#RRGGBB).`;
+${includeColors 
+  ? 'Analizá las imágenes y devolvé el nombre del producto, la descripción armoniosa y la lista de colores determinantes con su nombre comercial en español (ej. Negro, Blanco, Beige, Terracota, Verde Oliva) y código hexadecimal (#RRGGBB).'
+  : 'Analizá las imágenes y devolvé el nombre del producto y la descripción armoniosa. NO identifiques colores (devolvé el array colors vacío []).'}`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
