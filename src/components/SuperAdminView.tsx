@@ -10,6 +10,7 @@ import {
 } from '../services/db';
 import { StoreSubscriptionManagerModal } from './StoreSubscriptionManagerModal';
 import { FeedbackViewerModal } from './FeedbackViewerModal';
+import { RubrosManagerModal } from './RubrosManagerModal';
 import { auth } from '../firebase';
 
 interface SuperAdminViewProps {
@@ -80,6 +81,7 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   // Subscription Manager & Feedback Modals
   const [subscriptionManagerStore, setSubscriptionManagerStore] = useState<Store | null>(null);
   const [isFeedbackViewerOpen, setIsFeedbackViewerOpen] = useState(false);
+  const [isRubrosModalOpen, setIsRubrosModalOpen] = useState(false);
 
   // Platform Configuration (Global Base Price $24.900, Support WhatsApp)
   const [platformConfig, setPlatformConfig] = useState<PlatformConfig>({
@@ -605,6 +607,16 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
             >
               <span className="material-symbols-outlined text-[17px] text-purple-600">rate_review</span>
               <span>Ver Feedback</span>
+            </button>
+
+            {/* Rubros & Atributos Button */}
+            <button
+              onClick={() => setIsRubrosModalOpen(true)}
+              className="px-3.5 py-2 bg-white hover:bg-neutral-50 text-neutral-800 text-xs font-semibold rounded-xl flex items-center gap-1.5 border border-neutral-300 shadow-2xs transition-all cursor-pointer"
+              title="Administrar rubros y atributos predeterminados"
+            >
+              <span className="material-symbols-outlined text-[17px] text-indigo-600">category</span>
+              <span>Rubros & Atributos</span>
             </button>
 
             {/* Mercado Pago Master Button */}
@@ -2682,6 +2694,12 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Rubros Manager Modal */}
+      <RubrosManagerModal
+        isOpen={isRubrosModalOpen}
+        onClose={() => setIsRubrosModalOpen(false)}
+      />
 
       {/* Floating Toast */}
       {toastMessage && (

@@ -1,4 +1,4 @@
-import { Product, Sale, StoreSettings, Store, DEFAULT_FEATURE_FLAGS, StoreAttribute } from './types';
+import { Product, Sale, StoreSettings, Store, DEFAULT_FEATURE_FLAGS, StoreAttribute, Rubro } from './types';
 
 export const DEFAULT_ATTRIBUTE1: StoreAttribute = {
   id: 'attr1',
@@ -32,6 +32,24 @@ export const DEFAULT_ATTRIBUTE2: StoreAttribute = {
   hideUnusedWarning: false
 };
 
+export const INITIAL_RUBRO: Rubro = {
+  id: 'indumentaria',
+  name: 'Indumentaria',
+  active: true,
+  attribute1: {
+    ...DEFAULT_ATTRIBUTE1,
+    id: 'attr1'
+  },
+  attribute2: {
+    ...DEFAULT_ATTRIBUTE2,
+    id: 'attr2'
+  },
+  createdAt: '2026-09-28T00:00:00.000Z',
+  updatedAt: new Date().toISOString()
+};
+
+export const INITIAL_RUBROS: Rubro[] = [INITIAL_RUBRO];
+
 export const DEFAULT_STORE: Store = {
   id: 'apolo',
   slug: 'apolo',
@@ -43,7 +61,7 @@ export const DEFAULT_STORE: Store = {
   ownerFirstName: 'Yunior',
   ownerLastName: '',
   ownerPhone: '5491122334455',
-  rubro: 'Indumentaria y Calzado',
+  rubro: 'Indumentaria',
   termsAcceptedAt: '2026-09-28T00:00:00.000Z',
   isSandbox: false,
   featureFlags: { ...DEFAULT_FEATURE_FLAGS },
@@ -66,7 +84,7 @@ export const SANDBOX_STORE: Store = {
   ownerFirstName: 'Yunior',
   ownerLastName: '',
   ownerPhone: '5491122334455',
-  rubro: 'Indumentaria y Calzado',
+  rubro: 'Indumentaria',
   termsAcceptedAt: '2026-10-12T00:00:00.000Z',
   isSandbox: true,
   featureFlags: { ...DEFAULT_FEATURE_FLAGS },

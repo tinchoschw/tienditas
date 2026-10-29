@@ -97,6 +97,12 @@ service cloud.firestore {
       allow write: if isSuperAdmin();
     }
 
+    // RUBROS DE TIENDA (Superadmin configura, lectura pública para onboarding)
+    match /rubros/{rubroId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
     // FEEDBACK DE CIERRE Y FRIENDS & FAMILY
     match /feedback/{feedbackId} {
       allow create: if isSignedIn();

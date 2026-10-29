@@ -26,9 +26,20 @@ import {
   StorePeriod,
   StoreExtension,
   StoreFeedback,
-  PlatformConfig
+  PlatformConfig,
+  StoreAttribute,
+  Rubro
 } from '../types';
-import { INITIAL_PRODUCTS, INITIAL_SALES, INITIAL_SETTINGS, DEFAULT_STORE, SANDBOX_STORE, INITIAL_STORES } from '../initialData';
+import { 
+  INITIAL_PRODUCTS, 
+  INITIAL_SALES, 
+  INITIAL_SETTINGS, 
+  DEFAULT_STORE, 
+  SANDBOX_STORE, 
+  INITIAL_STORES,
+  INITIAL_RUBRO,
+  INITIAL_RUBROS
+} from '../initialData';
 import { optimizeProductImages } from '../utils/imageOptimizer';
 import { ensureStoreAttributes, normalizeProductWithAttributes } from '../utils/attributeUtils';
 
@@ -94,7 +105,9 @@ export const normalizeStoreData = (data: any, id: string): Store => {
     ownerFirstName: data.ownerFirstName || '',
     ownerLastName: data.ownerLastName || '',
     ownerPhone: data.ownerPhone || data.whatsappNumber || '',
-    rubro: data.rubro || 'Indumentaria y Calzado',
+    rubro: (data.rubro && (data.rubro === 'Indumentaria y Calzado' || data.rubro === 'Indumentaria y Moda'))
+      ? 'Indumentaria'
+      : (data.rubro || 'Indumentaria'),
     termsAcceptedAt: data.termsAcceptedAt || data.createdAt || '2026-09-28T00:00:00.000Z',
     extensions: Array.isArray(data.extensions) ? data.extensions : [],
     featureFlags: data.featureFlags
@@ -147,7 +160,12 @@ export const subscribeStores = (onData: (stores: Store[]) => void) => {
           const list: Store[] = [];
           snapshot.forEach((sSnap) => {
             const data = sSnap.data();
-            list.push(normalizeStoreData(data, sSnap.id));
+            const store = normalizeStoreData(data, sSnap.id);
+            // Standarize rubro for existing stores to 'Indumentaria'
+            if (data.rubro === 'Indumentaria y Calzado' || data.rubro === 'Indumentaria y Moda' || (!data.rubro && (sSnap.id === 'apolo' || sSnap.id === 'sandbox'))) {
+              updateDoc(doc(db, 'stores', sSnap.id), { rubro: 'Indumentaria' }).catch(() => {});
+            }
+            list.push(store);
           });
 
           // Ensure sandbox store is available if not in Firestore yet
@@ -184,6 +202,8 @@ export const createNewStore = async (data: {
   ownerLastName?: string;
   ownerPhone?: string;
   rubro?: string;
+  attribute1?: StoreAttribute;
+  attribute2?: StoreAttribute;
   termsAcceptedAt?: string;
   adminPassword?: string;
   whatsappNumber?: string;
@@ -209,7 +229,7 @@ export const createNewStore = async (data: {
     ownerFirstName: data.ownerFirstName?.trim() || '',
     ownerLastName: data.ownerLastName?.trim() || '',
     ownerPhone: data.ownerPhone?.trim() || data.whatsappNumber?.trim() || '',
-    rubro: data.rubro?.trim() || 'Indumentaria y Moda',
+    rubro: data.rubro?.trim() || 'Indumentaria',
     termsAcceptedAt: data.termsAcceptedAt || new Date().toISOString(),
     extensions: [],
     isSandbox: !!data.isSandbox,
@@ -226,7 +246,7 @@ export const createNewStore = async (data: {
   const updatedStores = [...currentStores.filter((s) => s.id !== storeId), newStore];
   setLocalItem(LOCAL_STORAGE_STORES_KEY, updatedStores);
 
-  // Initialize fresh store settings
+  // Initialize fresh store settings with rubro attributes if provided
   const storeSettings: StoreSettings = {
     storeName: data.name.trim(),
     adminPassword: data.adminPassword?.trim() || 'AdminApolo2026!',
@@ -241,6 +261,8 @@ export const createNewStore = async (data: {
     whatsappEnabled: true,
     whatsappNumber: data.whatsappNumber?.trim() || data.ownerPhone?.trim() || '',
     categories: ['Todas', 'Ropa', 'Calzado', 'Accesorios'],
+    attribute1: data.attribute1 || INITIAL_SETTINGS.attribute1,
+    attribute2: data.attribute2 || INITIAL_SETTINGS.attribute2,
     masterSizes: INITIAL_SETTINGS.masterSizes,
     masterColors: INITIAL_SETTINGS.masterColors,
     updatedAt: new Date().toISOString(),
@@ -440,6 +462,100 @@ export const updatePlatformConfig = async (patch: Partial<PlatformConfig>): Prom
     console.warn('Could not update platformConfig in Firestore:', e);
   }
   return updated;
+};
+
+// ========================================================
+// ------------------- RUBROS MANAGEMENT ------------------
+// ========================================================
+
+const LOCAL_STORAGE_RUBROS_KEY = 'atelier_rubros_list';
+
+export const subscribeRubros = (onData: (rubros: Rubro[]) => void) => {
+  const cached = getLocalItem<Rubro[]>(LOCAL_STORAGE_RUBROS_KEY, INITIAL_RUBROS);
+  if (cached && cached.length > 0) {
+    onData(cached);
+  }
+
+  try {
+    const rubrosCol = collection(db, 'rubros');
+    const unsubscribe = onSnapshot(
+      rubrosCol,
+      async (snapshot) => {
+        if (snapshot.empty) {
+          // Seed initial 'Indumentaria' rubro
+          try {
+            await setDoc(doc(db, 'rubros', INITIAL_RUBRO.id), sanitizeForFirestore(INITIAL_RUBRO));
+            setLocalItem(LOCAL_STORAGE_RUBROS_KEY, INITIAL_RUBROS);
+            onData(INITIAL_RUBROS);
+          } catch (seedErr) {
+            console.warn('Could not seed initial rubro to Firestore:', seedErr);
+            onData(cached);
+          }
+        } else {
+          const list: Rubro[] = [];
+          snapshot.forEach((snap) => {
+            const data = snap.data();
+            list.push({
+              id: snap.id,
+              name: data.name || snap.id,
+              active: data.active !== false,
+              attribute1: data.attribute1 || INITIAL_RUBRO.attribute1,
+              attribute2: data.attribute2 || INITIAL_RUBRO.attribute2,
+              createdAt: data.createdAt || new Date().toISOString(),
+              updatedAt: data.updatedAt || new Date().toISOString()
+            });
+          });
+
+          // Ensure 'indumentaria' exists in the list
+          if (!list.some((r) => r.id === 'indumentaria' || r.name.toLowerCase() === 'indumentaria')) {
+            list.unshift(INITIAL_RUBRO);
+            setDoc(doc(db, 'rubros', INITIAL_RUBRO.id), sanitizeForFirestore(INITIAL_RUBRO)).catch(() => {});
+          }
+
+          setLocalItem(LOCAL_STORAGE_RUBROS_KEY, list);
+          onData(list);
+        }
+      },
+      (err) => {
+        console.warn('Firestore rubros error, using local fallback:', err);
+        onData(cached);
+      }
+    );
+    return unsubscribe;
+  } catch (e) {
+    console.warn('subscribeRubros error:', e);
+    return () => {};
+  }
+};
+
+export const saveRubro = async (rubro: Rubro): Promise<Rubro> => {
+  const current = getLocalItem<Rubro[]>(LOCAL_STORAGE_RUBROS_KEY, INITIAL_RUBROS);
+  const updated: Rubro = {
+    ...rubro,
+    updatedAt: new Date().toISOString()
+  };
+  const list = [...current.filter((r) => r.id !== rubro.id), updated];
+  setLocalItem(LOCAL_STORAGE_RUBROS_KEY, list);
+
+  try {
+    await setDoc(doc(db, 'rubros', rubro.id), sanitizeForFirestore(updated), { merge: true });
+  } catch (e) {
+    console.warn('Could not save rubro in Firestore:', e);
+  }
+  return updated;
+};
+
+export const deleteRubro = async (rubroId: string): Promise<boolean> => {
+  const current = getLocalItem<Rubro[]>(LOCAL_STORAGE_RUBROS_KEY, INITIAL_RUBROS);
+  const list = current.filter((r) => r.id !== rubroId);
+  setLocalItem(LOCAL_STORAGE_RUBROS_KEY, list);
+
+  try {
+    await deleteDoc(doc(db, 'rubros', rubroId));
+  } catch (e) {
+    console.warn('Could not delete rubro in Firestore:', e);
+  }
+  return true;
 };
 
 // ========================================================

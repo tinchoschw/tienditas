@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
-import { Store } from '../types';
-import { createNewStore, generateUniqueSlug } from '../services/db';
+import { Store, Rubro } from '../types';
+import { createNewStore, generateUniqueSlug, subscribeRubros } from '../services/db';
 
 interface StoreOnboardingModalProps {
   user: User;
@@ -11,20 +11,6 @@ interface StoreOnboardingModalProps {
   onStoreCreated: (store: Store) => void;
 }
 
-const RUBROS_OPTIONS = [
-  'Indumentaria y Moda',
-  'Calzado y Marroquinería',
-  'Panadería, Pastelería y Cafetería',
-  'Gastronomía, Rotisería y Viandas',
-  'Bazar, Hogar y Decoración',
-  'Belleza, Cosmética y Perfumería',
-  'Accesorios, Joyas y Relojes',
-  'Deportes, Fitness y Aire Libre',
-  'Librería, Regalería y Juguetes',
-  'Salud, Dietética y Nutrición',
-  'Otro'
-];
-
 export const StoreOnboardingModal: React.FC<StoreOnboardingModalProps> = ({
   user,
   existingStores,
@@ -32,16 +18,29 @@ export const StoreOnboardingModal: React.FC<StoreOnboardingModalProps> = ({
   onClose,
   onStoreCreated
 }) => {
+  const [rubrosList, setRubrosList] = useState<Rubro[]>([]);
+  const [selectedRubroId, setSelectedRubroId] = useState<string>('');
   const [storeName, setStoreName] = useState('');
   const [slug, setSlug] = useState('');
   const [isCustomSlug, setIsCustomSlug] = useState(false);
-  const [rubro, setRubro] = useState(RUBROS_OPTIONS[0]);
   const [otherRubro, setOtherRubro] = useState('');
   const [phone, setPhone] = useState('');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsub = subscribeRubros((data) => {
+      const activeRubros = data.filter((r) => r.active);
+      setRubrosList(activeRubros);
+      if (activeRubros.length > 0 && !selectedRubroId) {
+        setSelectedRubroId(activeRubros[0].id);
+      }
+    });
+    return () => unsub();
+  }, [isOpen, selectedRubroId]);
 
   // Auto-generate slug from store name
   useEffect(() => {
@@ -69,7 +68,10 @@ export const StoreOnboardingModal: React.FC<StoreOnboardingModalProps> = ({
       setError('Por favor ingresá tu número de celular o WhatsApp de contacto.');
       return;
     }
-    if (rubro === 'Otro' && !otherRubro.trim()) {
+    const selectedRubro = rubrosList.find((r) => r.id === selectedRubroId);
+    const isOther = selectedRubro?.name.toLowerCase() === 'otro' || selectedRubro?.name.toLowerCase() === 'otros';
+
+    if (isOther && !otherRubro.trim()) {
       setError('Por favor especificá el rubro de tu tienda.');
       return;
     }
@@ -78,7 +80,7 @@ export const StoreOnboardingModal: React.FC<StoreOnboardingModalProps> = ({
       return;
     }
 
-    const finalRubro = rubro === 'Otro' ? otherRubro.trim() : rubro;
+    const finalRubro = isOther ? otherRubro.trim() : (selectedRubro?.name || 'Indumentaria');
     const finalSlug = slug.trim() || generateUniqueSlug(storeName, existingStores);
 
     setIsSubmitting(true);
@@ -91,6 +93,8 @@ export const StoreOnboardingModal: React.FC<StoreOnboardingModalProps> = ({
         ownerLastName: lastName,
         ownerPhone: phone.trim(),
         rubro: finalRubro,
+        attribute1: selectedRubro?.attribute1,
+        attribute2: selectedRubro?.attribute2,
         whatsappNumber: phone.trim(),
         termsAcceptedAt: new Date().toISOString()
       });
@@ -187,27 +191,54 @@ export const StoreOnboardingModal: React.FC<StoreOnboardingModalProps> = ({
               Rubro del Comercio *
             </label>
             <select
-              value={rubro}
-              onChange={(e) => setRubro(e.target.value)}
+              value={selectedRubroId}
+              onChange={(e) => setSelectedRubroId(e.target.value)}
               className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-sm text-neutral-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-black transition-all"
             >
-              {RUBROS_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
+              {rubrosList.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
                 </option>
               ))}
             </select>
 
-            {rubro === 'Otro' && (
-              <input
-                type="text"
-                required
-                value={otherRubro}
-                onChange={(e) => setOtherRubro(e.target.value)}
-                placeholder="Especificá tu rubro..."
-                className="w-full mt-2 px-3.5 py-2 bg-neutral-50 border border-neutral-200 rounded-xl text-xs text-neutral-900 focus:bg-white focus:outline-none focus:ring-1 focus:ring-black transition-all"
-              />
-            )}
+            {(() => {
+              const currentRubro = rubrosList.find((r) => r.id === selectedRubroId);
+              if (!currentRubro) return null;
+              const isOther = currentRubro.name.toLowerCase() === 'otro' || currentRubro.name.toLowerCase() === 'otros';
+              if (isOther) {
+                return (
+                  <input
+                    type="text"
+                    required
+                    value={otherRubro}
+                    onChange={(e) => setOtherRubro(e.target.value)}
+                    placeholder="Especificá tu rubro..."
+                    className="w-full mt-2 px-3.5 py-2 bg-neutral-50 border border-neutral-200 rounded-xl text-xs text-neutral-900 focus:bg-white focus:outline-none focus:ring-1 focus:ring-black transition-all"
+                  />
+                );
+              }
+
+              const attrSummaries = [
+                currentRubro.attribute1?.enabled ? `${currentRubro.attribute1.name} (${currentRubro.attribute1.type === 'color' ? 'color' : 'texto'})` : null,
+                currentRubro.attribute2?.enabled ? `${currentRubro.attribute2.name} (${currentRubro.attribute2.type === 'color' ? 'color' : 'texto'})` : null,
+              ].filter(Boolean);
+
+              return (
+                <div className="mt-2 p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-100 text-[11px] text-indigo-900 flex items-start gap-2">
+                  <span className="material-symbols-outlined text-[16px] text-indigo-600 shrink-0 mt-0.5">
+                    auto_fix_high
+                  </span>
+                  <span>
+                    Configurará automáticamente:{' '}
+                    <strong>{attrSummaries.join(' y ') || 'Sin atributos iniciales'}</strong>.
+                    <span className="text-indigo-700/80 block mt-0.5">
+                      Podrás modificarlos o agregar opciones desde el panel cuando quieras.
+                    </span>
+                  </span>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Celular / WhatsApp */}

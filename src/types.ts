@@ -227,6 +227,16 @@ export interface PlatformConfig {
   updatedAt?: string;
 }
 
+export interface Rubro {
+  id: string;
+  name: string;
+  active: boolean;
+  attribute1: StoreAttribute;
+  attribute2: StoreAttribute;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface Store {
   id: string;
   slug: string;
