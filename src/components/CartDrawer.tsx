@@ -10,10 +10,10 @@ interface CartDrawerProps {
   onUpdateQuantity: (index: number, delta: number) => void;
   onRemoveItem: (index: number) => void;
   onClearCart: () => void;
+  onSyncCart?: (updatedCart: CartItem[]) => void;
   settings: StoreSettings;
   featureFlags?: StoreFeatureFlags;
   storeSlug?: string;
-  onRecordSale?: (saleData: any) => Promise<any>;
 }
 
 export const CartDrawer: React.FC<CartDrawerProps> = ({
@@ -24,10 +24,10 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   onUpdateQuantity,
   onRemoveItem,
   onClearCart,
+  onSyncCart,
   settings,
   featureFlags,
-  storeSlug = '',
-  onRecordSale
+  storeSlug = ''
 }) => {
   const totalItemsCount = cart.reduce((acc, item) => acc + item.quantity, 0);
   const subtotal = cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
@@ -41,32 +41,60 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     return isMpEnabled ? 'mercadopago' : 'whatsapp';
   });
 
+  // Client-generated idempotent checkout ID
+  const [checkoutId] = useState<string>(() => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return 'chk_' + Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
+  });
+
   // Customer form for checkout
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
-  const [formErrors, setFormErrors] = useState<{ name?: string; email?: string; phone?: string }>({});
+  const [customerNotes, setCustomerNotes] = useState('');
+  const [formErrors, setFormErrors] = useState<{ name?: string; email?: string; phone?: string; notes?: string }>({});
 
-  // Loading state for Mercado Pago preference creation
-  const [isProcessingMp, setIsProcessingMp] = useState(false);
-  const [mpError, setMpError] = useState<string | null>(null);
+  // Processing state & error
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Cart conflict modal state (when 409 cart_changed is returned)
+  const [cartConflict, setCartConflict] = useState<{
+    changes: string[];
+    newTotal: number;
+    updatedCart: any[];
+  } | null>(null);
 
   // Helper to validate common customer fields
   const validateCustomerFields = (): boolean => {
-    const errors: { name?: string; email?: string; phone?: string } = {};
+    const errors: { name?: string; email?: string; phone?: string; notes?: string } = {};
     if (!customerName.trim()) {
       errors.name = 'El nombre y apellido son obligatorios.';
+    } else if (customerName.trim().length > 100) {
+      errors.name = 'El nombre no puede superar 100 caracteres.';
     }
+
     const cleanPhone = customerPhone.replace(/[^0-9]/g, '');
     if (!customerPhone.trim()) {
       errors.phone = 'El teléfono / WhatsApp es obligatorio.';
     } else if (cleanPhone.length < 8) {
       errors.phone = 'Ingresa un teléfono válido (al menos 8 dígitos con código de área).';
+    } else if (customerPhone.trim().length > 30) {
+      errors.phone = 'El teléfono no puede superar 30 caracteres.';
     }
+
     if (!customerEmail.trim()) {
-      errors.email = 'El email es obligatorio para el envío del comprobante.';
+      errors.email = 'El email es obligatorio para el comprobante.';
     } else if (!customerEmail.includes('@') || !customerEmail.includes('.')) {
       errors.email = 'Ingresa un correo electrónico válido (ej: nombre@gmail.com).';
+    } else if (customerEmail.trim().length > 100) {
+      errors.email = 'El email no puede superar 100 caracteres.';
+    }
+
+    if (customerNotes.trim().length > 500) {
+      errors.notes = 'Las notas no pueden superar 500 caracteres.';
     }
 
     if (Object.keys(errors).length > 0) {
@@ -92,212 +120,176 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     return variant ? Math.max(0, Number(variant.stock || 0)) : 999;
   };
 
-  // Build WhatsApp text link with customer details
-  const buildWhatsAppUrl = () => {
-    const phone = settings.whatsappNumber ? settings.whatsappNumber.replace(/[^0-9]/g, '') : '5491155556789';
-    let text = `Hola ${settings.storeName || 'Atelier Studio'}! Quiero coordinar el siguiente pedido:\n\n`;
-    
-    if (customerName.trim()) {
-      text += `👤 *Cliente:* ${customerName.trim()}\n`;
-    }
-    if (customerPhone.trim()) {
-      text += `📱 *Teléfono:* ${customerPhone.trim()}\n`;
-    }
-    if (customerEmail.trim()) {
-      text += `✉️ *Email:* ${customerEmail.trim()}\n`;
-    }
-    if (customerName.trim() || customerPhone.trim() || customerEmail.trim()) {
-      text += `\n`;
-    }
-
-    cart.forEach((item) => {
-      const summary = item.attributeSummary || [item.color, item.size ? `Talle ${item.size}` : ''].filter(Boolean).join(', ');
-      text += `• ${item.quantity}x ${item.productName}${summary ? ` (${summary})` : ''} = $${(item.price * item.quantity).toLocaleString('es-AR')}\n`;
-    });
-    text += `\n*Total Estimado:* $${subtotal.toLocaleString('es-AR')}`;
-    text += `\n\n¡Aguardo su confirmación para coordinar el pago y entrega!`;
-
-    return `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
-  };
-
-  // WhatsApp checkout execution (Records as "preventa" without discounting stock)
+  // WhatsApp checkout execution (Calls server /api/checkout/whatsapp-order to validate and register preventa)
   const handleWhatsAppCheckout = async () => {
     if (cart.length === 0) return;
+    setActionError(null);
 
-    // Validate mandatory customer details
     if (!validateCustomerFields()) {
       return;
     }
 
-    // Check stock availability (only for limited variants)
-    for (const item of cart) {
-      if (item.unlimited) continue;
-      const maxStock = getItemMaxStock(item);
-      if (item.quantity > maxStock) {
-        alert(
-          `No hay suficiente stock para "${item.productName}". Disponibles: ${maxStock} unidades.`
-        );
-        return;
-      }
-    }
-
-    const orderRef = `CONS-${Date.now().toString().slice(-6)}`;
-
-    // Record in local sales ledger as "preventa" (stock is NOT discounted)
-    if (onRecordSale) {
-      try {
-        await onRecordSale({
-          id: orderRef,
-          date: new Date().toISOString().slice(0, 10),
-          customer: customerName.trim() || 'Consulta WhatsApp',
-          contactInfo: `${customerPhone.trim() ? `Tel: ${customerPhone.trim()}` : 'WhatsApp'}${customerEmail.trim() ? ` • ${customerEmail.trim()}` : ''}`,
-          customerEmail: customerEmail.trim() || undefined,
-          customerPhone: customerPhone.trim() || undefined,
-          dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
-          items: cart.map((it) => ({
-            productId: it.productId,
-            productName: it.productName,
-            variantId: it.variantId,
-            size: it.size,
-            color: it.color,
-            attributeSummary: it.attributeSummary,
-            unlimited: it.unlimited,
-            quantity: it.quantity,
-            unitPrice: it.price,
-            totalPrice: it.price * it.quantity
-          })),
-          subtotal,
-          total: subtotal,
-          paidTotal: 0,
-          pendingBalance: subtotal,
-          status: 'preventa',
-          stockDiscounted: false,
-          channel: 'whatsapp',
-          payments: []
-        });
-      } catch (recordErr) {
-        console.warn('Could not record WhatsApp preventa sale:', recordErr);
-      }
-    }
-
-    window.open(buildWhatsAppUrl(), '_blank');
-    onClearCart();
-    if (onClose) {
-      setTimeout(() => onClose(), 300);
-    }
-  };
-
-  // Mercado Pago checkout execution
-  const handleMercadoPagoCheckout = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setMpError(null);
-
-    // Validate mandatory customer details
-    if (!validateCustomerFields()) {
-      return;
-    }
-
-    // Check stock availability (only for limited variants)
-    for (const item of cart) {
-      if (item.unlimited) continue;
-      const maxStock = getItemMaxStock(item);
-      if (item.quantity > maxStock) {
-        alert(
-          `No hay suficiente stock para "${item.productName}". Disponibles: ${maxStock} unidades.`
-        );
-        return;
-      }
-    }
-
-    setIsProcessingMp(true);
+    setIsProcessing(true);
 
     try {
-      const orderRef = `PED-${Date.now().toString().slice(-6)}`;
-
-      // Record in sales ledger as pending MP sale
-      if (onRecordSale) {
-        try {
-          await onRecordSale({
-            id: orderRef,
-            date: new Date().toISOString().slice(0, 10),
-            customer: customerName.trim(),
-            contactInfo: `${customerEmail.trim()}${customerPhone.trim() ? ` • Tel: ${customerPhone.trim()}` : ''}`,
-            customerEmail: customerEmail.trim(),
-            customerPhone: customerPhone.trim() || undefined,
-            dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
-            items: cart.map((it) => ({
-              productId: it.productId,
-              productName: it.productName,
-              variantId: it.variantId,
-              size: it.size,
-              color: it.color,
-              attributeSummary: it.attributeSummary,
-              unlimited: it.unlimited,
-              quantity: it.quantity,
-              unitPrice: it.price,
-              totalPrice: it.price * it.quantity
-            })),
-            subtotal,
-            total: subtotal,
-            paidTotal: 0,
-            pendingBalance: subtotal,
-            status: 'pendiente_total',
-            stockDiscounted: true,
-            channel: 'mercadopago',
-            payments: []
-          });
-        } catch (recordErr) {
-          console.warn('Could not record pending sale prior to redirect:', recordErr);
-        }
-      }
-
-      // Call backend to create Checkout Pro preference
-      const mpConfig = settings.mercadoPago;
-      const res = await fetch('/api/mercadopago/create-preference', {
+      const res = await fetch('/api/checkout/whatsapp-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          items: cart.map((it) => ({
-            id: it.productId,
-            title: `${it.productName} (${it.color} / Talle ${it.size})`,
-            quantity: it.quantity,
-            price: it.price,
-            image: it.image
-          })),
-          payer: {
-            name: customerName.trim(),
-            email: customerEmail.trim(),
-            phone: customerPhone.trim() || undefined
-          },
-          externalReference: orderRef,
           storeSlug: storeSlug || 'tienda',
-          storeName: settings.storeName || 'Tienda',
-          sandboxMode: Boolean(mpConfig?.sandboxMode)
+          items: cart.map((it) => ({
+            productId: it.productId,
+            variantId: it.variantId,
+            quantity: it.quantity
+          })),
+          customer: {
+            name: customerName.trim(),
+            phone: customerPhone.trim(),
+            email: customerEmail.trim(),
+            notes: customerNotes.trim() || undefined
+          },
+          expectedTotal: subtotal,
+          checkoutId
         })
       });
 
       const data = await res.json();
 
-      if (!res.ok || !data.checkout_url) {
-        throw new Error(data.error || 'No se pudo generar la pasarela de pago de Mercado Pago.');
+      if (res.status === 409 && data.error === 'cart_changed') {
+        setCartConflict({
+          changes: data.changes || [],
+          newTotal: data.newTotal || 0,
+          updatedCart: data.updatedCart || []
+        });
+        setIsProcessing(false);
+        return;
       }
 
-      // NOTE: We do NOT clear the cart before redirecting!
-      // The cart is kept in localStorage so that if the customer clicks "Volver a la tienda" or fails,
-      // they can retry without losing their selected items.
-      // App.tsx clears the cart upon receiving an "approved" redirect from Mercado Pago.
+      if (!res.ok || !data.sale) {
+        throw new Error(data.message || data.error || 'No se pudo registrar el pedido por WhatsApp.');
+      }
 
-      // Redirect customer to Mercado Pago Checkout
-      window.location.href = data.checkout_url;
+      // Success: construct WhatsApp URL with server-validated sale details
+      const sale = data.sale;
+      const phone = settings.whatsappNumber ? settings.whatsappNumber.replace(/[^0-9]/g, '') : '5491155556789';
+      let text = `Hola ${settings.storeName || 'Tienda'}! Quiero coordinar el pedido *#${sale.id}*:\n\n`;
+      text += `👤 *Cliente:* ${sale.customer}\n`;
+      if (sale.customerPhone) text += `📱 *Teléfono:* ${sale.customerPhone}\n`;
+      if (sale.customerEmail) text += `✉️ *Email:* ${sale.customerEmail}\n`;
+      if (customerNotes.trim()) text += `📝 *Notas:* ${customerNotes.trim()}\n`;
+      text += `\n*Detalle del pedido:*\n`;
+
+      sale.items.forEach((it: any) => {
+        const summary = it.attributeSummary || [it.color, it.size ? `Talle ${it.size}` : ''].filter(Boolean).join(', ');
+        text += `• ${it.quantity}x ${it.productName}${summary ? ` (${summary})` : ''} = $${Number(it.totalPrice || 0).toLocaleString('es-AR')}\n`;
+      });
+
+      text += `\n*Total a Coordinar:* $${Number(sale.total || 0).toLocaleString('es-AR')}`;
+      text += `\n\n¡Aguardo su confirmación para coordinar el pago y entrega!`;
+
+      window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank');
+      onClearCart();
+      if (onClose) {
+        setTimeout(() => onClose(), 300);
+      }
     } catch (err: any) {
-      console.error('Error during Mercado Pago checkout:', err);
-      setMpError(err.message || 'Error al conectar con Mercado Pago. Puedes intentar por WhatsApp.');
-      setIsProcessingMp(false);
+      console.error('Error during WhatsApp checkout:', err);
+      setActionError(err.message || 'Error al iniciar pedido por WhatsApp.');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
+  // Mercado Pago checkout execution (Calls server /api/mercadopago/create-preference to validate, discount stock and get preference)
+  const handleMercadoPagoCheckout = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setActionError(null);
+
+    if (!validateCustomerFields()) {
+      return;
+    }
+
+    setIsProcessing(true);
+
+    try {
+      const res = await fetch('/api/mercadopago/create-preference', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeSlug: storeSlug || 'tienda',
+          items: cart.map((it) => ({
+            productId: it.productId,
+            variantId: it.variantId,
+            quantity: it.quantity
+          })),
+          customer: {
+            name: customerName.trim(),
+            phone: customerPhone.trim(),
+            email: customerEmail.trim(),
+            notes: customerNotes.trim() || undefined
+          },
+          expectedTotal: subtotal,
+          checkoutId
+        })
+      });
+
+      const data = await res.json();
+
+      if (res.status === 409 && data.error === 'cart_changed') {
+        setCartConflict({
+          changes: data.changes || [],
+          newTotal: data.newTotal || 0,
+          updatedCart: data.updatedCart || []
+        });
+        setIsProcessing(false);
+        return;
+      }
+
+      if (!res.ok || !data.checkout_url) {
+        throw new Error(data.message || data.error || 'No se pudo generar la pasarela de pago de Mercado Pago.');
+      }
+
+      // Redirect customer to Mercado Pago Checkout Pro
+      window.location.href = data.checkout_url;
+    } catch (err: any) {
+      console.error('Error during Mercado Pago checkout:', err);
+      setActionError(err.message || 'Error al conectar con Mercado Pago. Puedes intentar por WhatsApp.');
+      setIsProcessing(false);
+    }
+  };
+
+  // Helper to apply updated cart from conflict response
+  const handleApplyUpdatedCart = () => {
+    if (!cartConflict || !onSyncCart) {
+      setCartConflict(null);
+      return;
+    }
+
+    const newCart: CartItem[] = cartConflict.updatedCart
+      .map((it) => {
+        const prod = products.find((p) => p.id === it.productId);
+        const variant = prod?.variants.find((v) => v.id === it.variantId);
+        return {
+          productId: it.productId,
+          productName: it.productName || prod?.name || 'Producto',
+          variantId: it.variantId,
+          size: it.size || variant?.size || '',
+          color: it.color || variant?.color || '',
+          attributeSummary: it.attributeSummary,
+          price: it.unitPrice || prod?.price || 0,
+          quantity: it.quantity,
+          image: prod?.images?.[0],
+          unlimited: it.unlimited
+        };
+      })
+      .filter((it) => it.quantity > 0);
+
+    onSyncCart(newCart);
+    setCartConflict(null);
+  };
+
   const content = (
-    <div className="bg-white rounded-2xl shadow-xl flex flex-col h-full border border-[#efeded] overflow-hidden">
+    <div className="bg-white rounded-2xl shadow-xl flex flex-col h-full border border-[#efeded] overflow-hidden relative">
       {/* Drawer Header */}
       <div className="p-4 sm:p-5 flex items-center justify-between border-b border-[#efeded] bg-white shrink-0">
         <div className="flex items-center gap-2.5">
@@ -484,7 +476,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
             </div>
           </div>
 
-          {/* Contact Information (Always present and required for both WhatsApp & Mercado Pago) */}
+          {/* Contact Information (Required for both WhatsApp & Mercado Pago) */}
           <div className="space-y-2 pt-2 border-t border-neutral-200">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-bold text-neutral-800 uppercase tracking-wider flex items-center gap-1">
@@ -500,6 +492,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
               <div>
                 <input
                   type="text"
+                  maxLength={100}
                   value={customerName}
                   onChange={(e) => {
                     setCustomerName(e.target.value);
@@ -519,6 +512,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 <div>
                   <input
                     type="tel"
+                    maxLength={30}
                     value={customerPhone}
                     onChange={(e) => {
                       setCustomerPhone(e.target.value);
@@ -537,6 +531,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 <div>
                   <input
                     type="email"
+                    maxLength={100}
                     value={customerEmail}
                     onChange={(e) => {
                       setCustomerEmail(e.target.value);
@@ -551,6 +546,17 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                     <span className="text-[10px] text-red-600 block mt-0.5">{formErrors.email}</span>
                   )}
                 </div>
+              </div>
+
+              <div>
+                <input
+                  type="text"
+                  maxLength={500}
+                  value={customerNotes}
+                  onChange={(e) => setCustomerNotes(e.target.value)}
+                  placeholder="Aclaraciones para la entrega o retiro (opcional)"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-300 bg-white focus:outline-none focus:ring-2 focus:ring-neutral-400"
+                />
               </div>
             </div>
           </div>
@@ -603,35 +609,23 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
             </div>
           )}
 
+          {actionError && (
+            <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-[11px] flex items-start gap-1.5">
+              <span className="material-symbols-outlined text-[16px] text-red-600 shrink-0 mt-0.5">error</span>
+              <span>{actionError}</span>
+            </div>
+          )}
+
           {/* ACTION BUTTON: MERCADO PAGO */}
           {selectedMethod === 'mercadopago' && isMpEnabled && (
             <div className="space-y-2 pt-1">
-              {settings.mercadoPago?.sandboxMode && (
-                <div className="px-2.5 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 text-[11px] font-semibold flex items-center justify-between">
-                  <span className="flex items-center gap-1">
-                    <span>🧪</span>
-                    <span>Modo Pruebas (Sandbox)</span>
-                  </span>
-                  <span className="text-[10px] bg-white px-1.5 py-0.5 rounded border border-indigo-200">
-                    Tarjetas demo
-                  </span>
-                </div>
-              )}
-
-              {mpError && (
-                <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-[11px] flex items-start gap-1.5">
-                  <span className="material-symbols-outlined text-[16px] text-red-600 shrink-0 mt-0.5">error</span>
-                  <span>{mpError}</span>
-                </div>
-              )}
-
               <button
                 type="button"
                 onClick={handleMercadoPagoCheckout}
-                disabled={isProcessingMp}
+                disabled={isProcessing}
                 className="w-full py-3.5 px-4 rounded-xl bg-[#009ee3] hover:bg-[#0082ba] text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all active:scale-[0.98] cursor-pointer disabled:opacity-60"
               >
-                {isProcessingMp ? (
+                {isProcessing ? (
                   <>
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     <span>Conectando con Mercado Pago...</span>
@@ -657,16 +651,26 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
               <button
                 type="button"
                 onClick={handleWhatsAppCheckout}
-                className="w-full py-3.5 px-4 rounded-xl bg-[#25D366] hover:bg-[#1EBE5D] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all active:scale-[0.98] cursor-pointer"
+                disabled={isProcessing}
+                className="w-full py-3.5 px-4 rounded-xl bg-[#25D366] hover:bg-[#1EBE5D] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all active:scale-[0.98] cursor-pointer disabled:opacity-60"
               >
-                <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
-                  <path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766 0-3.18-2.587-5.771-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.007c.106.005.249-.04.39.299.144.347.491 1.2.534 1.288.043.088.072.19.014.305-.058.115-.087.187-.173.289l-.26.305c-.087.087-.179.18-.077.355.101.174.453.748.971 1.21.668.595 1.232.78 1.406.867.174.086.275.072.376-.044.101-.116.433-.506.549-.679.116-.174.231-.145.39-.087s1.011.477 1.184.564.289.13.332.202c.044.073.044.42-.1 1.825zM12 2C6.477 2 2 6.477 2 12c0 1.891.527 3.662 1.444 5.176L2 22l4.981-1.306C8.424 21.528 10.151 22 12 22c5.523 0 10-4.477 10-10S17.523 2 12 2z" />
-                </svg>
-                <span>Finalizar Pedido por WhatsApp</span>
+                {isProcessing ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Procesando pedido...</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                      <path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766 0-3.18-2.587-5.771-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.007c.106.005.249-.04.39.299.144.347.491 1.2.534 1.288.043.088.072.19.014.305-.058.115-.087.187-.173.289l-.26.305c-.087.087-.179.18-.077.355.101.174.453.748.971 1.21.668.595 1.232.78 1.406.867.174.086.275.072.376-.044.101-.116.433-.506.549-.679.116-.174.231-.145.39-.087s1.011.477 1.184.564.289.13.332.202c.044.073.044.42-.1 1.825zM12 2C6.477 2 2 6.477 2 12c0 1.891.527 3.662 1.444 5.176L2 22l4.981-1.306C8.424 21.528 10.151 22 12 22c5.523 0 10-4.477 10-10S17.523 2 12 2z" />
+                    </svg>
+                    <span>Finalizar Pedido por WhatsApp</span>
+                  </>
+                )}
               </button>
               <div className="flex items-center justify-center gap-1.5 text-[11px] text-neutral-500">
                 <span className="material-symbols-outlined text-[14px] text-emerald-600">verified</span>
-                <span>Trato directo • Se registra consulta sin reservar stock</span>
+                <span>Trato directo • Se registra pedido y se coordina entrega</span>
               </div>
             </div>
           )}
@@ -683,6 +687,54 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Cart Conflict Dialog (409 cart_changed) */}
+      {cartConflict && (
+        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-neutral-200 text-left animate-in fade-in zoom-in-95">
+            <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center mb-3">
+              <span className="material-symbols-outlined text-[22px]">info</span>
+            </div>
+            <h3 className="font-bold text-sm text-neutral-900">
+              Actualizamos tu carrito
+            </h3>
+            <p className="text-xs text-neutral-600 mt-1">
+              Hubo cambios recientes de disponibilidad o precio en el catálogo:
+            </p>
+
+            <ul className="my-3 space-y-1.5 text-xs text-neutral-800 bg-neutral-50 p-3 rounded-xl border border-neutral-200 max-h-40 overflow-y-auto">
+              {cartConflict.changes.map((ch, idx) => (
+                <li key={idx} className="flex items-start gap-1.5">
+                  <span className="text-amber-600 font-bold">•</span>
+                  <span>{ch}</span>
+                </li>
+              ))}
+            </ul>
+
+            <div className="flex items-center justify-between text-xs font-bold text-neutral-900 py-2 border-t border-neutral-200">
+              <span>Nuevo total:</span>
+              <span className="text-sm font-mono">${cartConflict.newTotal.toLocaleString('es-AR')}</span>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={handleApplyUpdatedCart}
+                className="w-full py-2.5 rounded-xl bg-black hover:bg-neutral-800 text-white text-xs font-bold transition-all cursor-pointer"
+              >
+                Aceptar y Continuar
+              </button>
+              <button
+                type="button"
+                onClick={() => setCartConflict(null)}
+                className="w-full py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs font-semibold transition-all cursor-pointer"
+              >
+                Revisar Carrito
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

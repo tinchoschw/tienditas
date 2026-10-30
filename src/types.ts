@@ -86,6 +86,13 @@ export interface SaleItem {
   unlimited?: boolean;
 }
 
+export interface SalePaymentAlert {
+  type: 'underpaid' | 'overpaid' | 'cancelled_sale_paid';
+  message: string;
+  createdAt: string;
+  dismissed: boolean;
+}
+
 export interface Sale {
   id: string;
   date: string;
@@ -93,6 +100,7 @@ export interface Sale {
   contactInfo: string;
   customerEmail?: string;
   customerPhone?: string;
+  notes?: string;
   dueDate: string;
   items: SaleItem[];
   subtotal: number;
@@ -103,6 +111,9 @@ export interface Sale {
   stockDiscounted?: boolean;
   channel?: 'whatsapp' | 'mercadopago' | 'mostrador';
   payments: SalePayment[];
+  checkoutId?: string;
+  mpPaymentIds?: string[];
+  paymentAlert?: SalePaymentAlert;
   createdAt?: string;
   updatedAt?: string;
 }

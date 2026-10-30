@@ -11,6 +11,7 @@ interface SalesViewProps {
   onAddPayment: (saleId: string, payment: Omit<SalePayment, 'id'>) => Promise<any>;
   onUpdateSaleItems: (saleId: string, items: SaleItem[], newTotal?: number) => Promise<any>;
   onConfirmPreventaSale?: (saleId: string, paidAmount?: number, paymentMethod?: string) => Promise<any>;
+  onDismissPaymentAlert?: (saleId: string) => Promise<void>;
   featureFlags?: StoreFeatureFlags;
   settings?: StoreSettings;
 }
@@ -24,6 +25,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
   onAddPayment,
   onUpdateSaleItems,
   onConfirmPreventaSale,
+  onDismissPaymentAlert,
   featureFlags,
   settings
 }) => {
@@ -33,6 +35,11 @@ export const SalesView: React.FC<SalesViewProps> = ({
   const [sortBy, setSortBy] = useState<'date' | 'debt' | 'total' | 'paid'>('date');
 
   const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
+
+  // Count unreviewed payment alerts from MP webhook
+  const pendingAlertsCount = useMemo(() => {
+    return sales.filter((s) => s.paymentAlert && !s.paymentAlert.dismissed).length;
+  }, [sales]);
 
   // Modal to confirm cancellation
   const [cancelModalSale, setCancelModalSale] = useState<Sale | null>(null);
@@ -587,6 +594,23 @@ export const SalesView: React.FC<SalesViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Payment Alerts Banner from MP Webhook */}
+      {pendingAlertsCount > 0 && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 flex items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <span className="material-symbols-outlined text-amber-600 text-2xl shrink-0">warning</span>
+            <div>
+              <p className="font-bold text-sm">
+                Tenés {pendingAlertsCount} {pendingAlertsCount === 1 ? 'venta con aviso de pago' : 'ventas con avisos de pago'}
+              </p>
+              <p className="text-xs text-amber-800 mt-0.5">
+                Mercado Pago notificó cobros con diferencias de monto o sobre ventas previamente canceladas. Revisá las ventas marcadas.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Metrics Bar / Ledger Summary */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -1203,7 +1227,13 @@ export const SalesView: React.FC<SalesViewProps> = ({
                     </td>
 
                     <td className="px-4 py-3">
-                      {isPreventa && (
+                      <div className="flex flex-col items-start gap-1">
+                        {sale.paymentAlert && !sale.paymentAlert.dismissed && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-bold animate-pulse">
+                            <span>⚠ Revisar pago</span>
+                          </span>
+                        )}
+                        {isPreventa && (
                         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-900 text-[10px] font-bold">
                           <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-pulse" />
                           <span>Consulta (Sin stock)</span>
@@ -1229,6 +1259,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
                           Cancelada & Reintegrada
                         </span>
                       )}
+                      </div>
                     </td>
 
                     <td className="px-4 py-3 text-right">
@@ -1441,6 +1472,58 @@ export const SalesView: React.FC<SalesViewProps> = ({
 
             {/* Modal Body: Scrollable */}
             <div className="p-4 sm:p-6 overflow-y-auto space-y-6">
+              {/* Payment Alert Notice from MP Webhook */}
+              {modalSale.paymentAlert && (
+                <div className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs ${
+                  modalSale.paymentAlert.dismissed
+                    ? 'bg-neutral-50 border-neutral-200 text-neutral-600'
+                    : 'bg-amber-50 border-amber-300 text-amber-950'
+                }`}>
+                  <div className="flex items-start gap-3">
+                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                      modalSale.paymentAlert.dismissed
+                        ? 'bg-neutral-200 text-neutral-600'
+                        : 'bg-amber-100 text-amber-700'
+                    }`}>
+                      <span className="material-symbols-outlined text-[20px]">warning</span>
+                    </div>
+                    <div>
+                      <div className="font-bold text-xs flex items-center gap-2">
+                        <span>Aviso de Cobro: {modalSale.paymentAlert.type === 'underpaid' ? 'Pago Parcial' : modalSale.paymentAlert.type === 'overpaid' ? 'Sobrepago' : 'Pago en Venta Cancelada'}</span>
+                        {modalSale.paymentAlert.dismissed ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-200 text-neutral-700 font-semibold">
+                            Revisado
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 font-bold">
+                            Pendiente de revisión
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] mt-0.5 leading-relaxed">
+                        {modalSale.paymentAlert.message}
+                      </p>
+                    </div>
+                  </div>
+
+                  {!modalSale.paymentAlert.dismissed && onDismissPaymentAlert && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await onDismissPaymentAlert(modalSale.id);
+                        setModalSale((prev) => prev ? {
+                          ...prev,
+                          paymentAlert: prev.paymentAlert ? { ...prev.paymentAlert, dismissed: true } : undefined
+                        } : null);
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold shrink-0 transition-colors cursor-pointer shadow-xs"
+                    >
+                      Marcar como revisado
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* Preventa Banner (if sale is WhatsApp inquiry without stock discount) */}
               {modalSale.status === 'preventa' && (
                 <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">

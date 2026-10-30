@@ -1218,121 +1218,400 @@ app.post('/api/mercadopago/disconnect', async (req, res) => {
     return res.status(500).json({ error: err?.message || 'Error al desvincular Mercado Pago' });
   }
 });
+// ========================================================
+// -------- SECURE CHECKOUT & ABUSE RATE LIMITING --------
+// ========================================================
 
-// Endpoint to create a Checkout Pro Preference (Tarea 3)
+const MAX_QTY_PER_LINE = 100;
+const MAX_LINES_PER_ORDER = 30;
+
+// Rate limiting: max 5 checkouts per IP, per store, every 10 minutes
+interface RateLimitEntry {
+  count: number;
+  firstAttempt: number;
+}
+const checkoutRateLimits = new Map<string, RateLimitEntry>();
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_CHECKOUTS_PER_WINDOW = 5;
+
+// Periodic cleanup of rate limits every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of checkoutRateLimits.entries()) {
+    if (now - entry.firstAttempt > RATE_LIMIT_WINDOW_MS) {
+      checkoutRateLimits.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
+function checkRateLimit(ip: string, storeSlug: string): boolean {
+  const cleanIp = String(ip || 'unknown').trim();
+  const key = `${cleanIp}_${storeSlug}`;
+  const now = Date.now();
+  const entry = checkoutRateLimits.get(key);
+  if (!entry) {
+    checkoutRateLimits.set(key, { count: 1, firstAttempt: now });
+    return true;
+  }
+  if (now - entry.firstAttempt > RATE_LIMIT_WINDOW_MS) {
+    checkoutRateLimits.set(key, { count: 1, firstAttempt: now });
+    return true;
+  }
+  if (entry.count >= MAX_CHECKOUTS_PER_WINDOW) {
+    return false;
+  }
+  entry.count += 1;
+  return true;
+}
+
+function isStoreActiveAndOpen(storeData: any): boolean {
+  if (!storeData) return false;
+  if (storeData.active === false || storeData.status === 'suspended' || storeData.status === 'closed') {
+    return false;
+  }
+  if (storeData.planEndsAt) {
+    const endsAt = new Date(storeData.planEndsAt).getTime();
+    if (!isNaN(endsAt) && endsAt < Date.now()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// 1. Endpoint to create a Checkout Pro Preference (Mercado Pago)
 app.post('/api/mercadopago/create-preference', async (req, res) => {
   try {
+    const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip || 'unknown').split(',')[0].trim();
     const {
       items,
-      payer,
-      externalReference,
+      customer,
       storeSlug,
       storeName,
-      // accessToken from req.body is intentionally IGNORED per security rules
-      sandboxMode = false,
+      expectedTotal,
+      checkoutId,
       backUrls,
     } = req.body;
-
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'La orden debe contener al menos un producto.' });
-    }
 
     const cleanStoreSlug = String(storeSlug || '').toLowerCase().trim();
     if (!cleanStoreSlug) {
       return res.status(400).json({ error: 'Se requiere el identificador de la tienda (storeSlug).' });
     }
 
-    // 1. Obtener el token del comercio directamente desde Firestore usando firebase-admin
-    const token = await getStoreAccessToken(cleanStoreSlug);
+    if (!db) {
+      return res.status(500).json({ error: 'Base de datos no inicializada.' });
+    }
 
-    if (!token) {
-      return res.status(400).json({
-        error: 'La tienda no tiene una cuenta de Mercado Pago vinculada. Por favor vinculá tu cuenta desde el panel de administración.',
+    // Rate Limiting (máximo 5 checkouts por IP, por tienda, cada 10 minutos)
+    if (!checkRateLimit(clientIp, cleanStoreSlug)) {
+      return res.status(429).json({
+        error: 'Demasiados intentos de pedido. Por favor esperá unos minutos antes de intentar de nuevo.',
       });
     }
 
-    const storePath = cleanStoreSlug ? `/${cleanStoreSlug}` : '';
-    const defaultSuccessUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=approved&ext_ref=${encodeURIComponent(externalReference || '')}`;
-    const defaultFailureUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=failure&ext_ref=${encodeURIComponent(externalReference || '')}`;
-    const defaultPendingUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=pending&ext_ref=${encodeURIComponent(externalReference || '')}`;
+    // a) Verificar que la tienda existe y está habilitada
+    const storeRef = db.doc(`stores/${cleanStoreSlug}`);
+    const storeSnap = await storeRef.get();
+    if (!storeSnap.exists || !isStoreActiveAndOpen(storeSnap.data())) {
+      return res.status(400).json({
+        error: 'Esta tienda no está recibiendo pedidos por el momento.',
+      });
+    }
 
-    const formattedItems = items.map((it: any, index: number) => ({
-      id: String(it.id || it.productId || `item-${index + 1}`),
-      title: String(it.title || it.name || it.productName || 'Prenda').substring(0, 255),
-      description: String(it.description || `${it.productName || 'Prenda'} - Talle ${it.size || 'U'}, ${it.color || 'Único'}`).substring(0, 255),
-      quantity: Math.max(1, Math.floor(Number(it.quantity) || 1)),
-      unit_price: Math.max(1, Number(it.price || it.unitPrice || it.unit_price) || 100),
+    // Verificar token y estado de Mercado Pago para la tienda
+    const token = await getStoreAccessToken(cleanStoreSlug);
+    const settingsSnap = await db.doc(`stores/${cleanStoreSlug}/settings/current`).get();
+    const mpSettings = settingsSnap.exists ? settingsSnap.data()?.mercadoPago : null;
+    const isMpEnabled = token && mpSettings && mpSettings.enabled !== false;
+
+    if (!isMpEnabled) {
+      return res.status(400).json({
+        error: 'La tienda no tiene Mercado Pago vinculado o activo en este momento. Podés realizar tu pedido directamente por WhatsApp.',
+      });
+    }
+
+    // f) Validar y sanitizar datos del cliente
+    const customerName = String(customer?.name || '').trim().substring(0, 100);
+    const customerPhone = String(customer?.phone || '').trim().substring(0, 30);
+    const customerEmail = String(customer?.email || '').trim().substring(0, 100);
+    const customerNotes = String(customer?.notes || '').trim().substring(0, 500);
+
+    // c) Validar items
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'La orden debe contener al menos un producto.' });
+    }
+
+    // Agrupar items por productId y variantId
+    const groupedMap = new Map<string, { productId: string; variantId: string; quantity: number }>();
+    for (const it of items) {
+      const pid = String(it.productId || it.id || '').trim();
+      const vid = String(it.variantId || '').trim();
+      const qty = Math.floor(Number(it.quantity) || 0);
+
+      if (!pid || !vid) {
+        return res.status(400).json({ error: 'Cada ítem debe contener productId y variantId válidos.' });
+      }
+      if (qty < 1) {
+        return res.status(400).json({ error: 'La cantidad debe ser un entero mayor o igual a 1.' });
+      }
+
+      const key = `${pid}:::${vid}`;
+      const existing = groupedMap.get(key);
+      if (existing) {
+        existing.quantity += qty;
+      } else {
+        groupedMap.set(key, { productId: pid, variantId: vid, quantity: qty });
+      }
+    }
+
+    const groupedLines = Array.from(groupedMap.values());
+    if (groupedLines.length > MAX_LINES_PER_ORDER) {
+      return res.status(400).json({
+        error: `La orden no puede superar las ${MAX_LINES_PER_ORDER} líneas de productos.`,
+      });
+    }
+
+    for (const line of groupedLines) {
+      if (line.quantity > MAX_QTY_PER_LINE) {
+        return res.status(400).json({
+          error: `La cantidad máxima permitida por producto es de ${MAX_QTY_PER_LINE} unidades.`,
+        });
+      }
+    }
+
+    // Idempotencia: si llega el mismo checkoutId, buscar venta previa
+    const cleanCheckoutId = String(checkoutId || '').trim();
+    if (cleanCheckoutId) {
+      const existingSalesQuery = await db.collection(`stores/${cleanStoreSlug}/sales`)
+        .where('checkoutId', '==', cleanCheckoutId)
+        .limit(1)
+        .get();
+
+      if (!existingSalesQuery.empty) {
+        const existingSaleDoc = existingSalesQuery.docs[0];
+        const existingSale = existingSaleDoc.data();
+        if (existingSale.mpCheckoutUrl) {
+          console.log(`[Mercado Pago Preference Idempotency] Checkout ID "${cleanCheckoutId}" ya procesado previamente. Retornando preferencia existente.`);
+          return res.json({
+            id: existingSale.mpPreferenceId,
+            checkout_url: existingSale.mpCheckoutUrl,
+            init_point: existingSale.mpCheckoutUrl,
+            external_reference: existingSaleDoc.id,
+            alreadyProcessed: true,
+          });
+        }
+      }
+    }
+
+    // b, d, e) Validar productos, variantes, stock y precios desde Firestore
+    const changes: string[] = [];
+    const updatedCart: any[] = [];
+    let serverCalculatedTotal = 0;
+    const productsCache = new Map<string, any>();
+
+    for (const line of groupedLines) {
+      let prodSnap = productsCache.get(line.productId);
+      if (!prodSnap) {
+        prodSnap = await db.doc(`stores/${cleanStoreSlug}/products/${line.productId}`).get();
+        productsCache.set(line.productId, prodSnap);
+      }
+
+      if (!prodSnap.exists) {
+        changes.push(`Un producto del carrito ya no se encuentra disponible.`);
+        continue;
+      }
+
+      const prod = prodSnap.data();
+      if (prod.enabledOnline === false) {
+        changes.push(`El producto "${prod.name}" fue pausado para venta online.`);
+        continue;
+      }
+
+      const variant = (prod.variants || []).find((v: any) => v.id === line.variantId);
+      if (!variant || variant.enabled === false) {
+        changes.push(`Una de las variantes seleccionadas de "${prod.name}" ya no está disponible.`);
+        continue;
+      }
+
+      // Validar precio autoritativo
+      const rawPrice = Number(prod.discountPrice && prod.discountPrice > 0 ? prod.discountPrice : prod.price);
+      if (isNaN(rawPrice) || rawPrice <= 0) {
+        return res.status(400).json({
+          error: `El producto "${prod.name}" no tiene un precio válido asignado.`,
+        });
+      }
+      const unitPrice = Math.round(rawPrice * 100) / 100;
+
+      // Validar stock
+      const isUnlimited = Boolean(variant.unlimited);
+      const availableStock = isUnlimited ? 999999 : Math.max(0, Number(variant.stock || 0));
+
+      if (!isUnlimited && availableStock < line.quantity) {
+        if (availableStock <= 0) {
+          changes.push(`El producto "${prod.name}" (${variant.color || ''} / ${variant.size || ''}) se agotó.`);
+        } else {
+          changes.push(`Se ajustó la cantidad de "${prod.name}" (${variant.color || ''} / ${variant.size || ''}) de ${line.quantity} a ${availableStock} por stock disponible.`);
+          const lineTotal = Math.round(unitPrice * availableStock * 100) / 100;
+          serverCalculatedTotal += lineTotal;
+          updatedCart.push({
+            productId: line.productId,
+            productName: prod.name,
+            variantId: line.variantId,
+            color: variant.color || '',
+            size: variant.size || '',
+            price: unitPrice,
+            quantity: availableStock,
+            unlimited: false,
+          });
+        }
+        continue;
+      }
+
+      const lineTotal = Math.round(unitPrice * line.quantity * 100) / 100;
+      serverCalculatedTotal += lineTotal;
+      updatedCart.push({
+        productId: line.productId,
+        productName: prod.name,
+        variantId: line.variantId,
+        color: variant.color || '',
+        size: variant.size || '',
+        price: unitPrice,
+        quantity: line.quantity,
+        unlimited: isUnlimited,
+      });
+    }
+
+    serverCalculatedTotal = Math.round(serverCalculatedTotal * 100) / 100;
+
+    // Cambios de precio o stock detectados respecto al esperado
+    const hasPriceDiff = typeof expectedTotal === 'number' && Math.abs(serverCalculatedTotal - expectedTotal) > 0.05;
+    if (changes.length > 0 || hasPriceDiff) {
+      if (hasPriceDiff && changes.length === 0) {
+        changes.push(`El total del pedido cambió a $${serverCalculatedTotal.toLocaleString('es-AR')} según los precios vigentes.`);
+      }
+      return res.status(409).json({
+        error: 'cart_changed',
+        message: 'Actualizamos tu carrito',
+        changes,
+        newTotal: serverCalculatedTotal,
+        updatedCart,
+      });
+    }
+
+    // Transacción Firestore: generar ID, descontar stock (salvo ilimitadas) y crear venta
+    let generatedSaleId = '';
+    const nowIso = new Date().toISOString();
+    let createdSaleData: any = null;
+
+    await db.runTransaction(async (transaction) => {
+      // Generar ID único PED-XXXXXX con crypto
+      let foundUniqueId = false;
+      let candidateId = '';
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const randNum = crypto.randomInt(100000, 1000000).toString();
+        candidateId = `PED-${randNum}`;
+        const checkSnap = await transaction.get(db.doc(`stores/${cleanStoreSlug}/sales/${candidateId}`));
+        if (!checkSnap.exists) {
+          foundUniqueId = true;
+          break;
+        }
+      }
+      if (!foundUniqueId) {
+        candidateId = `PED-${Date.now().toString().slice(-6)}`;
+      }
+      generatedSaleId = candidateId;
+
+      // Descontar stock en la transacción
+      for (const item of updatedCart) {
+        if (item.unlimited) continue;
+        const pRef = db.doc(`stores/${cleanStoreSlug}/products/${item.productId}`);
+        const pSnap = await transaction.get(pRef);
+        if (!pSnap.exists) throw new Error('Producto no encontrado durante la transacción.');
+        const pData = pSnap.data() || {};
+        const variants = (pData.variants || []).map((v: any) => {
+          if (v.id === item.variantId && !v.unlimited) {
+            const currentStock = Math.max(0, Number(v.stock || 0));
+            if (currentStock < item.quantity) {
+              throw new Error(`Stock insuficiente para "${pData.name}".`);
+            }
+            return { ...v, stock: currentStock - item.quantity };
+          }
+          return v;
+        });
+
+        const totalStock = variants.reduce((acc: number, curr: any) => {
+          return acc + ((curr.enabled !== false && !curr.unlimited) ? Number(curr.stock || 0) : 0);
+        }, 0);
+
+        transaction.update(pRef, { variants, totalStock, updatedAt: nowIso });
+      }
+
+      // Preparar venta en estado pendiente_total
+      createdSaleData = {
+        id: generatedSaleId,
+        date: nowIso.slice(0, 10),
+        customer: customerName || 'Cliente Tienda Online',
+        contactInfo: customerPhone ? `Tel: ${customerPhone}` : (customerEmail || 'Venta Online'),
+        customerEmail: customerEmail || '',
+        customerPhone: customerPhone || '',
+        notes: customerNotes || '',
+        dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+        items: updatedCart.map((it: any) => ({
+          productId: it.productId,
+          productName: it.productName,
+          variantId: it.variantId,
+          size: it.size || '',
+          color: it.color || '',
+          attributeSummary: `${it.color || ''}${it.size ? ` / ${it.size}` : ''}`.trim(),
+          quantity: it.quantity,
+          unitPrice: it.price,
+          totalPrice: Math.round(it.price * it.quantity * 100) / 100,
+          unlimited: Boolean(it.unlimited),
+        })),
+        subtotal: serverCalculatedTotal,
+        total: serverCalculatedTotal,
+        paidTotal: 0,
+        pendingBalance: serverCalculatedTotal,
+        status: 'pendiente_total',
+        stockDiscounted: true,
+        channel: 'mercadopago',
+        checkoutId: cleanCheckoutId,
+        mpPaymentIds: [],
+        payments: [],
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      transaction.set(db.doc(`stores/${cleanStoreSlug}/sales/${generatedSaleId}`), createdSaleData);
+    });
+
+    // Crear la preferencia en Mercado Pago (SIN objeto payer)
+    const storePath = cleanStoreSlug ? `/${cleanStoreSlug}` : '';
+    const defaultSuccessUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=approved&ext_ref=${encodeURIComponent(generatedSaleId)}`;
+    const defaultFailureUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=failure&ext_ref=${encodeURIComponent(generatedSaleId)}`;
+    const defaultPendingUrl = `${PUBLIC_BASE_URL}${storePath}?payment_status=pending&ext_ref=${encodeURIComponent(generatedSaleId)}`;
+
+    const mpItems = updatedCart.map((it: any, index: number) => ({
+      id: String(it.productId || `item-${index + 1}`),
+      title: String(`${it.productName}${it.color || it.size ? ` (${it.color || ''} ${it.size || ''})` : ''}`).substring(0, 255).trim(),
+      quantity: it.quantity,
+      unit_price: it.price,
       currency_id: 'ARS',
-      picture_url: typeof it.image === 'string' && it.image.startsWith('http') ? it.image : undefined,
     }));
 
     const preferencePayload: Record<string, any> = {
-      items: formattedItems,
+      items: mpItems,
       back_urls: {
         success: backUrls?.success || defaultSuccessUrl,
         failure: backUrls?.failure || defaultFailureUrl,
         pending: backUrls?.pending || defaultPendingUrl,
       },
       auto_return: 'approved',
-      external_reference: String(externalReference || `order-${Date.now()}`),
+      external_reference: generatedSaleId,
       statement_descriptor: String(storeName || cleanStoreSlug || 'TIENDA').replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 16).toUpperCase(),
       binary_mode: false,
       marketplace_fee: 0,
+      notification_url: `${PUBLIC_BASE_URL}/api/mercadopago/webhook?storeSlug=${encodeURIComponent(cleanStoreSlug)}`,
     };
-
-    // Only attach payer if a real, valid email was explicitly typed by the customer (never inject fake fallback emails)
-    if (payer?.email && typeof payer.email === 'string' && payer.email.includes('@') && !payer.email.includes('testuser.com') && !payer.email.includes('prueba')) {
-      preferencePayload.payer = {
-        name: payer?.name ? String(payer.name).trim() : undefined,
-        surname: payer?.surname ? String(payer.surname).trim() : undefined,
-        email: payer.email.trim(),
-        phone: payer?.phone ? { number: String(payer.phone).replace(/[^0-9]/g, '') } : undefined,
-      };
-    }
-
-    // Add notification webhook URL using PUBLIC_BASE_URL
-    preferencePayload.notification_url = `${PUBLIC_BASE_URL}/api/mercadopago/webhook?storeSlug=${encodeURIComponent(cleanStoreSlug)}`;
-
-    // Creación o registro de la venta en Firestore con firebase-admin al crear la preferencia
-    if (db && externalReference && cleanStoreSlug) {
-      try {
-        const saleRef = db.doc(`stores/${cleanStoreSlug}/sales/${externalReference}`);
-        const saleSnap = await saleRef.get();
-        if (!saleSnap.exists) {
-          const calculatedTotal = formattedItems.reduce((acc, it) => acc + (it.unit_price * it.quantity), 0);
-          const nowIso = new Date().toISOString();
-          await saleRef.set({
-            id: externalReference,
-            date: nowIso.slice(0, 10),
-            customer: (payer?.name ? `${payer.name} ${payer.surname || ''}`.trim() : '') || 'Cliente Tienda Online',
-            contactInfo: payer?.phone ? String(payer.phone) : (payer?.email || 'Venta Online'),
-            customerEmail: payer?.email || '',
-            customerPhone: payer?.phone ? String(payer.phone) : '',
-            dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
-            items: formattedItems.map((it: any) => ({
-              productId: it.id || '',
-              productName: it.title || 'Prenda',
-              quantity: it.quantity || 1,
-              unitPrice: it.unit_price || 0,
-              totalPrice: (it.unit_price || 0) * (it.quantity || 1),
-            })),
-            subtotal: calculatedTotal,
-            total: calculatedTotal,
-            paidTotal: 0,
-            pendingBalance: calculatedTotal,
-            status: 'pendiente_total',
-            stockDiscounted: true,
-            channel: 'mercadopago',
-            payments: [],
-            createdAt: nowIso,
-            updatedAt: nowIso,
-          });
-          console.log(`[Mercado Pago Preference] Venta "${externalReference}" creada/asegurada en Firestore con firebase-admin.`);
-        }
-      } catch (saleErr) {
-        console.warn(`[Mercado Pago Preference] No se pudo crear/verificar venta "${externalReference}":`, saleErr);
-      }
-    }
 
     const mpResponse = await fetch('https://api.mercadopago.com/checkout/preferences', {
       method: 'POST',
@@ -1343,27 +1622,57 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       body: JSON.stringify(preferencePayload),
     });
 
-    const data: any = await mpResponse.json();
+    const mpData: any = await mpResponse.json();
 
-    if (!mpResponse.ok) {
-      console.error('Mercado Pago API error response:', data);
-      return res.status(mpResponse.status).json({
-        error: data.message || 'Error al generar la preferencia en Mercado Pago',
-        details: data,
+    if (!mpResponse.ok || !mpData.init_point) {
+      console.error('[Mercado Pago Preference Error] Falló creación de preferencia:', mpData);
+      // REVERTIR el descuento de stock y cancelar la venta en Firestore
+      try {
+        await db.runTransaction(async (rollbackTx) => {
+          for (const item of updatedCart) {
+            if (item.unlimited) continue;
+            const pRef = db.doc(`stores/${cleanStoreSlug}/products/${item.productId}`);
+            const pSnap = await rollbackTx.get(pRef);
+            if (pSnap.exists) {
+              const pData = pSnap.data() || {};
+              const variants = (pData.variants || []).map((v: any) => {
+                if (v.id === item.variantId && !v.unlimited) {
+                  return { ...v, stock: Number(v.stock || 0) + item.quantity };
+                }
+                return v;
+              });
+              const totalStock = variants.reduce((acc: number, curr: any) => acc + ((curr.enabled !== false && !curr.unlimited) ? Number(curr.stock || 0) : 0), 0);
+              rollbackTx.update(pRef, { variants, totalStock });
+            }
+          }
+          rollbackTx.delete(db.doc(`stores/${cleanStoreSlug}/sales/${generatedSaleId}`));
+        });
+        console.log(`[Mercado Pago Rollback] Stock y venta "${generatedSaleId}" revertidos exitosamente tras error de MP.`);
+      } catch (rollbackErr) {
+        console.error('[Mercado Pago Rollback Error] No se pudo revertir:', rollbackErr);
+      }
+
+      return res.status(mpResponse.status || 500).json({
+        error: mpData.message || 'Error al conectar con Mercado Pago. Por favor intentá de nuevo o pedí por WhatsApp.',
+        details: mpData,
       });
     }
 
-    // Usar SIEMPRE data.init_point como URL de checkout, también en sandbox
-    const isSandbox = Boolean(sandboxMode) || (typeof token === 'string' && token.startsWith('TEST-'));
-    const checkoutUrl = data.init_point;
+    // Actualizar venta con los datos de preferencia devueltos
+    await db.doc(`stores/${cleanStoreSlug}/sales/${generatedSaleId}`).update({
+      mpPreferenceId: mpData.id,
+      mpCheckoutUrl: mpData.init_point,
+      updatedAt: new Date().toISOString(),
+    });
 
-    console.log(`[Mercado Pago Preference Created] Preference ID: "${data.id}", Collector ID: "${data.collector_id}", Store: "${cleanStoreSlug}", External Reference: "${preferencePayload.external_reference}" | Sandbox: ${isSandbox}`);
+    console.log(`[Mercado Pago Secure Preference Created] ID: "${mpData.id}", Venta: "${generatedSaleId}", Store: "${cleanStoreSlug}", Total: $${serverCalculatedTotal}`);
 
     return res.json({
-      id: data.id,
-      init_point: data.init_point,
-      checkout_url: checkoutUrl,
-      external_reference: preferencePayload.external_reference,
+      id: mpData.id,
+      init_point: mpData.init_point,
+      checkout_url: mpData.init_point,
+      external_reference: generatedSaleId,
+      sale: createdSaleData,
     });
   } catch (error: any) {
     console.error('Error in /api/mercadopago/create-preference:', error);
@@ -1373,7 +1682,278 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
   }
 });
 
-// Mercado Pago Webhook / IPN notification receiver (Tarea 2)
+// 2. Endpoint to process WhatsApp Orders (Preventa segura en el servidor)
+app.post('/api/checkout/whatsapp-order', async (req, res) => {
+  try {
+    const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip || 'unknown').split(',')[0].trim();
+    const {
+      items,
+      customer,
+      storeSlug,
+      expectedTotal,
+      checkoutId,
+    } = req.body;
+
+    const cleanStoreSlug = String(storeSlug || '').toLowerCase().trim();
+    if (!cleanStoreSlug) {
+      return res.status(400).json({ error: 'Se requiere el identificador de la tienda (storeSlug).' });
+    }
+
+    if (!db) {
+      return res.status(500).json({ error: 'Base de datos no inicializada.' });
+    }
+
+    // Rate Limiting (máximo 5 checkouts por IP, por tienda, cada 10 minutos)
+    if (!checkRateLimit(clientIp, cleanStoreSlug)) {
+      return res.status(429).json({
+        error: 'Demasiados intentos de pedido. Por favor esperá unos minutos antes de intentar de nuevo.',
+      });
+    }
+
+    // a) Verificar que la tienda existe y está habilitada
+    const storeRef = db.doc(`stores/${cleanStoreSlug}`);
+    const storeSnap = await storeRef.get();
+    if (!storeSnap.exists || !isStoreActiveAndOpen(storeSnap.data())) {
+      return res.status(400).json({
+        error: 'Esta tienda no está recibiendo pedidos por el momento.',
+      });
+    }
+
+    // f) Validar y sanitizar datos del cliente
+    const customerName = String(customer?.name || '').trim().substring(0, 100);
+    const customerPhone = String(customer?.phone || '').trim().substring(0, 30);
+    const customerEmail = String(customer?.email || '').trim().substring(0, 100);
+    const customerNotes = String(customer?.notes || '').trim().substring(0, 500);
+
+    // c) Validar items
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'La orden debe contener al menos un producto.' });
+    }
+
+    // Agrupar items por productId y variantId
+    const groupedMap = new Map<string, { productId: string; variantId: string; quantity: number }>();
+    for (const it of items) {
+      const pid = String(it.productId || it.id || '').trim();
+      const vid = String(it.variantId || '').trim();
+      const qty = Math.floor(Number(it.quantity) || 0);
+
+      if (!pid || !vid) {
+        return res.status(400).json({ error: 'Cada ítem debe contener productId y variantId válidos.' });
+      }
+      if (qty < 1) {
+        return res.status(400).json({ error: 'La cantidad debe ser un entero mayor o igual a 1.' });
+      }
+
+      const key = `${pid}:::${vid}`;
+      const existing = groupedMap.get(key);
+      if (existing) {
+        existing.quantity += qty;
+      } else {
+        groupedMap.set(key, { productId: pid, variantId: vid, quantity: qty });
+      }
+    }
+
+    const groupedLines = Array.from(groupedMap.values());
+    if (groupedLines.length > MAX_LINES_PER_ORDER) {
+      return res.status(400).json({
+        error: `La orden no puede superar las ${MAX_LINES_PER_ORDER} líneas de productos.`,
+      });
+    }
+
+    for (const line of groupedLines) {
+      if (line.quantity > MAX_QTY_PER_LINE) {
+        return res.status(400).json({
+          error: `La cantidad máxima permitida por producto es de ${MAX_QTY_PER_LINE} unidades.`,
+        });
+      }
+    }
+
+    // Idempotencia: si llega el mismo checkoutId, retornar venta existente
+    const cleanCheckoutId = String(checkoutId || '').trim();
+    if (cleanCheckoutId) {
+      const existingSalesQuery = await db.collection(`stores/${cleanStoreSlug}/sales`)
+        .where('checkoutId', '==', cleanCheckoutId)
+        .limit(1)
+        .get();
+
+      if (!existingSalesQuery.empty) {
+        const existingSaleDoc = existingSalesQuery.docs[0];
+        console.log(`[WhatsApp Order Idempotency] Checkout ID "${cleanCheckoutId}" ya procesado previamente.`);
+        return res.json({
+          success: true,
+          sale: existingSaleDoc.data(),
+          alreadyProcessed: true,
+        });
+      }
+    }
+
+    // Validar productos, variantes, stock y precios autoritativos desde Firestore
+    const changes: string[] = [];
+    const updatedCart: any[] = [];
+    let serverCalculatedTotal = 0;
+    const productsCache = new Map<string, any>();
+
+    for (const line of groupedLines) {
+      let prodSnap = productsCache.get(line.productId);
+      if (!prodSnap) {
+        prodSnap = await db.doc(`stores/${cleanStoreSlug}/products/${line.productId}`).get();
+        productsCache.set(line.productId, prodSnap);
+      }
+
+      if (!prodSnap.exists) {
+        changes.push(`Un producto del pedido ya no está disponible.`);
+        continue;
+      }
+
+      const prod = prodSnap.data();
+      if (prod.enabledOnline === false) {
+        changes.push(`El producto "${prod.name}" fue pausado para venta online.`);
+        continue;
+      }
+
+      const variant = (prod.variants || []).find((v: any) => v.id === line.variantId);
+      if (!variant || variant.enabled === false) {
+        changes.push(`Una de las variantes de "${prod.name}" ya no está disponible.`);
+        continue;
+      }
+
+      const rawPrice = Number(prod.discountPrice && prod.discountPrice > 0 ? prod.discountPrice : prod.price);
+      if (isNaN(rawPrice) || rawPrice <= 0) {
+        return res.status(400).json({
+          error: `El producto "${prod.name}" no tiene un precio válido asignado.`,
+        });
+      }
+      const unitPrice = Math.round(rawPrice * 100) / 100;
+
+      const isUnlimited = Boolean(variant.unlimited);
+      const availableStock = isUnlimited ? 999999 : Math.max(0, Number(variant.stock || 0));
+
+      if (!isUnlimited && availableStock < line.quantity) {
+        if (availableStock <= 0) {
+          changes.push(`El producto "${prod.name}" (${variant.color || ''} / ${variant.size || ''}) se agotó.`);
+        } else {
+          changes.push(`Se ajustó la cantidad de "${prod.name}" (${variant.color || ''} / ${variant.size || ''}) de ${line.quantity} a ${availableStock} por stock.`);
+          const lineTotal = Math.round(unitPrice * availableStock * 100) / 100;
+          serverCalculatedTotal += lineTotal;
+          updatedCart.push({
+            productId: line.productId,
+            productName: prod.name,
+            variantId: line.variantId,
+            color: variant.color || '',
+            size: variant.size || '',
+            price: unitPrice,
+            quantity: availableStock,
+            unlimited: false,
+          });
+        }
+        continue;
+      }
+
+      const lineTotal = Math.round(unitPrice * line.quantity * 100) / 100;
+      serverCalculatedTotal += lineTotal;
+      updatedCart.push({
+        productId: line.productId,
+        productName: prod.name,
+        variantId: line.variantId,
+        color: variant.color || '',
+        size: variant.size || '',
+        price: unitPrice,
+        quantity: line.quantity,
+        unlimited: isUnlimited,
+      });
+    }
+
+    serverCalculatedTotal = Math.round(serverCalculatedTotal * 100) / 100;
+
+    const hasPriceDiff = typeof expectedTotal === 'number' && Math.abs(serverCalculatedTotal - expectedTotal) > 0.05;
+    if (changes.length > 0 || hasPriceDiff) {
+      if (hasPriceDiff && changes.length === 0) {
+        changes.push(`El total del pedido cambió a $${serverCalculatedTotal.toLocaleString('es-AR')} según los precios vigentes.`);
+      }
+      return res.status(409).json({
+        error: 'cart_changed',
+        message: 'Actualizamos tu carrito',
+        changes,
+        newTotal: serverCalculatedTotal,
+        updatedCart,
+      });
+    }
+
+    // Transacción Firestore para crear preventa (SIN descontar stock)
+    let generatedSaleId = '';
+    const nowIso = new Date().toISOString();
+    let createdSaleData: any = null;
+
+    await db.runTransaction(async (transaction) => {
+      let foundUniqueId = false;
+      let candidateId = '';
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const randNum = crypto.randomInt(100000, 1000000).toString();
+        candidateId = `PED-${randNum}`;
+        const checkSnap = await transaction.get(db.doc(`stores/${cleanStoreSlug}/sales/${candidateId}`));
+        if (!checkSnap.exists) {
+          foundUniqueId = true;
+          break;
+        }
+      }
+      if (!foundUniqueId) {
+        candidateId = `PED-${Date.now().toString().slice(-6)}`;
+      }
+      generatedSaleId = candidateId;
+
+      createdSaleData = {
+        id: generatedSaleId,
+        date: nowIso.slice(0, 10),
+        customer: customerName || 'Consulta WhatsApp',
+        contactInfo: customerPhone ? `Tel: ${customerPhone}` : (customerEmail || 'WhatsApp'),
+        customerEmail: customerEmail || '',
+        customerPhone: customerPhone || '',
+        notes: customerNotes || '',
+        dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+        items: updatedCart.map((it: any) => ({
+          productId: it.productId,
+          productName: it.productName,
+          variantId: it.variantId,
+          size: it.size || '',
+          color: it.color || '',
+          attributeSummary: `${it.color || ''}${it.size ? ` / ${it.size}` : ''}`.trim(),
+          quantity: it.quantity,
+          unitPrice: it.price,
+          totalPrice: Math.round(it.price * it.quantity * 100) / 100,
+          unlimited: Boolean(it.unlimited),
+        })),
+        subtotal: serverCalculatedTotal,
+        total: serverCalculatedTotal,
+        paidTotal: 0,
+        pendingBalance: serverCalculatedTotal,
+        status: 'preventa',
+        stockDiscounted: false,
+        channel: 'whatsapp',
+        checkoutId: cleanCheckoutId,
+        mpPaymentIds: [],
+        payments: [],
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      transaction.set(db.doc(`stores/${cleanStoreSlug}/sales/${generatedSaleId}`), createdSaleData);
+    });
+
+    console.log(`[WhatsApp Order Created] Venta "${generatedSaleId}" registrada en preventa para "${cleanStoreSlug}", Total: $${serverCalculatedTotal}`);
+
+    return res.json({
+      success: true,
+      sale: createdSaleData,
+    });
+  } catch (error: any) {
+    console.error('Error in /api/checkout/whatsapp-order:', error);
+    return res.status(500).json({
+      error: error?.message || 'Error interno al registrar el pedido por WhatsApp.',
+    });
+  }
+});
+
+// 3. Mercado Pago Webhook / IPN notification receiver
 app.post('/api/mercadopago/webhook', async (req, res) => {
   try {
     const { type, data, action } = req.body || {};
@@ -1399,6 +1979,39 @@ app.post('/api/mercadopago/webhook', async (req, res) => {
     if (!storeSlug) {
       console.warn('[Mercado Pago Webhook] Warning: storeSlug query param faltante en la URL del webhook.');
       return res.status(200).json({ status: 'ok', warning: 'missing_store_slug' });
+    }
+
+    // Validación de firma webhook (x-signature)
+    const xSignature = (req.headers['x-signature'] || '') as string;
+    const xRequestId = (req.headers['x-request-id'] || '') as string;
+
+    if (xSignature && typeof xSignature === 'string' && xSignature.trim()) {
+      const creds = getMercadoPagoCredentials(storeSlug);
+      const webhookSecret = creds.isSandbox
+        ? (process.env.MERCADOPAGO_SANDBOX_WEBHOOK_SECRET || process.env.MERCADOPAGO_WEBHOOK_SECRET || '').trim()
+        : (process.env.MERCADOPAGO_WEBHOOK_SECRET || '').trim();
+
+      if (!webhookSecret) {
+        console.warn(`[Mercado Pago Webhook] Advertencia: MERCADOPAGO_WEBHOOK_SECRET no configurado para ${creds.isSandbox ? 'sandbox' : 'producción'}. Se continúa verificación contra la API de MP.`);
+      } else {
+        const parts = xSignature.split(',').reduce((acc: any, part: string) => {
+          const [k, v] = part.split('=');
+          if (k && v) acc[k.trim()] = v.trim();
+          return acc;
+        }, {});
+
+        const ts = parts.ts;
+        const v1 = parts.v1;
+        if (ts && v1) {
+          const manifest = `id:${paymentId};request-id:${xRequestId};ts:${ts};`;
+          const computedHash = crypto.createHmac('sha256', webhookSecret).update(manifest).digest('hex');
+          if (computedHash !== v1) {
+            console.warn(`[Mercado Pago Webhook] Firma HMAC inválida para paymentId=${paymentId}.`);
+            return res.status(401).json({ error: 'Firma de webhook inválida' });
+          }
+          console.log(`[Mercado Pago Webhook] Firma HMAC verificada exitosamente.`);
+        }
+      }
     }
 
     // 1. Obtener el token del comercio desde Firestore usando firebase-admin
@@ -1430,7 +2043,7 @@ app.post('/api/mercadopago/webhook', async (req, res) => {
     // Log 3: Estado del pago
     console.log(`[Mercado Pago Webhook] 3. Estado del pago ${paymentId}: "${paymentStatus}" | external_reference: "${extRef || 'none'}"`);
 
-    // 3. Solo marcar como cobrada_total si status es 'approved' y external_reference existe en la tienda
+    // 3. Solo registrar pagos approved
     if (paymentStatus === 'approved' && extRef) {
       if (!db) {
         console.error('[Mercado Pago Webhook] 4. Venta actualizada: NO (Error de base de datos: Firestore Admin no inicializado).');
@@ -1442,25 +2055,92 @@ app.post('/api/mercadopago/webhook', async (req, res) => {
           if (!saleSnap.exists) {
             console.warn(`[Mercado Pago Webhook] 4. Venta actualizada: NO (La venta "${extRef}" no existe en la tienda "${storeSlug}").`);
           } else {
+            const saleData = saleSnap.data() || {};
+            const existingPaymentIds: string[] = Array.isArray(saleData.mpPaymentIds) ? saleData.mpPaymentIds : [];
+
+            // Idempotencia: si este paymentId ya fue registrado, no procesar de nuevo
+            if (existingPaymentIds.includes(String(paymentId))) {
+              console.log(`[Mercado Pago Webhook] 4. Pago ${paymentId} ya registrado previamente en la venta "${extRef}". Idempotencia aplicada.`);
+              return res.status(200).json({ status: 'ok', already_processed: true });
+            }
+
             const nowIso = new Date().toISOString();
-            const amount = Number(paymentData.transaction_amount) || 0;
-            await saleRef.update({
-              status: 'cobrada_total',
-              paidTotal: amount,
-              pendingBalance: 0,
+            const transactionAmount = Number(paymentData.transaction_amount) || 0;
+            const currentPayments: any[] = Array.isArray(saleData.payments) ? saleData.payments : [];
+
+            const newPaymentRecord = {
+              id: String(paymentId),
+              amount: transactionAmount,
+              date: paymentData.date_approved || nowIso,
+              method: 'Mercado Pago',
+              status: 'Confirmado',
+            };
+
+            const updatedPayments = [...currentPayments, newPaymentRecord];
+            const newPaidTotal = updatedPayments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
+            const saleTotal = Number(saleData.total) || 0;
+            const isFullyPaid = newPaidTotal >= saleTotal;
+
+            // Determinar status de venta y alertas para el dueño
+            let newSaleStatus = saleData.status;
+            let paymentAlert = saleData.paymentAlert || null;
+
+            if (saleData.status === 'cancelada') {
+              // Pago sobre una venta ya cancelada: registrar pago, NO reactivar venta ni descontar stock
+              paymentAlert = {
+                type: 'cancelled_sale_paid',
+                message: `Se acreditó un pago de $${transactionAmount.toLocaleString('es-AR')} en una venta cancelada. El stock ya se repuso. Decidí si reembolsás o reactivás la venta.`,
+                createdAt: nowIso,
+                dismissed: false,
+              };
+            } else {
+              newSaleStatus = isFullyPaid ? 'cobrada_total' : 'cobro_parcial';
+
+              if (transactionAmount < saleTotal) {
+                paymentAlert = {
+                  type: 'underpaid',
+                  message: `Mercado Pago acreditó $${transactionAmount.toLocaleString('es-AR')}, pero el total de la venta es $${saleTotal.toLocaleString('es-AR')}. Se registró como cobro parcial. Revisá si corresponde pedir la diferencia o reembolsar.`,
+                  createdAt: nowIso,
+                  dismissed: false,
+                };
+              } else if (transactionAmount > saleTotal) {
+                const diff = transactionAmount - saleTotal;
+                paymentAlert = {
+                  type: 'overpaid',
+                  message: `Mercado Pago acreditó $${transactionAmount.toLocaleString('es-AR')}, más que el total $${saleTotal.toLocaleString('es-AR')} (diferencia $${diff.toLocaleString('es-AR')}). Revisá si corresponde reembolsar la diferencia.`,
+                  createdAt: nowIso,
+                  dismissed: false,
+                };
+              }
+            }
+
+            const updatedMpPaymentIds = [...existingPaymentIds, String(paymentId)];
+
+            const updatePayload: Record<string, any> = {
+              payments: updatedPayments,
+              paidTotal: newPaidTotal,
+              pendingBalance: Math.max(0, saleTotal - newPaidTotal),
+              status: newSaleStatus,
+              mpPaymentIds: updatedMpPaymentIds,
               updatedAt: nowIso,
-            });
-            console.log(`[Mercado Pago Webhook] 4. Venta actualizada: SÍ (Venta "${extRef}" de la tienda "${storeSlug}" actualizada a 'cobrada_total').`);
+            };
+
+            if (paymentAlert) {
+              updatePayload.paymentAlert = paymentAlert;
+            }
+
+            await saleRef.update(updatePayload);
+            console.log(`[Mercado Pago Webhook] 4. Venta actualizada: SÍ (Venta "${extRef}" de "${storeSlug}" actualizada a status="${newSaleStatus}", paidTotal=$${newPaidTotal}).`);
           }
         } catch (firestoreError: any) {
-          console.error(`[Mercado Pago Webhook] 4. Venta actualizada: NO (Error de permisos u otro error de Firestore: ${firestoreError?.message || firestoreError}).`);
+          console.error(`[Mercado Pago Webhook] 4. Venta actualizada: NO (Error en Firestore: ${firestoreError?.message || firestoreError}).`);
         }
       }
     } else {
       console.log(`[Mercado Pago Webhook] 4. Venta no actualizada (Estado no aprobado o sin external_reference: status=${paymentStatus}).`);
     }
 
-    // 5. El endpoint sigue respondiendo 200 rápido siempre
+    // 5. El endpoint responde 200 rápido siempre
     return res.status(200).json({ status: 'ok', received: true });
   } catch (err: any) {
     console.error('[Mercado Pago Webhook Error]:', err?.message || err);

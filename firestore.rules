@@ -70,11 +70,10 @@ service cloud.firestore {
       }
       
       // VENTAS DE TIENDA:
-      // Checkout público puede crear ventas (allow create)
-      // Lectura, actualización y borrado SOLO para el dueño de la tienda o superadmin
+      // Creación, lectura, actualización y borrado SOLO para el dueño de la tienda o superadmin
+      // (Los checkouts públicos de Mercado Pago y WhatsApp se crean exclusivamente en el servidor con Firebase Admin)
       match /sales/{saleId} {
-        allow create: if true;
-        allow read, update, delete: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
+        allow create, read, update, delete: if isSuperAdmin() || isStoreOwner(get(/databases/$(database)/documents/stores/$(storeId)).data);
       }
 
       // DOCUMENTOS PRIVADOS:

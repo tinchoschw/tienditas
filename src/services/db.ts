@@ -1875,3 +1875,26 @@ export async function updateSaleItems(
 
   return { sale: updatedSale, sales: updatedSales, products: updatedProducts };
 }
+
+export async function dismissSalePaymentAlert(storeSlug: string, saleId: string): Promise<void> {
+  const cleanStore = normalizeStoreId(storeSlug);
+  const salesKey = getSalesKey(cleanStore);
+  const sales = getLocalItem<Sale[]>(salesKey, cleanStore === 'apolo' ? INITIAL_SALES : []);
+  const updated = sales.map((s) => {
+    if (s.id === saleId && s.paymentAlert) {
+      return { ...s, paymentAlert: { ...s.paymentAlert, dismissed: true } };
+    }
+    return s;
+  });
+  setLocalItem(salesKey, updated);
+
+  try {
+    const sRef = doc(db, 'stores', cleanStore, 'sales', saleId);
+    await updateDoc(sRef, {
+      'paymentAlert.dismissed': true,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    console.warn('Could not dismiss payment alert in Firestore:', err);
+  }
+}

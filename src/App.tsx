@@ -34,6 +34,7 @@ import {
   updateSaleItems,
   confirmPreventaSale,
   confirmMercadoPagoOrder,
+  dismissSalePaymentAlert,
   getStoreSettingsFromDb,
   getSettingsKey,
   getProductsKey,
@@ -849,6 +850,16 @@ function MainContent() {
                   if (res?.sales) setSales(res.sales);
                   return res?.sale;
                 }}
+                onDismissPaymentAlert={async (saleId) => {
+                  await dismissSalePaymentAlert(currentStoreSlug, saleId);
+                  setSales((prev) =>
+                    prev.map((s) =>
+                      s.id === saleId
+                        ? { ...s, paymentAlert: s.paymentAlert ? { ...s.paymentAlert, dismissed: true } : undefined }
+                        : s
+                    )
+                  );
+                }}
               />
             )}
 
@@ -904,15 +915,10 @@ function MainContent() {
           onUpdateQuantity={handleUpdateCartQuantity}
           onRemoveItem={handleRemoveCartItem}
           onClearCart={handleClearCart}
+          onSyncCart={(updatedCart) => setCart(updatedCart)}
           settings={settings}
           featureFlags={activeStore?.featureFlags}
           storeSlug={currentStoreSlug}
-          onRecordSale={async (saleData) => {
-            const res = await createSale(currentStoreSlug, saleData);
-            if (res?.products) setProducts(res.products);
-            if (res?.sales) setSales(res.sales);
-            return res?.sale;
-          }}
         />
       )}
 
