@@ -102,9 +102,9 @@ service cloud.firestore {
       allow write: if isSuperAdmin();
     }
 
-    // FEEDBACK DE CIERRE Y FRIENDS & FAMILY
+    // FEEDBACK DE TIENDAS, CIERRE Y SUGERENCIAS
     match /feedback/{feedbackId} {
-      allow create: if isSignedIn();
+      allow create: if true;
       allow read, delete, update: if isSuperAdmin();
     }
 

@@ -1473,7 +1473,7 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       const unitPrice = Math.round(rawPrice * 100) / 100;
 
       // Validar stock
-      const isUnlimited = Boolean(variant.unlimited);
+      const isUnlimited = Boolean(variant.unlimited || prod.isUnlimited);
       const availableStock = isUnlimited ? 999999 : Math.max(0, Number(variant.stock || 0));
 
       if (!isUnlimited && availableStock < line.quantity) {
@@ -1579,7 +1579,7 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       // Preparar venta en estado pendiente_total
       createdSaleData = {
         id: generatedSaleId,
-        date: nowIso.slice(0, 10),
+        date: nowIso,
         customer: customerName || 'Cliente Tienda Online',
         contactInfo: customerPhone ? `Tel: ${customerPhone}` : (customerEmail || 'Venta Online'),
         customerEmail: customerEmail || '',
@@ -1856,7 +1856,7 @@ app.post('/api/checkout/whatsapp-order', async (req, res) => {
       }
       const unitPrice = Math.round(rawPrice * 100) / 100;
 
-      const isUnlimited = Boolean(variant.unlimited);
+      const isUnlimited = Boolean(variant.unlimited || prod.isUnlimited);
       const availableStock = isUnlimited ? 999999 : Math.max(0, Number(variant.stock || 0));
 
       if (!isUnlimited && availableStock < line.quantity) {
@@ -1934,7 +1934,7 @@ app.post('/api/checkout/whatsapp-order', async (req, res) => {
 
       createdSaleData = {
         id: generatedSaleId,
-        date: nowIso.slice(0, 10),
+        date: nowIso,
         customer: customerName || 'Consulta WhatsApp',
         contactInfo: customerPhone ? `Tel: ${customerPhone}` : (customerEmail || 'WhatsApp'),
         customerEmail: customerEmail || '',

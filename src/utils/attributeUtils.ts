@@ -9,9 +9,10 @@ export function ensureStoreAttributes(settings?: Partial<StoreSettings> | null):
   attribute1: StoreAttribute;
   attribute2: StoreAttribute;
 } {
-  const safeSettings = (settings || INITIAL_SETTINGS) as StoreSettings;
-  let attr1: StoreAttribute = safeSettings.attribute1
-    ? { ...safeSettings.attribute1 }
+  const safeSettings = (settings || INITIAL_SETTINGS) as StoreSettings & { attr1?: StoreAttribute; attr2?: StoreAttribute };
+  const rawAttr1 = safeSettings.attribute1 || safeSettings.attr1;
+  let attr1: StoreAttribute = rawAttr1
+    ? { ...rawAttr1, id: 'attr1' }
     : {
         id: 'attr1',
         name: 'Color',
@@ -27,8 +28,9 @@ export function ensureStoreAttributes(settings?: Partial<StoreSettings> | null):
         hideUnusedWarning: false
       };
 
-  let attr2: StoreAttribute = safeSettings.attribute2
-    ? { ...safeSettings.attribute2 }
+  const rawAttr2 = safeSettings.attribute2 || safeSettings.attr2;
+  let attr2: StoreAttribute = rawAttr2
+    ? { ...rawAttr2, id: 'attr2' }
     : {
         id: 'attr2',
         name: 'Talle',

@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Store, StorePeriod, StorePlan, StoreStatus } from '../types';
+import { Store, StorePeriod, StorePlan, StoreStatus, Rubro } from '../types';
 import { 
   subscribeStorePeriods, 
   createStorePeriod, 
   updateStorePeriod, 
   addStoreExtension, 
-  updateStorePlanAndStatus 
+  updateStorePlanAndStatus,
+  subscribeRubros 
 } from '../services/db';
 
 interface StoreSubscriptionManagerModalProps {
@@ -27,14 +28,23 @@ export const StoreSubscriptionManagerModal: React.FC<StoreSubscriptionManagerMod
 }) => {
   const [activeTab, setActiveTab] = useState<'plan' | 'payments' | 'extensions'>('plan');
   
-  // Store form state
+  // Store profile state
+  const [storeName, setStoreName] = useState<string>(store.name || '');
+  const [ownerFirstName, setOwnerFirstName] = useState<string>(store.ownerFirstName || '');
+  const [ownerEmail, setOwnerEmail] = useState<string>(store.ownerEmail || '');
+  const [whatsappNumber, setWhatsappNumber] = useState<string>(store.whatsappNumber || store.ownerPhone || '');
+  const [rubro, setRubro] = useState<string>(store.rubro || 'Indumentaria');
+  const [isSandbox, setIsSandbox] = useState<boolean>(!!store.isSandbox);
+
+  // Rubros list for combo selection
+  const [availableRubros, setAvailableRubros] = useState<Rubro[]>([]);
+
+  // Subscription state
   const [currentPlan, setCurrentPlan] = useState<StorePlan>(store.plan || 'trial');
   const [currentStatus, setCurrentStatus] = useState<StoreStatus>(store.status || (store.active !== false ? 'active' : 'suspended'));
   const [planEndsAt, setPlanEndsAt] = useState<string>(
     store.planEndsAt ? store.planEndsAt.split('T')[0] : ''
   );
-  const [ownerEmail, setOwnerEmail] = useState<string>(store.ownerEmail || '');
-  const [rubro, setRubro] = useState<string>(store.rubro || '');
   const [isSavingPlan, setIsSavingPlan] = useState(false);
 
   // Quick Extension State
@@ -49,6 +59,14 @@ export const StoreSubscriptionManagerModal: React.FC<StoreSubscriptionManagerMod
   const [newPeriodNote, setNewPeriodNote] = useState<string>('');
 
   useEffect(() => {
+    if (!isOpen) return;
+    const unsub = subscribeRubros((list) => {
+      setAvailableRubros(list);
+    });
+    return () => unsub();
+  }, [isOpen]);
+
+  useEffect(() => {
     if (!isOpen || !store?.id) return;
     const unsub = subscribeStorePeriods(store.id, (list) => {
       setPeriods(list);
@@ -57,11 +75,15 @@ export const StoreSubscriptionManagerModal: React.FC<StoreSubscriptionManagerMod
   }, [isOpen, store?.id]);
 
   useEffect(() => {
+    setStoreName(store.name || '');
+    setOwnerFirstName(store.ownerFirstName || '');
+    setOwnerEmail(store.ownerEmail || '');
+    setWhatsappNumber(store.whatsappNumber || store.ownerPhone || '');
+    setRubro(store.rubro || 'Indumentaria');
+    setIsSandbox(!!store.isSandbox);
     setCurrentPlan(store.plan || 'trial');
     setCurrentStatus(store.status || (store.active !== false ? 'active' : 'suspended'));
     setPlanEndsAt(store.planEndsAt ? store.planEndsAt.split('T')[0] : '');
-    setOwnerEmail(store.ownerEmail || '');
-    setRubro(store.rubro || '');
   }, [store]);
 
   if (!isOpen) return null;
@@ -72,17 +94,22 @@ export const StoreSubscriptionManagerModal: React.FC<StoreSubscriptionManagerMod
     try {
       const finalEndsAt = planEndsAt ? new Date(planEndsAt).toISOString() : '';
       const updated = await updateStorePlanAndStatus(store.id, {
+        name: storeName.trim(),
+        ownerFirstName: ownerFirstName.trim(),
+        ownerEmail: ownerEmail.trim().toLowerCase(),
+        whatsappNumber: whatsappNumber.trim(),
+        ownerPhone: whatsappNumber.trim(),
+        rubro: rubro.trim(),
+        isSandbox,
         plan: currentPlan,
         status: currentStatus,
-        planEndsAt: finalEndsAt,
-        ownerEmail: ownerEmail.trim().toLowerCase(),
-        rubro: rubro.trim()
+        planEndsAt: finalEndsAt
       });
       if (updated) onStoreUpdated(updated);
-      showToast('Suscripción y estado actualizados correctamente.');
+      showToast('Datos del comercio y suscripción actualizados.');
     } catch (err: any) {
       console.error(err);
-      showToast('Error al guardar cambios de suscripción.');
+      showToast('Error al guardar cambios de la tienda.');
     } finally {
       setIsSavingPlan(false);
     }
@@ -231,95 +258,189 @@ export const StoreSubscriptionManagerModal: React.FC<StoreSubscriptionManagerMod
         {/* TAB 1: Plan, Status & Quick Extension */}
         {activeTab === 'plan' && (
           <div className="space-y-6">
-            <form onSubmit={handleSavePlanSettings} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Plan */}
-                <div>
-                  <label className="block text-xs font-bold text-neutral-800 mb-1">
-                    Tipo de Plan *
-                  </label>
-                  <select
-                    value={currentPlan}
-                    onChange={(e) => setCurrentPlan(e.target.value as StorePlan)}
-                    className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-xs font-semibold text-neutral-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-black"
-                  >
-                    <option value="trial">Prueba Gratuita (trial)</option>
-                    <option value="paid">Suscripción Paga ($24.900/mes)</option>
-                    <option value="friends_family">Friends & Family (Bonificado)</option>
-                    <option value="internal">Interno / Sin Vencimiento</option>
-                  </select>
-                </div>
-
-                {/* Status */}
-                <div>
-                  <label className="block text-xs font-bold text-neutral-800 mb-1">
-                    Estado de la Tienda *
-                  </label>
-                  <select
-                    value={currentStatus}
-                    onChange={(e) => setCurrentStatus(e.target.value as StoreStatus)}
-                    className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-xs font-semibold text-neutral-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-black"
-                  >
-                    <option value="active">Activa (Catálogo y Admin Habilitados)</option>
-                    <option value="suspended">Suspendida (Fuera de Servicio)</option>
-                    <option value="closed">Cerrada / Persianas Bajas</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Expiration date */}
-                <div>
-                  <label className="block text-xs font-bold text-neutral-800 mb-1">
-                    Fecha de Vencimiento (planEndsAt)
-                  </label>
-                  <input
-                    type="date"
-                    value={planEndsAt}
-                    onChange={(e) => setPlanEndsAt(e.target.value)}
-                    className="w-full px-3.5 py-2 bg-neutral-50 border border-neutral-200 rounded-xl text-xs text-neutral-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-black"
-                  />
-                  <span className="text-[10px] text-neutral-400 mt-0.5 block">
-                    Dejar vacío para que no venza nunca (ej. plan internal).
+            <form onSubmit={handleSavePlanSettings} className="space-y-5">
+              {/* Profile Data Section */}
+              <div className="p-4 bg-neutral-50/80 rounded-2xl border border-neutral-200/80 space-y-3.5">
+                <div className="flex items-center gap-2 border-b border-neutral-200 pb-2">
+                  <span className="material-symbols-outlined text-neutral-700 text-[18px]">store</span>
+                  <span className="text-xs font-bold text-neutral-800 uppercase tracking-wider">
+                    Perfil del Comercio
                   </span>
                 </div>
 
-                {/* Owner Email (editable by superadmin) */}
-                <div>
-                  <label className="block text-xs font-bold text-neutral-800 mb-1">
-                    Email del Dueño (Google) *
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={ownerEmail}
-                    onChange={(e) => setOwnerEmail(e.target.value)}
-                    placeholder="dueño@gmail.com"
-                    className="w-full px-3.5 py-2 bg-neutral-50 border border-neutral-200 rounded-xl text-xs font-mono text-neutral-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-black"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                      Nombre del Comercio *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={storeName}
+                      onChange={(e) => setStoreName(e.target.value)}
+                      placeholder="Ej: Calipso Indumentaria"
+                      className="w-full px-3.5 py-2 bg-white border border-neutral-200 rounded-xl text-xs font-medium text-neutral-900 focus:outline-none focus:ring-2 focus:ring-black"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                      Nombre de Contacto / Titular
+                    </label>
+                    <input
+                      type="text"
+                      value={ownerFirstName}
+                      onChange={(e) => setOwnerFirstName(e.target.value)}
+                      placeholder="Ej: Martina"
+                      className="w-full px-3.5 py-2 bg-white border border-neutral-200 rounded-xl text-xs font-medium text-neutral-900 focus:outline-none focus:ring-2 focus:ring-black"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                      Email de Google del Dueño *
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={ownerEmail}
+                      onChange={(e) => setOwnerEmail(e.target.value)}
+                      placeholder="dueño@gmail.com"
+                      className="w-full px-3.5 py-2 bg-white border border-neutral-200 rounded-xl text-xs font-mono text-neutral-900 focus:outline-none focus:ring-2 focus:ring-black"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                      WhatsApp / Celular de Contacto
+                    </label>
+                    <input
+                      type="text"
+                      value={whatsappNumber}
+                      onChange={(e) => setWhatsappNumber(e.target.value)}
+                      placeholder="+54911..."
+                      className="w-full px-3.5 py-2 bg-white border border-neutral-200 rounded-xl text-xs font-mono text-neutral-900 focus:outline-none focus:ring-2 focus:ring-black"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  {/* Rubro Selector Combo */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                      Rubro del Comercio *
+                    </label>
+                    <select
+                      value={rubro}
+                      onChange={(e) => setRubro(e.target.value)}
+                      className="w-full px-3.5 py-2 bg-white border border-neutral-200 rounded-xl text-xs font-semibold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-black"
+                    >
+                      {availableRubros.map((r) => (
+                        <option key={r.id} value={r.name}>
+                          {r.name}
+                        </option>
+                      ))}
+                      {!availableRubros.some((r) => r.name.toLowerCase() === rubro.toLowerCase()) && (
+                        <option value={rubro}>{rubro}</option>
+                      )}
+                    </select>
+                    <p className="text-[10px] text-neutral-400 mt-1">
+                      Cambiar de rubro no sobreescribe atributos que la tienda ya haya personalizado.
+                    </p>
+                  </div>
+
+                  {/* Sandbox Checkbox */}
+                  <div className="flex items-center pt-5">
+                    <label className="flex items-center gap-2 cursor-pointer p-2 rounded-xl bg-white hover:bg-neutral-100 border border-neutral-200 transition-colors w-full">
+                      <input
+                        type="checkbox"
+                        checked={isSandbox}
+                        onChange={(e) => setIsSandbox(e.target.checked)}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      />
+                      <span className="text-xs font-bold text-neutral-800">
+                        🧪 Tienda Sandbox (Modo Pruebas)
+                      </span>
+                    </label>
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-neutral-800 mb-1">
-                  Rubro del Comercio
-                </label>
-                <input
-                  type="text"
-                  value={rubro}
-                  onChange={(e) => setRubro(e.target.value)}
-                  placeholder="Ej: Calzado, Indumentaria..."
-                  className="w-full px-3.5 py-2 bg-neutral-50 border border-neutral-200 rounded-xl text-xs text-neutral-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-black"
-                />
+              {/* Subscription & Plan Section */}
+              <div className="p-4 bg-neutral-50/80 rounded-2xl border border-neutral-200/80 space-y-3.5">
+                <div className="flex items-center gap-2 border-b border-neutral-200 pb-2">
+                  <span className="material-symbols-outlined text-neutral-700 text-[18px]">verified</span>
+                  <span className="text-xs font-bold text-neutral-800 uppercase tracking-wider">
+                    Plan & Suscripción
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Plan */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                      Tipo de Plan *
+                    </label>
+                    <select
+                      value={currentPlan}
+                      onChange={(e) => setCurrentPlan(e.target.value as StorePlan)}
+                      className="w-full px-3.5 py-2 bg-white border border-neutral-200 rounded-xl text-xs font-semibold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-black"
+                    >
+                      <option value="trial">Prueba Gratuita (trial)</option>
+                      <option value="paid">Suscripción Paga ($24.900/mes)</option>
+                      <option value="friends_family">Friends & Family (Bonificado)</option>
+                      <option value="internal">Interno / Sin Vencimiento</option>
+                    </select>
+                  </div>
+
+                  {/* Status */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                      Estado de la Tienda *
+                    </label>
+                    <select
+                      value={currentStatus}
+                      onChange={(e) => setCurrentStatus(e.target.value as StoreStatus)}
+                      className="w-full px-3.5 py-2 bg-white border border-neutral-200 rounded-xl text-xs font-semibold text-neutral-900 focus:outline-none focus:ring-2 focus:ring-black"
+                    >
+                      <option value="active">Activa (Catálogo y Admin Habilitados)</option>
+                      <option value="suspended">Suspendida (Fuera de Servicio)</option>
+                      <option value="closed">Cerrada / Persianas Bajas</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Expiration date */}
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                      Fecha de Vencimiento (planEndsAt)
+                    </label>
+                    <input
+                      type="date"
+                      value={planEndsAt}
+                      onChange={(e) => setPlanEndsAt(e.target.value)}
+                      className="w-full px-3.5 py-2 bg-white border border-neutral-200 rounded-xl text-xs text-neutral-900 focus:outline-none focus:ring-2 focus:ring-black"
+                    />
+                    <span className="text-[10px] text-neutral-400 mt-0.5 block">
+                      Dejar vacío para que no venza nunca (ej. plan internal).
+                    </span>
+                  </div>
+                </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={isSavingPlan}
-                className="px-5 py-2.5 bg-neutral-900 hover:bg-black text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
-              >
-                {isSavingPlan ? 'Guardando...' : 'Guardar Cambios de Suscripción'}
-              </button>
+              <div className="flex justify-end pt-2">
+                <button
+                  type="submit"
+                  disabled={isSavingPlan}
+                  className="px-6 py-2.5 bg-neutral-900 hover:bg-black text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50 flex items-center gap-2"
+                >
+                  <span className="material-symbols-outlined text-[16px]">save</span>
+                  <span>{isSavingPlan ? 'Guardando...' : 'Guardar Cambios del Comercio'}</span>
+                </button>
+              </div>
             </form>
 
             {/* Quick Extension Box */}

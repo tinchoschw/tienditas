@@ -435,13 +435,18 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   // ATTRIBUTE ACTIONS (attribute1 & attribute2)
   // =========================================================================
 
+  // Helper to map 'attr1' | 'attr2' to 'attribute1' | 'attribute2' in StoreSettings
+  const getSettingsAttrKey = (id: 'attr1' | 'attr2'): 'attribute1' | 'attribute2' =>
+    id === 'attr1' ? 'attribute1' : 'attribute2';
+
   // Rename an attribute without asking confirmation
   const handleRenameAttribute = async (attrId: 'attr1' | 'attr2', newName: string) => {
     const trimmed = newName.trim();
     if (!trimmed || !onUpdateSettings) return;
     const currentAttr = attrId === 'attr1' ? attribute1 : attribute2;
+    const settingsKey = getSettingsAttrKey(attrId);
     await onUpdateSettings({
-      [attrId]: {
+      [settingsKey]: {
         ...currentAttr,
         name: trimmed
       }
@@ -461,8 +466,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       hex: newType === 'color' ? (o.hex || '#FFFFFF') : undefined
     }));
 
+    const settingsKey = getSettingsAttrKey(attrId);
     await onUpdateSettings({
-      [attrId]: {
+      [settingsKey]: {
         ...currentAttr,
         type: newType,
         options: updatedOptions
@@ -477,12 +483,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   // Toggle attribute enabled/disabled at store level
   const handleToggleAttribute = (attrId: 'attr1' | 'attr2') => {
     const currentAttr = attrId === 'attr1' ? attribute1 : attribute2;
+    const settingsKey = getSettingsAttrKey(attrId);
 
     if (!currentAttr.enabled) {
       // Enabling: doesn't modify existing products
       if (onUpdateSettings) {
         onUpdateSettings({
-          [attrId]: { ...currentAttr, enabled: true }
+          [settingsKey]: { ...currentAttr, enabled: true }
         });
       }
       showNotification('success', `Atributo "${currentAttr.name}" habilitado en la tienda.`);
@@ -495,7 +502,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     if (affectedProducts.length === 0) {
       if (onUpdateSettings) {
         onUpdateSettings({
-          [attrId]: { ...currentAttr, enabled: false }
+          [settingsKey]: { ...currentAttr, enabled: false }
         });
       }
       showNotification('success', `Atributo "${currentAttr.name}" deshabilitado.`);
@@ -530,7 +537,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         }
         if (onUpdateSettings) {
           await onUpdateSettings({
-            [attrId]: { ...currentAttr, enabled: false }
+            [settingsKey]: { ...currentAttr, enabled: false }
           });
         }
         setConfirmModal(null);
@@ -564,9 +571,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     };
 
     const updatedOptions = [...currentAttr.options, newOption];
+    const settingsKey = getSettingsAttrKey(attrId);
     if (onUpdateSettings) {
       await onUpdateSettings({
-        [attrId]: {
+        [settingsKey]: {
           ...currentAttr,
           options: updatedOptions
         }
@@ -594,8 +602,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       o.id === optionId ? { ...o, label: trimmed, hex: currentAttr.type === 'color' ? hex || o.hex : undefined } : o
     );
 
+    const settingsKey = getSettingsAttrKey(attrId);
     await onUpdateSettings({
-      [attrId]: {
+      [settingsKey]: {
         ...currentAttr,
         options: updatedOptions
       }
@@ -608,6 +617,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   // Delete an option from an attribute
   const handleDeleteOption = (attrId: 'attr1' | 'attr2', option: StoreAttributeOption) => {
     const currentAttr = attrId === 'attr1' ? attribute1 : attribute2;
+    const settingsKey = getSettingsAttrKey(attrId);
 
     // Check which products have variants referencing this option
     const affectedLines: string[] = [];
@@ -658,7 +668,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           const updatedOptions = currentAttr.options.filter((o) => o.id !== option.id);
           if (onUpdateSettings) {
             await onUpdateSettings({
-              [attrId]: { ...currentAttr, options: updatedOptions }
+              [settingsKey]: { ...currentAttr, options: updatedOptions }
             });
           }
 
@@ -673,7 +683,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     const updatedOptions = currentAttr.options.filter((o) => o.id !== option.id);
     if (onUpdateSettings) {
       onUpdateSettings({
-        [attrId]: { ...currentAttr, options: updatedOptions }
+        [settingsKey]: { ...currentAttr, options: updatedOptions }
       });
     }
     showNotification('success', `Opción "${option.label}" eliminada.`);

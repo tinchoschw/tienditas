@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Sale, Product, SaleItem, SalePayment, StoreFeatureFlags, StoreSettings } from '../types';
 import { ensureStoreAttributes, formatVariantSummary } from '../utils/attributeUtils';
 
@@ -33,6 +33,45 @@ export const SalesView: React.FC<SalesViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sortBy, setSortBy] = useState<'date' | 'debt' | 'total' | 'paid'>('date');
+
+  // Floating Action Button observer for Nueva Venta
+  const newSaleBtnRef = useRef<HTMLButtonElement>(null);
+  const [isNewSaleBtnVisible, setIsNewSaleBtnVisible] = useState(true);
+
+  useEffect(() => {
+    const el = newSaleBtnRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsNewSaleBtnVisible(entry.isIntersecting);
+      },
+      { threshold: 0.1 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Format date and time helper
+  const formatSaleDateTime = (dateStr?: string) => {
+    if (!dateStr) return '—';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      const dateFormatted = d.toLocaleDateString('es-AR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+      if (dateStr.includes('T') || dateStr.includes(':')) {
+        const hours = String(d.getHours()).padStart(2, '0');
+        const minutes = String(d.getMinutes()).padStart(2, '0');
+        return `${dateFormatted} ${hours}:${minutes} hs`;
+      }
+      return dateFormatted;
+    } catch {
+      return dateStr;
+    }
+  };
 
   const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
 
@@ -380,9 +419,16 @@ export const SalesView: React.FC<SalesViewProps> = ({
       status = 'cobro_parcial';
     }
 
+    let finalSaleDate = newSaleDate;
+    if (newSaleDate && !newSaleDate.includes('T')) {
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      finalSaleDate = `${newSaleDate}T${timeStr}`;
+    }
+
     const newSale: Sale = {
       id: `V-${nextNum}`,
-      date: newSaleDate,
+      date: finalSaleDate,
       customer: newSaleCustomer.trim() || 'Cliente Mostrador',
       contactInfo: newSaleCustomer.includes('(')
         ? newSaleCustomer.substring(newSaleCustomer.indexOf('(') + 1).replace(')', '')
@@ -572,6 +618,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
 
         <div className="flex items-center gap-2 flex-wrap">
           <button
+            ref={newSaleBtnRef}
             onClick={() => {
               if (!showNewSalePanel) {
                 resetNewSaleForm();
@@ -1192,7 +1239,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
                       )}
                     </td>
 
-                    <td className="px-4 py-3 text-neutral-700">{sale.date}</td>
+                    <td className="px-4 py-3 text-neutral-700 whitespace-nowrap">{formatSaleDateTime(sale.date)}</td>
 
                     <td className="px-4 py-3">
                       <div className={`font-semibold text-black ${isCancelled ? 'line-through' : ''}`}>
@@ -1412,7 +1459,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
                     )}
                   </div>
                   <p className="text-xs text-neutral-500">
-                    Fecha: <strong className="text-neutral-800">{modalSale.date}</strong> | Vencimiento:{' '}
+                    Fecha: <strong className="text-neutral-800">{formatSaleDateTime(modalSale.date)}</strong> | Vencimiento:{' '}
                     <strong className="text-neutral-800">{modalSale.dueDate}</strong> | Contacto:{' '}
                     <span className="text-neutral-700">{modalSale.contactInfo}</span>
                   </p>
@@ -1575,6 +1622,21 @@ export const SalesView: React.FC<SalesViewProps> = ({
                         <span>Confirmar y Descontar Stock</span>
                       </button>
                     )}
+                  </div>
+                </div>
+              )}
+
+              {/* Customer Notes from Catalog Checkout */}
+              {Boolean(modalSale.notes?.trim()) && (
+                <div className="p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-950 flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-amber-600 text-lg shrink-0 mt-0.5">chat</span>
+                  <div className="flex-1">
+                    <p className="text-[11px] font-bold text-amber-900 uppercase tracking-wider mb-0.5">
+                      Mensaje / Nota del Cliente
+                    </p>
+                    <p className="text-xs sm:text-sm text-neutral-800 whitespace-pre-wrap italic">
+                      "{modalSale.notes?.trim()}"
+                    </p>
                   </div>
                 </div>
               )}
@@ -2164,6 +2226,27 @@ export const SalesView: React.FC<SalesViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Botón flotante para Nueva Venta cuando el botón principal no está visible */}
+      {!isNewSaleBtnVisible && !showNewSalePanel && (
+        <button
+          type="button"
+          onClick={() => {
+            resetNewSaleForm();
+            setShowNewSalePanel(true);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          title="Nueva venta"
+          aria-label="Nueva venta"
+          className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-40 w-14 h-14 rounded-full bg-black text-white shadow-2xl hover:bg-neutral-800 active:scale-95 transition-all flex items-center justify-center cursor-pointer group hover:ring-4 hover:ring-black/20"
+        >
+          <span className="material-symbols-outlined text-3xl font-light leading-none group-hover:rotate-90 transition-transform">add</span>
+          {/* Tooltip */}
+          <span className="absolute right-full mr-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-neutral-900 text-white text-xs font-semibold rounded-lg shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none hidden sm:block">
+            Nueva venta
+          </span>
+        </button>
       )}
     </div>
   );

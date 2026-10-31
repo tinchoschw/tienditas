@@ -14,6 +14,7 @@ import { SuperAdminView } from './components/SuperAdminView';
 import { PlatformLandingView } from './components/PlatformLandingView';
 import { DisabledStoreNotice } from './components/DisabledStoreNotice';
 import { AdminHelpAssistant } from './components/AdminHelpAssistant';
+import { StoreFeedbackModal } from './components/StoreFeedbackModal';
 import { useModalHistory } from './hooks/useModalHistory';
 import { auth } from './firebase';
 import { Product, Sale, StoreSettings, CartItem, Store, PlatformConfig } from './types';
@@ -243,6 +244,9 @@ function MainContent() {
   // Shop Owner AI Help Assistant
   const [isHelpAssistantOpen, setIsHelpAssistantOpen] = useState(false);
 
+  // Store Feedback / Suggestions Modal
+  const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
+
   // Mobile Back Button / Gesture Handlers for App-level modals
   useModalHistory({
     isOpen: isSlideOverCartOpen,
@@ -254,6 +258,12 @@ function MainContent() {
     isOpen: isHelpAssistantOpen,
     onClose: () => setIsHelpAssistantOpen(false),
     modalKey: 'help-assistant'
+  });
+
+  useModalHistory({
+    isOpen: isFeedbackModalOpen,
+    onClose: () => setIsFeedbackModalOpen(false),
+    modalKey: 'store-feedback'
   });
 
   useModalHistory({
@@ -497,19 +507,29 @@ function MainContent() {
           (v.color.toLowerCase() === item.color.toLowerCase() &&
             v.size.toLowerCase() === item.size.toLowerCase())
       );
-      const maxStock = variant ? Math.max(0, Number(variant.stock || 0)) : 999;
-      if (maxStock <= 0) return prev;
+      const isUnlimited = Boolean(variant?.unlimited || item.unlimited || prod?.isUnlimited);
+      const maxStock = isUnlimited ? 999 : (variant ? Math.max(0, Number(variant.stock || 0)) : 999);
+      if (!isUnlimited && maxStock <= 0) return prev;
 
       const existingIdx = prev.findIndex(
         (ci) => ci.productId === item.productId && ci.size === item.size && ci.color === item.color
       );
       if (existingIdx >= 0) {
         const copy = [...prev];
-        const newQty = Math.min(maxStock, copy[existingIdx].quantity + item.quantity);
+        const newQty = isUnlimited 
+          ? copy[existingIdx].quantity + item.quantity 
+          : Math.min(maxStock, copy[existingIdx].quantity + item.quantity);
         copy[existingIdx].quantity = newQty;
         return copy;
       }
-      return [...prev, { ...item, quantity: Math.min(maxStock, item.quantity) }];
+      return [
+        ...prev,
+        {
+          ...item,
+          unlimited: isUnlimited,
+          quantity: isUnlimited ? item.quantity : Math.min(maxStock, item.quantity)
+        }
+      ];
     });
   };
 
@@ -524,13 +544,14 @@ function MainContent() {
           (v.color.toLowerCase() === item.color.toLowerCase() &&
             v.size.toLowerCase() === item.size.toLowerCase())
       );
-      const maxStock = variant ? Math.max(0, Number(variant.stock || 0)) : 999;
+      const isUnlimited = Boolean(variant?.unlimited || item.unlimited || prod?.isUnlimited);
+      const maxStock = isUnlimited ? 999 : (variant ? Math.max(0, Number(variant.stock || 0)) : 999);
 
       const requestedQty = item.quantity + delta;
       if (requestedQty <= 0) {
         return prev.filter((_, i) => i !== index);
       }
-      const cappedQty = Math.min(maxStock, requestedQty);
+      const cappedQty = isUnlimited ? requestedQty : Math.min(maxStock, requestedQty);
       const copy = [...prev];
       copy[index] = { ...item, quantity: cappedQty };
       return copy;
@@ -771,6 +792,7 @@ function MainContent() {
         onExitAdmin={handleExitAdmin}
         onLogoutAdmin={handleLogoutAdmin}
         onOpenHelpAssistant={() => setIsHelpAssistantOpen(true)}
+        onOpenFeedback={() => setIsFeedbackModalOpen(true)}
         store={activeStore}
         supportWhatsApp={platformConfig.supportWhatsApp}
       />
@@ -1050,6 +1072,16 @@ function MainContent() {
           isOpen={isHelpAssistantOpen}
           onToggle={() => setIsHelpAssistantOpen(prev => !prev)}
           onClose={() => setIsHelpAssistantOpen(false)}
+        />
+      )}
+
+      {/* Store Feedback & Suggestions Modal */}
+      {isFeedbackModalOpen && (
+        <StoreFeedbackModal
+          isOpen={isFeedbackModalOpen}
+          onClose={() => setIsFeedbackModalOpen(false)}
+          store={activeStore}
+          currentTab={effectiveAdminTab}
         />
       )}
 

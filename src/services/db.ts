@@ -775,8 +775,13 @@ export const updateStorePlanAndStatus = async (
     status?: StoreStatus;
     planEndsAt?: string;
     ownerEmail?: string;
+    ownerFirstName?: string;
+    ownerLastName?: string;
+    ownerPhone?: string;
+    whatsappNumber?: string;
     rubro?: string;
     name?: string;
+    isSandbox?: boolean;
   }
 ): Promise<Store | null> => {
   return updateStoreMeta(storeId, {

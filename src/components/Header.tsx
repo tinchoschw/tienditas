@@ -18,6 +18,7 @@ interface HeaderProps {
   onExitAdmin: () => void;
   onLogoutAdmin: () => void;
   onOpenHelpAssistant?: () => void;
+  onOpenFeedback?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -35,7 +36,8 @@ export const Header: React.FC<HeaderProps> = ({
   featureFlags,
   onExitAdmin,
   onLogoutAdmin,
-  onOpenHelpAssistant
+  onOpenHelpAssistant,
+  onOpenFeedback
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement>(null);
@@ -197,6 +199,19 @@ export const Header: React.FC<HeaderProps> = ({
                   : 'Mi Cuenta'}
               </span>
             </div>
+
+            {/* Feedback button on desktop */}
+            {onOpenFeedback && (
+              <button
+                type="button"
+                onClick={onOpenFeedback}
+                className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 sm:px-3 sm:py-2 rounded-xl bg-white hover:bg-neutral-100 text-neutral-800 text-xs font-semibold border border-neutral-200 transition-all shadow-2xs cursor-pointer active:scale-95"
+                title="Dejar feedback o sugerencias sobre el sistema"
+              >
+                <span className="material-symbols-outlined text-[17px] text-indigo-600">rate_review</span>
+                <span>Feedback</span>
+              </button>
+            )}
 
             {/* Menú Toggle Button Container with Dropdown */}
             <div className="relative">
@@ -405,6 +420,20 @@ export const Header: React.FC<HeaderProps> = ({
                             </button>
                           )}
                         </div>
+
+                        {onOpenFeedback && (
+                          <button
+                            onClick={() => {
+                              setMobileMenuOpen(false);
+                              onOpenFeedback();
+                            }}
+                            className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-950 text-xs font-semibold transition-all cursor-pointer border border-indigo-200/80 shadow-xs"
+                            title="Enviar sugerencias o comentarios sobre la plataforma"
+                          >
+                            <span className="material-symbols-outlined text-[17px] text-indigo-600">rate_review</span>
+                            <span>Feedback / Sugerencias</span>
+                          </button>
+                        )}
 
                         <button
                           onClick={() => {

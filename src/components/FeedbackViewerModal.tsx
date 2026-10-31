@@ -12,7 +12,7 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
   onClose
 }) => {
   const [feedbackList, setFeedbackList] = useState<StoreFeedback[]>([]);
-  const [filterType, setFilterType] = useState<'all' | 'closure' | 'friends_family'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'suggestion' | 'closure' | 'friends_family'>('all');
 
   useEffect(() => {
     if (!isOpen) return;
@@ -26,6 +26,7 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
 
   const filtered = feedbackList.filter((fb) => {
     if (filterType === 'all') return true;
+    if (filterType === 'suggestion') return fb.type === 'suggestion' || fb.type === 'bug' || fb.type === 'general';
     return fb.type === filterType;
   });
 
@@ -46,7 +47,7 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
               Feedback Recibido ({feedbackList.length})
             </h2>
             <p className="text-xs text-neutral-500 mt-0.5">
-              Motivos de cierre de tiendas y sugerencias enviadas por clientes Friends & Family.
+              Comentarios de comercios, sugerencias, reportes y motivos de baja.
             </p>
           </div>
 
@@ -60,7 +61,7 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
         </div>
 
         {/* Filters */}
-        <div className="flex items-center gap-2 my-4">
+        <div className="flex items-center gap-2 my-4 flex-wrap">
           <button
             onClick={() => setFilterType('all')}
             className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
@@ -70,6 +71,16 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
             }`}
           >
             Todos ({feedbackList.length})
+          </button>
+          <button
+            onClick={() => setFilterType('suggestion')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+              filterType === 'suggestion'
+                ? 'bg-purple-600 text-white shadow-xs'
+                : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
+            }`}
+          >
+            Comentarios & Sugerencias ({feedbackList.filter((f) => f.type === 'suggestion' || f.type === 'bug' || f.type === 'general').length})
           </button>
           <button
             onClick={() => setFilterType('closure')}
@@ -106,7 +117,9 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                 className={`p-4 rounded-2xl border transition-all space-y-2.5 ${
                   item.type === 'closure'
                     ? 'bg-red-50/40 border-red-200'
-                    : 'bg-indigo-50/40 border-indigo-200'
+                    : item.type === 'friends_family'
+                    ? 'bg-indigo-50/40 border-indigo-200'
+                    : 'bg-neutral-50/70 border-neutral-200'
                 }`}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -119,11 +132,26 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                         className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                           item.type === 'closure'
                             ? 'bg-red-100 text-red-800 border border-red-200'
-                            : 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                            : item.type === 'friends_family'
+                            ? 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                            : item.type === 'bug'
+                            ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                            : 'bg-purple-100 text-purple-800 border border-purple-200'
                         }`}
                       >
-                        {item.type === 'closure' ? 'Baja de Tienda' : 'Friends & Family'}
+                        {item.type === 'closure'
+                          ? 'Baja de Tienda'
+                          : item.type === 'friends_family'
+                          ? 'Friends & Family'
+                          : item.type === 'bug'
+                          ? 'Problema Reportado'
+                          : 'Sugerencia / Idea'}
                       </span>
+                      {item.section && (
+                        <span className="px-2 py-0.5 rounded-md bg-neutral-200 text-neutral-700 text-[10px] font-bold">
+                          📍 {item.section}
+                        </span>
+                      )}
                     </div>
                     <span className="text-[11px] text-neutral-500 font-mono">
                       {item.userName || item.userEmail}

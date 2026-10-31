@@ -227,7 +227,8 @@ export interface StoreFeedback {
   motivos?: string[];
   text: string;
   date: string;
-  type: 'closure' | 'friends_family';
+  type: 'closure' | 'friends_family' | 'suggestion' | 'bug' | 'general';
+  section?: string;
 }
 
 export interface PlatformConfig {

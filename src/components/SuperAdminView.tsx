@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Store, StoreFeatureFlags, DEFAULT_FEATURE_FLAGS, PlatformConfig } from '../types';
+import { Store, StoreFeatureFlags, DEFAULT_FEATURE_FLAGS, PlatformConfig, Rubro } from '../types';
 import { 
   createNewStore, 
   updateStoreMeta, 
   deleteStoreRecord, 
   resetStoreToFactory,
   subscribePlatformConfig,
-  updatePlatformConfig
+  updatePlatformConfig,
+  subscribeRubros
 } from '../services/db';
 import { StoreSubscriptionManagerModal } from './StoreSubscriptionManagerModal';
 import { FeedbackViewerModal } from './FeedbackViewerModal';
@@ -38,9 +39,15 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     }
   });
 
-  const [passwordInput, setPasswordInput] = useState('');
-  const [showLoginPassword, setShowLoginPassword] = useState(false);
-  const [authError, setAuthError] = useState(false);
+  // Available rubros for new store selector and filter
+  const [availableRubros, setAvailableRubros] = useState<Rubro[]>([]);
+
+  useEffect(() => {
+    const unsub = subscribeRubros((list) => {
+      setAvailableRubros(list);
+    });
+    return () => unsub();
+  }, []);
 
   // Google SuperAdmin Authentication state
   const [isSigningInWithGoogle, setIsSigningInWithGoogle] = useState(false);
@@ -71,24 +78,15 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newStoreName, setNewStoreName] = useState('');
   const [newStoreSlug, setNewStoreSlug] = useState('');
+  const [newStoreOwnerName, setNewStoreOwnerName] = useState('');
   const [newStoreOwnerEmail, setNewStoreOwnerEmail] = useState('');
   const [newStoreWhatsApp, setNewStoreWhatsApp] = useState('');
-  const [newStorePassword, setNewStorePassword] = useState('');
-  const [showNewStorePassword, setShowNewStorePassword] = useState(false);
+  const [newStoreRubro, setNewStoreRubro] = useState('Indumentaria');
   const [newStoreIsSandbox, setNewStoreIsSandbox] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Store Deletion Modal (avoids window.confirm blocking in iframe)
   const [storeToDelete, setStoreToDelete] = useState<Store | null>(null);
-
-  // Edit Store Modal
-  const [editingStore, setEditingStore] = useState<Store | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editOwnerEmail, setEditOwnerEmail] = useState('');
-  const [editWhatsApp, setEditWhatsApp] = useState('');
-  const [editPassword, setEditPassword] = useState('');
-  const [editIsSandbox, setEditIsSandbox] = useState(false);
-  const [showEditPassword, setShowEditPassword] = useState(false);
 
   // Feature Flags Modal State
   const [featureFlagsStore, setFeatureFlagsStore] = useState<Store | null>(null);
@@ -226,7 +224,6 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   const handleGoogleLogin = async () => {
     setIsSigningInWithGoogle(true);
     setGoogleAuthError(null);
-    setAuthError(false);
     try {
       const user = await signInWithGoogle();
       if (!user || !user.email) {
@@ -267,32 +264,6 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     handleGoogleLogin();
   };
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError(false);
-    try {
-      const res = await fetch('/api/auth/superadmin-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: passwordInput.trim() }),
-      });
-      if (res.ok) {
-        try {
-          sessionStorage.setItem('atelier_superadmin_auth', 'true');
-        } catch (err) {
-          console.warn(err);
-        }
-        setIsAuthenticated(true);
-        setAuthError(false);
-      } else {
-        setAuthError(true);
-      }
-    } catch (err) {
-      console.warn('Superadmin auth error:', err);
-      setAuthError(true);
-    }
-  };
-
   const handleLogout = async () => {
     try {
       sessionStorage.removeItem('atelier_superadmin_auth');
@@ -311,12 +282,18 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     setIsSubmitting(true);
     try {
       const generatedSlug = (newStoreSlug.trim() || newStoreName.toLowerCase().replace(/[^a-z0-9]/g, '-')).replace(/^-+|-+$/g, '');
+      const selectedRubroObj = availableRubros.find((r) => r.name.toLowerCase() === newStoreRubro.toLowerCase());
+
       const created = await createNewStore({
         name: newStoreName.trim(),
         slug: generatedSlug,
+        ownerFirstName: newStoreOwnerName.trim(),
         ownerEmail: newStoreOwnerEmail.trim().toLowerCase() || 'yunior@gmail.com',
         whatsappNumber: newStoreWhatsApp.trim(),
-        adminPassword: newStorePassword.trim() || 'AdminApolo2026!',
+        ownerPhone: newStoreWhatsApp.trim(),
+        rubro: newStoreRubro.trim() || 'Indumentaria',
+        attribute1: selectedRubroObj?.attribute1,
+        attribute2: selectedRubroObj?.attribute2,
         isSandbox: newStoreIsSandbox
       });
 
@@ -325,9 +302,10 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
       setIsCreateModalOpen(false);
       setNewStoreName('');
       setNewStoreSlug('');
+      setNewStoreOwnerName('');
       setNewStoreOwnerEmail('');
       setNewStoreWhatsApp('');
-      setNewStorePassword('AdminApolo2026!');
+      setNewStoreRubro('Indumentaria');
       setNewStoreIsSandbox(false);
     } catch (err) {
       console.error(err);
@@ -438,35 +416,6 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     showToast(`Tienda "${store.name}" eliminada.`);
   };
 
-  const handleSaveEdit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingStore) return;
-    const cleanOwnerEmail = editOwnerEmail.trim().toLowerCase() || 'yunior@gmail.com';
-    setLocalStores((prev) =>
-      prev.map((s) =>
-        s.id === editingStore.id
-          ? {
-              ...s,
-              name: editName.trim(),
-              ownerEmail: cleanOwnerEmail,
-              whatsappNumber: editWhatsApp.trim(),
-              adminPassword: editPassword.trim() || 'AdminApolo2026!',
-              isSandbox: editIsSandbox
-            }
-          : s
-      )
-    );
-    await updateStoreMeta(editingStore.id, {
-      name: editName.trim(),
-      ownerEmail: cleanOwnerEmail,
-      whatsappNumber: editWhatsApp.trim(),
-      adminPassword: editPassword.trim() || 'AdminApolo2026!',
-      isSandbox: editIsSandbox
-    });
-    showToast('Datos de la tienda actualizados.');
-    setEditingStore(null);
-  };
-
   const copyStoreLink = (slug: string, type: 'catalog' | 'admin') => {
     const origin = window.location.origin;
     const url = type === 'catalog' 
@@ -530,15 +479,6 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               )}
             </button>
 
-            <div className="p-2.5 bg-neutral-50 rounded-xl border border-neutral-200/80 text-center">
-              <span className="text-[11px] text-neutral-400 uppercase tracking-wider block font-semibold mb-0.5">
-                Super Admin Autorizado
-              </span>
-              <span className="text-xs font-mono font-medium text-neutral-700">
-                yunior@gmail.com
-              </span>
-            </div>
-
             {/* Google Auth Error Message */}
             {googleAuthError && (
               <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex flex-col gap-2 animate-in fade-in">
@@ -558,61 +498,6 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               </div>
             )}
           </div>
-
-          {/* Divider */}
-          <div className="relative my-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-neutral-200" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-white px-3 text-neutral-400 font-medium tracking-wider text-[10px]">
-                o ingresar con clave maestra
-              </span>
-            </div>
-          </div>
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-600 mb-1.5">
-                Clave Maestra
-              </label>
-              <div className="relative">
-                <input
-                  type={showLoginPassword ? 'text' : 'password'}
-                  value={passwordInput}
-                  onChange={(e) => {
-                    setPasswordInput(e.target.value);
-                    setAuthError(false);
-                  }}
-                  placeholder="Ingresa la clave maestra de superadmin"
-                  className="w-full pl-4 pr-10 py-3 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white transition-all text-sm font-mono"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowLoginPassword(!showLoginPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-black transition-colors cursor-pointer"
-                  title={showLoginPassword ? 'Ocultar clave' : 'Mostrar clave'}
-                >
-                  <span className="material-symbols-outlined text-[18px]">
-                    {showLoginPassword ? 'visibility_off' : 'visibility'}
-                  </span>
-                </button>
-              </div>
-              {authError && (
-                <p className="text-xs text-rose-600 mt-1.5 font-medium flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[14px]">error</span>
-                  Clave de superadministrador incorrecta.
-                </p>
-              )}
-            </div>
-
-            <button
-              type="submit"
-              className="w-full py-3 bg-neutral-900 hover:bg-black text-white font-medium rounded-xl transition-all shadow-md active:scale-[0.99] cursor-pointer text-xs"
-            >
-              Acceder con Clave Maestra
-            </button>
-          </form>
 
           <div className="mt-6 pt-5 border-t border-neutral-100 flex items-center justify-between text-xs text-neutral-500">
             <span>Acceso confidencial</span>
@@ -1146,14 +1031,14 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                                   </a>
                                 )}
 
-                                {/* Manage Subscription Button */}
+                                {/* Manage Store & Subscription Button */}
                                 <button
                                   onClick={() => setSubscriptionManagerStore(store)}
                                   className="px-2.5 py-1.5 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
-                                  title="Gestionar plan, vencimiento, prórrogas y pagos"
+                                  title="Gestionar datos del comercio, plan, vencimiento y pagos"
                                 >
-                                  <span className="material-symbols-outlined text-[15px]">event_repeat</span>
-                                  <span>Suscripción</span>
+                                  <span className="material-symbols-outlined text-[15px]">settings</span>
+                                  <span>Gestionar</span>
                                 </button>
 
                                 {/* Direct Access Buttons */}
@@ -1171,22 +1056,6 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                                   title="Entrar al panel admin de la tienda"
                                 >
                                   <span className="material-symbols-outlined text-[16px]">admin_panel_settings</span>
-                                </button>
-
-                                {/* Edit Store Info */}
-                                <button
-                                  onClick={() => {
-                                    setEditingStore(store);
-                                    setEditName(store.name);
-                                    setEditOwnerEmail(store.ownerEmail || '');
-                                    setEditWhatsApp(store.whatsappNumber || store.ownerPhone || '');
-                                    setEditPassword(store.adminPassword || 'admin');
-                                    setEditIsSandbox(!!store.isSandbox);
-                                  }}
-                                  className="p-1.5 text-neutral-400 hover:text-black rounded-lg cursor-pointer transition-colors"
-                                  title="Editar comercio"
-                                >
-                                  <span className="material-symbols-outlined text-[16px]">edit</span>
                                 </button>
 
                                 {/* Delete Store */}
@@ -1330,8 +1199,8 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                           onClick={() => setSubscriptionManagerStore(store)}
                           className="w-full py-2 px-3 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs"
                         >
-                          <span className="material-symbols-outlined text-[16px]">event_repeat</span>
-                          <span>Suscripción</span>
+                          <span className="material-symbols-outlined text-[16px]">settings</span>
+                          <span>Gestionar</span>
                         </button>
 
                         {waHref ? (
@@ -1387,20 +1256,6 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                             title="Feature Flags"
                           >
                             <span className="material-symbols-outlined text-[16px]">tune</span>
-                          </button>
-                          <button
-                            onClick={() => {
-                              setEditingStore(store);
-                              setEditName(store.name);
-                              setEditOwnerEmail(store.ownerEmail || '');
-                              setEditWhatsApp(store.whatsappNumber || store.ownerPhone || '');
-                              setEditPassword(store.adminPassword || 'admin');
-                              setEditIsSandbox(!!store.isSandbox);
-                            }}
-                            className="p-1 hover:text-black cursor-pointer"
-                            title="Editar datos"
-                          >
-                            <span className="material-symbols-outlined text-[16px]">edit</span>
                           </button>
                           <button
                             onClick={() => setStoreToDelete(store)}
@@ -1483,23 +1338,19 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 </p>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 mb-1">
-                  Email de Google del Titular (para Login Admin)
-                </label>
-                <input
-                  type="email"
-                  value={newStoreOwnerEmail}
-                  onChange={(e) => setNewStoreOwnerEmail(e.target.value)}
-                  placeholder="ejemplo@gmail.com (por defecto: yunior@gmail.com)"
-                  className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
-                />
-                <p className="text-[11px] text-neutral-400 mt-1">
-                  Permite al dueño acceder al panel admin de la tienda con "Ingresar con Google".
-                </p>
-              </div>
-
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 mb-1">
+                    Nombre de Contacto / Titular
+                  </label>
+                  <input
+                    type="text"
+                    value={newStoreOwnerName}
+                    onChange={(e) => setNewStoreOwnerName(e.target.value)}
+                    placeholder="Ej: Martina"
+                    className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
+                  />
+                </div>
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 mb-1">
                     WhatsApp para Pedidos
@@ -1512,29 +1363,40 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
                   />
                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 mb-1">
-                    Clave Admin del Comercio
+                    Email de Google del Titular
                   </label>
-                  <div className="relative">
-                    <input
-                      type={showNewStorePassword ? 'text' : 'password'}
-                      value={newStorePassword}
-                      onChange={(e) => setNewStorePassword(e.target.value)}
-                      placeholder="AdminApolo2026!"
-                      className="w-full pl-3.5 pr-10 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowNewStorePassword(!showNewStorePassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-black transition-colors cursor-pointer"
-                      title={showNewStorePassword ? 'Ocultar clave' : 'Mostrar clave'}
-                    >
-                      <span className="material-symbols-outlined text-[18px]">
-                        {showNewStorePassword ? 'visibility_off' : 'visibility'}
-                      </span>
-                    </button>
-                  </div>
+                  <input
+                    type="email"
+                    value={newStoreOwnerEmail}
+                    onChange={(e) => setNewStoreOwnerEmail(e.target.value)}
+                    placeholder="ejemplo@gmail.com (por defecto: yunior@gmail.com)"
+                    className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 mb-1">
+                    Rubro del Comercio *
+                  </label>
+                  <select
+                    value={newStoreRubro}
+                    onChange={(e) => setNewStoreRubro(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
+                  >
+                    {availableRubros.map((r) => (
+                      <option key={r.id} value={r.name}>
+                        {r.name}
+                      </option>
+                    ))}
+                    {!availableRubros.some((r) => r.name.toLowerCase() === newStoreRubro.toLowerCase()) && (
+                      <option value={newStoreRubro}>{newStoreRubro}</option>
+                    )}
+                  </select>
                 </div>
               </div>
 
@@ -1578,127 +1440,6 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                   ) : (
                     <span>Crear Tienda</span>
                   )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* EDIT STORE MODAL */}
-      {editingStore && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-neutral-200">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-bold text-neutral-900 text-base">Editar Tienda: {editingStore.name}</h3>
-              <button
-                onClick={() => setEditingStore(null)}
-                className="text-neutral-400 hover:text-black rounded-lg p-1 transition-colors cursor-pointer"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveEdit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 mb-1">
-                  Nombre del Comercio
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 mb-1">
-                  Email de Google del Titular (para Login Admin)
-                </label>
-                <input
-                  type="email"
-                  value={editOwnerEmail}
-                  onChange={(e) => setEditOwnerEmail(e.target.value)}
-                  placeholder="ejemplo@gmail.com"
-                  className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
-                />
-                <p className="text-[11px] text-neutral-400 mt-1">
-                  Cuenta de Google autorizada para administrar esta tienda.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 mb-1">
-                  WhatsApp para Pedidos
-                </label>
-                <input
-                  type="text"
-                  value={editWhatsApp}
-                  onChange={(e) => setEditWhatsApp(e.target.value)}
-                  placeholder="+54911..."
-                  className="w-full px-3.5 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 mb-1">
-                  Contraseña de Admin de la Tienda
-                </label>
-                <div className="relative">
-                  <input
-                    type={showEditPassword ? 'text' : 'password'}
-                    value={editPassword}
-                    onChange={(e) => setEditPassword(e.target.value)}
-                    placeholder="AdminApolo2026!"
-                    className="w-full pl-3.5 pr-10 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl text-neutral-900 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:bg-white"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowEditPassword(!showEditPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-black transition-colors cursor-pointer"
-                    title={showEditPassword ? 'Ocultar clave' : 'Mostrar clave'}
-                  >
-                    <span className="material-symbols-outlined text-[18px]">
-                      {showEditPassword ? 'visibility_off' : 'visibility'}
-                    </span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="pt-1">
-                <label className="flex items-center gap-2 cursor-pointer p-2.5 rounded-xl bg-neutral-50 hover:bg-neutral-100 border border-neutral-200 transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={editIsSandbox}
-                    onChange={(e) => setEditIsSandbox(e.target.checked)}
-                    className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                  />
-                  <div className="flex flex-col">
-                    <span className="text-xs font-bold text-neutral-900 flex items-center gap-1.5">
-                      <span>🧪 Tienda Sandbox (Modo Pruebas)</span>
-                    </span>
-                    <span className="text-[11px] text-neutral-500">
-                      Habilita el botón de reset a fábrica y el distintivo visual de pruebas.
-                    </span>
-                  </div>
-                </label>
-              </div>
-
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-neutral-100">
-                <button
-                  type="button"
-                  onClick={() => setEditingStore(null)}
-                  className="px-4 py-2 text-xs font-medium text-neutral-600 hover:text-black rounded-xl cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-xl cursor-pointer"
-                >
-                  Guardar Cambios
                 </button>
               </div>
             </form>
