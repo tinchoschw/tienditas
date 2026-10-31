@@ -15,6 +15,7 @@ import { PlatformLandingView } from './components/PlatformLandingView';
 import { DisabledStoreNotice } from './components/DisabledStoreNotice';
 import { AdminHelpAssistant } from './components/AdminHelpAssistant';
 import { useModalHistory } from './hooks/useModalHistory';
+import { auth } from './firebase';
 import { Product, Sale, StoreSettings, CartItem, Store, PlatformConfig } from './types';
 import { INITIAL_PRODUCTS, INITIAL_SALES, INITIAL_SETTINGS, INITIAL_STORES } from './initialData';
 import {
@@ -124,8 +125,9 @@ function MainContent() {
   // Route parsing
   const [routeInfo, setRouteInfo] = useState<ParsedRoute>(() => parseCurrentRoute());
 
-  // Current store slug
+  // Current store slug & active store record
   const currentStoreSlug = routeInfo.storeSlug;
+  const activeStore = stores.find((s) => s.slug === currentStoreSlug || s.id === currentStoreSlug);
 
   // Navigation helper that updates history and triggers route update
   const navigateTo = (newPath: string) => {
@@ -199,6 +201,32 @@ function MainContent() {
       setIsAdminAuthenticated(false);
     }
   }, [currentStoreSlug]);
+
+  // Automatic multi-tenant authentication via Firebase Auth for SuperAdmin and store owners
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged((user) => {
+      if (user?.email) {
+        const email = user.email.toLowerCase().trim();
+        if (email === 'yunior@gmail.com') {
+          try {
+            sessionStorage.setItem('atelier_superadmin_auth', 'true');
+            if (currentStoreSlug) {
+              sessionStorage.setItem(`atelier_admin_auth_${currentStoreSlug}`, 'true');
+            }
+          } catch (e) {}
+          setIsAdminAuthenticated(true);
+        } else if (activeStore?.ownerEmail && email === activeStore.ownerEmail.toLowerCase().trim()) {
+          try {
+            if (currentStoreSlug) {
+              sessionStorage.setItem(`atelier_admin_auth_${currentStoreSlug}`, 'true');
+            }
+          } catch (e) {}
+          setIsAdminAuthenticated(true);
+        }
+      }
+    });
+    return () => unsub();
+  }, [currentStoreSlug, activeStore?.ownerEmail]);
 
   // Admin Sub-Tab
   const [adminTab, setAdminTab] = useState<'inventory' | 'sales' | 'brand' | 'payments' | 'account'>('inventory');
@@ -553,6 +581,10 @@ function MainContent() {
 
   const handleSelectStoreFromSuperAdmin = (slug: string, mode: 'storefront' | 'admin' = 'storefront') => {
     if (mode === 'admin') {
+      try {
+        sessionStorage.setItem(`atelier_admin_auth_${slug}`, 'true');
+      } catch (e) {}
+      setIsAdminAuthenticated(true);
       navigateTo(`/${slug}/admin`);
     } else {
       navigateTo(`/${slug}`);
@@ -591,8 +623,6 @@ function MainContent() {
   }
 
   // 3. STORE NOT FOUND OR EXPIRATION / SUSPENSION CHECKS
-  const activeStore = stores.find((s) => s.slug === currentStoreSlug || s.id === currentStoreSlug);
-  
   // Single expiration rule: si planEndsAt existe y ya pasó (o status es 'suspended'/'closed' o active === false)
   const isStoreExpiredOrSuspended = activeStore ? Boolean(
     activeStore.status === 'suspended' ||
@@ -767,6 +797,7 @@ function MainContent() {
         {routeInfo.route === 'admin' && !isAdminAuthenticated && (
           <AdminLoginView
             settings={settings}
+            store={activeStore}
             onSuccess={() => {
               if (currentStoreSlug) {
                 try {

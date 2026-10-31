@@ -582,6 +582,37 @@ app.post('/api/auth/superadmin-login', (req, res) => {
   return res.status(401).json({ error: 'Contraseña de SuperAdmin incorrecta.' });
 });
 
+// Endpoint to verify SuperAdmin Google ID token
+app.post('/api/auth/superadmin-verify', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No autorizado. Se requiere token Bearer de sesión.' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1].trim();
+    if (!adminAuth) {
+      return res.status(500).json({ error: 'Servicio de autenticación no disponible.' });
+    }
+
+    let decodedToken;
+    try {
+      decodedToken = await adminAuth.verifyIdToken(idToken);
+    } catch (verifyErr) {
+      return res.status(401).json({ error: 'Token de autenticación inválido o expirado.' });
+    }
+
+    const userEmail = (decodedToken.email || '').toLowerCase().trim();
+    if (userEmail !== 'yunior@gmail.com') {
+      return res.status(403).json({ error: 'Acceso restringido al Super Administrador.' });
+    }
+
+    return res.json({ success: true, email: decodedToken.email });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Error al verificar token' });
+  }
+});
+
 // Endpoint to get platform Mercado Pago configuration for SuperAdmin (read-only, requires superadmin ID token)
 app.get('/api/platform/mercadopago', async (req, res) => {
   try {
