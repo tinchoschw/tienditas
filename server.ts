@@ -1551,32 +1551,7 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
       }
       generatedSaleId = candidateId;
 
-      // Descontar stock en la transacción
-      for (const item of updatedCart) {
-        if (item.unlimited) continue;
-        const pRef = db.doc(`stores/${cleanStoreSlug}/products/${item.productId}`);
-        const pSnap = await transaction.get(pRef);
-        if (!pSnap.exists) throw new Error('Producto no encontrado durante la transacción.');
-        const pData = pSnap.data() || {};
-        const variants = (pData.variants || []).map((v: any) => {
-          if (v.id === item.variantId && !v.unlimited) {
-            const currentStock = Math.max(0, Number(v.stock || 0));
-            if (currentStock < item.quantity) {
-              throw new Error(`Stock insuficiente para "${pData.name}".`);
-            }
-            return { ...v, stock: currentStock - item.quantity };
-          }
-          return v;
-        });
-
-        const totalStock = variants.reduce((acc: number, curr: any) => {
-          return acc + ((curr.enabled !== false && !curr.unlimited) ? Number(curr.stock || 0) : 0);
-        }, 0);
-
-        transaction.update(pRef, { variants, totalStock, updatedAt: nowIso });
-      }
-
-      // Preparar venta en estado pendiente_total
+      // Las ventas con Mercado Pago nacen en preventa (Consulta sin stock) hasta que ingrese el pago
       createdSaleData = {
         id: generatedSaleId,
         date: nowIso,
@@ -1602,8 +1577,8 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
         total: serverCalculatedTotal,
         paidTotal: 0,
         pendingBalance: serverCalculatedTotal,
-        status: 'pendiente_total',
-        stockDiscounted: true,
+        status: 'preventa',
+        stockDiscounted: false,
         channel: 'mercadopago',
         checkoutId: cleanCheckoutId,
         mpPaymentIds: [],
@@ -1657,30 +1632,10 @@ app.post('/api/mercadopago/create-preference', async (req, res) => {
 
     if (!mpResponse.ok || !mpData.init_point) {
       console.error('[Mercado Pago Preference Error] Falló creación de preferencia:', mpData);
-      // REVERTIR el descuento de stock y cancelar la venta en Firestore
       try {
-        await db.runTransaction(async (rollbackTx) => {
-          for (const item of updatedCart) {
-            if (item.unlimited) continue;
-            const pRef = db.doc(`stores/${cleanStoreSlug}/products/${item.productId}`);
-            const pSnap = await rollbackTx.get(pRef);
-            if (pSnap.exists) {
-              const pData = pSnap.data() || {};
-              const variants = (pData.variants || []).map((v: any) => {
-                if (v.id === item.variantId && !v.unlimited) {
-                  return { ...v, stock: Number(v.stock || 0) + item.quantity };
-                }
-                return v;
-              });
-              const totalStock = variants.reduce((acc: number, curr: any) => acc + ((curr.enabled !== false && !curr.unlimited) ? Number(curr.stock || 0) : 0), 0);
-              rollbackTx.update(pRef, { variants, totalStock });
-            }
-          }
-          rollbackTx.delete(db.doc(`stores/${cleanStoreSlug}/sales/${generatedSaleId}`));
-        });
-        console.log(`[Mercado Pago Rollback] Stock y venta "${generatedSaleId}" revertidos exitosamente tras error de MP.`);
-      } catch (rollbackErr) {
-        console.error('[Mercado Pago Rollback Error] No se pudo revertir:', rollbackErr);
+        await db.doc(`stores/${cleanStoreSlug}/sales/${generatedSaleId}`).delete();
+      } catch (delErr) {
+        console.error('[Mercado Pago Cleanup Error]:', delErr);
       }
 
       return res.status(mpResponse.status || 500).json({
@@ -2158,6 +2113,35 @@ app.post('/api/mercadopago/webhook', async (req, res) => {
 
             if (paymentAlert) {
               updatePayload.paymentAlert = paymentAlert;
+            }
+
+            // Descontar stock al recibir el pago aprobado (las ventas MP nacen en preventa sin reservar stock)
+            if (!saleData.stockDiscounted && saleData.status !== 'cancelada') {
+              try {
+                for (const it of (saleData.items || [])) {
+                  if (it.unlimited) continue;
+                  const pRef = db.doc(`stores/${storeSlug}/products/${it.productId}`);
+                  const pSnap = await pRef.get();
+                  if (pSnap.exists) {
+                    const pData = pSnap.data() || {};
+                    const variants = (pData.variants || []).map((v: any) => {
+                      const matchVar = (v.id && it.variantId && v.id === it.variantId) ||
+                        (v.attributeOptionId1 && it.attributeOptionId1 && v.attributeOptionId1 === it.attributeOptionId1 && v.attributeOptionId2 && it.attributeOptionId2 && v.attributeOptionId2 === it.attributeOptionId2) ||
+                        (v.color === it.color && v.size === it.size);
+                      if (matchVar && !v.unlimited) {
+                        return { ...v, stock: Math.max(0, Number(v.stock || 0) - Number(it.quantity || 1)) };
+                      }
+                      return v;
+                    });
+                    const totalStock = variants.reduce((acc: number, curr: any) => acc + ((curr.enabled !== false && !curr.unlimited) ? Number(curr.stock || 0) : 0), 0);
+                    await pRef.update({ variants, totalStock, updatedAt: nowIso });
+                  }
+                }
+                updatePayload.stockDiscounted = true;
+                console.log(`[Mercado Pago Webhook] Stock descontado exitosamente para la venta "${extRef}".`);
+              } catch (stockErr) {
+                console.error(`[Mercado Pago Webhook Error] Error al descontar stock para la venta "${extRef}":`, stockErr);
+              }
             }
 
             await saleRef.update(updatePayload);

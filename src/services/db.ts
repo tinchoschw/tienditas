@@ -1073,8 +1073,17 @@ export async function saveProduct(
     }
   }
 
+  const cleanedVariants = (product.variants || []).map((v) => {
+    const cleanVar: any = { ...v };
+    Object.keys(cleanVar).forEach((k) => {
+      if (cleanVar[k] === undefined) delete cleanVar[k];
+    });
+    return cleanVar;
+  });
+
   const updatedProduct: Product = {
     ...product,
+    variants: cleanedVariants,
     images: safeImages,
     totalStock,
     isUnlimited,
@@ -1095,13 +1104,14 @@ export async function saveProduct(
 
   // Firestore
   try {
+    const cleanData = sanitizeForFirestore(updatedProduct);
     const pRef = doc(db, 'stores', storeId, 'products', product.id);
-    await setDoc(pRef, updatedProduct, { merge: true });
+    await setDoc(pRef, cleanData, { merge: true });
 
     // If apolo, mirror to legacy products collection
     if (storeId === 'apolo') {
       try {
-        await setDoc(doc(db, 'products', product.id), updatedProduct, { merge: true });
+        await setDoc(doc(db, 'products', product.id), cleanData, { merge: true });
       } catch (legacyErr) {
         console.warn(legacyErr);
       }

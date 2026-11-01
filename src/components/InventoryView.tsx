@@ -1320,7 +1320,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       <th className="py-3 px-4">Prenda / Modelo</th>
                       <th className="py-3 px-4">Categoría</th>
                       <th className="py-3 px-4">Precio Venta</th>
-                      <th className="py-3 px-4">Costo Producción</th>
+                      <th className="py-3 px-4">Precio Promoción</th>
                       <th className="py-3 px-4">Variantes & Stock</th>
                       <th className="py-3 px-4">Disponibilidad Online</th>
                       <th className="py-3 px-4 text-right">Acciones</th>
@@ -1382,13 +1382,21 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                             </td>
 
                             {/* Price */}
-                            <td className="py-3.5 px-4 font-bold text-black">
-                              ${prod.price.toLocaleString('es-AR')}
+                            <td className="py-3.5 px-4">
+                              <div className="font-bold text-black">
+                                ${prod.price.toLocaleString('es-AR')}
+                              </div>
                             </td>
 
-                            {/* Cost */}
-                            <td className="py-3.5 px-4 text-neutral-500 font-medium">
-                              ${prod.cost.toLocaleString('es-AR')}
+                            {/* Promotional Price */}
+                            <td className="py-3.5 px-4 font-semibold">
+                              {prod.discountPrice && prod.discountPrice > 0 ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold text-xs">
+                                  ${prod.discountPrice.toLocaleString('es-AR')}
+                                </span>
+                              ) : (
+                                <span className="text-neutral-400 font-medium">—</span>
+                              )}
                             </td>
 
                             {/* Variants & Stock */}

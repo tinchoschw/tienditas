@@ -431,25 +431,26 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
         const existing = product.variants.find((v) => v.attributeOptionId1 === optId || v.color === opt.label);
 
         if (existing) {
-          return {
+          const updated: ProductVariant = {
             ...existing,
-            attributeOptionId1: optId,
-            attributeOptionId2: undefined
+            attributeOptionId1: optId
           };
+          delete (updated as any).attributeOptionId2;
+          return updated;
         }
 
-        return {
+        const newVar: ProductVariant = {
           id: `var-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           color: attribute1.type === 'color' ? opt.label : '',
-          colorHex: opt.hex,
           size: attribute1.type === 'text' ? opt.label : '',
           sku: `${prefix}-${opt.label.slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '')}`,
           stock: 0,
           enabled: true,
           unlimited: false,
-          attributeOptionId1: optId,
-          attributeOptionId2: undefined
+          attributeOptionId1: optId
         };
+        if (opt.hex) newVar.colorHex = opt.hex;
+        return newVar;
       });
 
       setProduct({ ...product, variants: generated });
@@ -466,25 +467,26 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
         const existing = product.variants.find((v) => v.attributeOptionId2 === optId || v.size === opt.label);
 
         if (existing) {
-          return {
+          const updated: ProductVariant = {
             ...existing,
-            attributeOptionId1: undefined,
             attributeOptionId2: optId
           };
+          delete (updated as any).attributeOptionId1;
+          return updated;
         }
 
-        return {
+        const newVar: ProductVariant = {
           id: `var-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           color: attribute2.type === 'color' ? opt.label : '',
-          colorHex: opt.hex,
           size: attribute2.type === 'text' ? opt.label : '',
           sku: `${prefix}-${opt.label.slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '')}`,
           stock: 0,
           enabled: true,
           unlimited: false,
-          attributeOptionId1: undefined,
           attributeOptionId2: optId
         };
+        if (opt.hex) newVar.colorHex = opt.hex;
+        return newVar;
       });
 
       setProduct({ ...product, variants: generated });

@@ -114,6 +114,56 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     return visible.length > 0 ? visible : attribute2.options;
   }, [attribute2, products]);
 
+  // Helper to check if a product has variants configured with Attribute 1
+  const productHasAttr1 = (p: Product) => {
+    if (Array.isArray(p.attributesUsed)) {
+      return p.attributesUsed.includes('attr1');
+    }
+    return p.variants.some((v) => {
+      if (v.attributeOptionId1) return true;
+      if (attribute1.type === 'color' && v.color && v.color.toLowerCase() !== 'único' && v.color.toLowerCase() !== 'unico') {
+        return attribute1.options.some((o) => o.label.toLowerCase() === v.color.toLowerCase());
+      }
+      if (attribute1.type !== 'color' && v.size && v.size.toLowerCase() !== 'u' && v.size.toLowerCase() !== 'único' && v.size.toLowerCase() !== 'unico') {
+        return attribute1.options.some((o) => o.label.toLowerCase() === v.size.toLowerCase());
+      }
+      return false;
+    });
+  };
+
+  // Helper to check if a product has variants configured with Attribute 2
+  const productHasAttr2 = (p: Product) => {
+    if (Array.isArray(p.attributesUsed)) {
+      return p.attributesUsed.includes('attr2');
+    }
+    return p.variants.some((v) => {
+      if (v.attributeOptionId2) return true;
+      if (attribute2.type === 'color' && v.color && v.color.toLowerCase() !== 'único' && v.color.toLowerCase() !== 'unico') {
+        return attribute2.options.some((o) => o.label.toLowerCase() === v.color.toLowerCase());
+      }
+      if (attribute2.type !== 'color' && v.size && v.size.toLowerCase() !== 'u' && v.size.toLowerCase() !== 'único' && v.size.toLowerCase() !== 'unico') {
+        return attribute2.options.some((o) => o.label.toLowerCase() === v.size.toLowerCase());
+      }
+      return false;
+    });
+  };
+
+  // Check if there are active products without Attribute 1 to show "Otros" filter
+  const hasProductsWithoutAttr1 = useMemo(() => {
+    if (!attribute1.enabled) return false;
+    return products.some(
+      (p) => p.enabledOnline && p.variants.some(isVariantVisible) && !productHasAttr1(p)
+    );
+  }, [attribute1, products]);
+
+  // Check if there are active products without Attribute 2 to show "Otros" filter
+  const hasProductsWithoutAttr2 = useMemo(() => {
+    if (!attribute2.enabled) return false;
+    return products.some(
+      (p) => p.enabledOnline && p.variants.some(isVariantVisible) && !productHasAttr2(p)
+    );
+  }, [attribute2, products]);
+
   // Toggle filter helper functions
   const toggleCategory = (cat: string) => {
     setSelectedCategories((prev) =>
@@ -168,31 +218,49 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
           if (!isVariantVisible(v)) return false;
 
           if (attribute1.enabled && selectedAttr1.length > 0) {
-            const vOpt1 = v.attributeOptionId1 || '';
-            const match1 = selectedAttr1.some((sel) => {
-              if (vOpt1 && sel === vOpt1) return true;
-              const opt = attribute1.options.find((o) => o.id === sel);
-              if (opt) {
-                if (v.color && v.color.toLowerCase() === opt.label.toLowerCase()) return true;
-                if (v.size && v.size.toLowerCase() === opt.label.toLowerCase()) return true;
-              }
-              return false;
-            });
-            if (!match1) return false;
+            const hasOther1 = selectedAttr1.includes('__other__');
+            const hasSpecificOptions1 = selectedAttr1.some((s) => s !== '__other__');
+            const pHas1 = productHasAttr1(p);
+
+            if (!pHas1) {
+              if (!hasOther1) return false;
+            } else {
+              if (!hasSpecificOptions1) return false;
+              const vOpt1 = v.attributeOptionId1 || '';
+              const match1 = selectedAttr1.filter((s) => s !== '__other__').some((sel) => {
+                if (vOpt1 && sel === vOpt1) return true;
+                const opt = attribute1.options.find((o) => o.id === sel);
+                if (opt) {
+                  if (v.color && v.color.toLowerCase() === opt.label.toLowerCase()) return true;
+                  if (v.size && v.size.toLowerCase() === opt.label.toLowerCase()) return true;
+                }
+                return false;
+              });
+              if (!match1) return false;
+            }
           }
 
           if (attribute2.enabled && selectedAttr2.length > 0) {
-            const vOpt2 = v.attributeOptionId2 || '';
-            const match2 = selectedAttr2.some((sel) => {
-              if (vOpt2 && sel === vOpt2) return true;
-              const opt = attribute2.options.find((o) => o.id === sel);
-              if (opt) {
-                if (v.size && v.size.toLowerCase() === opt.label.toLowerCase()) return true;
-                if (v.color && v.color.toLowerCase() === opt.label.toLowerCase()) return true;
-              }
-              return false;
-            });
-            if (!match2) return false;
+            const hasOther2 = selectedAttr2.includes('__other__');
+            const hasSpecificOptions2 = selectedAttr2.some((s) => s !== '__other__');
+            const pHas2 = productHasAttr2(p);
+
+            if (!pHas2) {
+              if (!hasOther2) return false;
+            } else {
+              if (!hasSpecificOptions2) return false;
+              const vOpt2 = v.attributeOptionId2 || '';
+              const match2 = selectedAttr2.filter((s) => s !== '__other__').some((sel) => {
+                if (vOpt2 && sel === vOpt2) return true;
+                const opt = attribute2.options.find((o) => o.id === sel);
+                if (opt) {
+                  if (v.size && v.size.toLowerCase() === opt.label.toLowerCase()) return true;
+                  if (v.color && v.color.toLowerCase() === opt.label.toLowerCase()) return true;
+                }
+                return false;
+              });
+              if (!match2) return false;
+            }
           }
 
           return true;
@@ -699,6 +767,22 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                               </label>
                             );
                           })}
+                          {hasProductsWithoutAttr1 && (
+                            <label className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors border-t border-neutral-100 pt-2 mt-1">
+                              <div className="flex items-center gap-2.5">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedAttr1.includes('__other__')}
+                                  onChange={() => toggleAttr1('__other__')}
+                                  className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
+                                />
+                                <span className="material-symbols-outlined text-[15px] text-neutral-400">help_outline</span>
+                                <span className={selectedAttr1.includes('__other__') ? 'font-bold text-black' : 'text-neutral-700'}>
+                                  Otros
+                                </span>
+                              </div>
+                            </label>
+                          )}
                         </div>
                       </div>
                     </>
@@ -778,6 +862,22 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                               </label>
                             );
                           })}
+                          {hasProductsWithoutAttr2 && (
+                            <label className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors border-t border-neutral-100 pt-2 mt-1">
+                              <div className="flex items-center gap-2.5">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedAttr2.includes('__other__')}
+                                  onChange={() => toggleAttr2('__other__')}
+                                  className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
+                                />
+                                <span className="material-symbols-outlined text-[15px] text-neutral-400">help_outline</span>
+                                <span className={selectedAttr2.includes('__other__') ? 'font-bold text-black' : 'text-neutral-700'}>
+                                  Otros
+                                </span>
+                              </div>
+                            </label>
+                          )}
                         </div>
                       </div>
                     </>
@@ -866,7 +966,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     key={id}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#efeded] text-black text-[11px] font-medium"
                   >
-                    <span>{attribute1.name}: {opt?.label || id}</span>
+                    <span>{attribute1.name}: {id === '__other__' ? 'Otros' : (opt?.label || id)}</span>
                     <button
                       type="button"
                       onClick={() => toggleAttr1(id)}
@@ -885,7 +985,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     key={id}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#efeded] text-black text-[11px] font-medium"
                   >
-                    <span>{attribute2.name}: {opt?.label || id}</span>
+                    <span>{attribute2.name}: {id === '__other__' ? 'Otros' : (opt?.label || id)}</span>
                     <button
                       type="button"
                       onClick={() => toggleAttr2(id)}

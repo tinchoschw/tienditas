@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Sale, Product, SaleItem, SalePayment, StoreFeatureFlags, StoreSettings } from '../types';
 import { ensureStoreAttributes, formatVariantSummary } from '../utils/attributeUtils';
+import { useModalHistory } from '../hooks/useModalHistory';
 
 interface SalesViewProps {
   sales: Sale[];
@@ -37,6 +38,39 @@ export const SalesView: React.FC<SalesViewProps> = ({
   // Floating Action Button observer for Nueva Venta
   const newSaleBtnRef = useRef<HTMLButtonElement>(null);
   const [isNewSaleBtnVisible, setIsNewSaleBtnVisible] = useState(true);
+
+  // Active action dropdown menu for a sale row
+  const [activeActionMenuSaleId, setActiveActionMenuSaleId] = useState<string | null>(null);
+
+  // Close row action menu on click outside, Escape, or mobile back button
+  useEffect(() => {
+    if (!activeActionMenuSaleId) return;
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-sale-action-menu]')) {
+        setActiveActionMenuSaleId(null);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActiveActionMenuSaleId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeActionMenuSaleId]);
+
+  useModalHistory({
+    isOpen: Boolean(activeActionMenuSaleId),
+    onClose: () => setActiveActionMenuSaleId(null),
+    modalKey: 'sales-row-action-menu'
+  });
 
   useEffect(() => {
     const el = newSaleBtnRef.current;
@@ -589,10 +623,16 @@ export const SalesView: React.FC<SalesViewProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.setAttribute('download', `ventas-y-cobros-atelier-${new Date().toISOString().slice(0, 10)}.csv`);
+    const storeSlugOrName = (settings?.storeName || 'tienda')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9_-]/g, '-')
+      .replace(/-+/g, '-');
+    a.setAttribute('download', `ventas-y-cobros-${storeSlugOrName}-${new Date().toISOString().slice(0, 10)}.csv`);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -660,101 +700,101 @@ export const SalesView: React.FC<SalesViewProps> = ({
       )}
 
       {/* Metrics Bar / Ledger Summary */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="flex items-stretch overflow-x-auto no-scrollbar gap-3 pb-1 w-full">
         {/* Total Vendido */}
-        <div className="p-5 rounded-xl bg-white shadow-xs border border-[#efeded] flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wider text-neutral-500 font-semibold">
+        <div className="min-w-[200px] sm:min-w-[220px] flex-1 p-3.5 rounded-xl bg-white shadow-xs border border-[#efeded] flex flex-col justify-between shrink-0">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] uppercase tracking-wider text-neutral-500 font-semibold truncate">
               Total Vendido del Mes
             </span>
-            <div className="w-9 h-9 rounded-lg bg-[#f5f3f3] flex items-center justify-center text-black">
-              <span className="material-symbols-outlined text-[20px]">trending_up</span>
+            <div className="w-7 h-7 rounded-lg bg-[#f5f3f3] flex items-center justify-center text-black shrink-0">
+              <span className="material-symbols-outlined text-[16px]">trending_up</span>
             </div>
           </div>
-          <div className="mt-4">
-            <div className="font-headline-lg text-2xl sm:text-3xl text-black font-bold tracking-tight">
+          <div className="mt-2.5">
+            <div className="font-headline-lg text-lg sm:text-xl text-black font-bold tracking-tight">
               ${totalSold.toLocaleString('es-AR')}
             </div>
-            <p className="text-xs text-neutral-500 mt-1 flex items-center gap-1">
-              <span className="text-emerald-700 font-bold">+14.2%</span> vs. ciclo mensual previo
+            <p className="text-[11px] text-neutral-500 mt-0.5 flex items-center gap-1">
+              <span className="text-emerald-700 font-bold">+14.2%</span> vs. ciclo previo
             </p>
           </div>
-          <div className="w-full bg-[#efeded] h-1.5 rounded-full mt-4 overflow-hidden">
+          <div className="w-full bg-[#efeded] h-1.5 rounded-full mt-2.5 overflow-hidden">
             <div className="bg-black h-full w-[78%]"></div>
           </div>
         </div>
 
         {/* Total Cobrado */}
-        <div className="p-5 rounded-xl bg-white shadow-xs border border-[#efeded] flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wider text-neutral-500 font-semibold">
+        <div className="min-w-[200px] sm:min-w-[220px] flex-1 p-3.5 rounded-xl bg-white shadow-xs border border-[#efeded] flex flex-col justify-between shrink-0">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] uppercase tracking-wider text-neutral-500 font-semibold truncate">
               Total Cobrado
             </span>
-            <div className="w-9 h-9 rounded-lg bg-[#f5f3f3] flex items-center justify-center text-black">
-              <span className="material-symbols-outlined text-[20px]">account_balance_wallet</span>
+            <div className="w-7 h-7 rounded-lg bg-[#f5f3f3] flex items-center justify-center text-black shrink-0">
+              <span className="material-symbols-outlined text-[16px]">account_balance_wallet</span>
             </div>
           </div>
-          <div className="mt-4">
-            <div className="font-headline-lg text-2xl sm:text-3xl text-black font-bold tracking-tight">
+          <div className="mt-2.5">
+            <div className="font-headline-lg text-lg sm:text-xl text-black font-bold tracking-tight">
               ${totalCollected.toLocaleString('es-AR')}
             </div>
-            <p className="text-xs text-neutral-500 mt-1">
-              <strong className="text-black">{collectedPercentage}%</strong> de la facturación consolidada
+            <p className="text-[11px] text-neutral-500 mt-0.5">
+              <strong className="text-black">{collectedPercentage}%</strong> facturación
             </p>
           </div>
-          <div className="w-full bg-[#efeded] h-1.5 rounded-full mt-4 overflow-hidden">
+          <div className="w-full bg-[#efeded] h-1.5 rounded-full mt-2.5 overflow-hidden">
             <div className="bg-neutral-800 h-full" style={{ width: `${Math.min(100, Number(collectedPercentage))}%` }}></div>
           </div>
         </div>
 
         {/* Pendiente de Cobro */}
-        <div className="p-5 rounded-xl bg-white shadow-xs border border-[#efeded] flex flex-col justify-between relative">
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wider text-neutral-500 font-semibold">
+        <div className="min-w-[200px] sm:min-w-[220px] flex-1 p-3.5 rounded-xl bg-white shadow-xs border border-[#efeded] flex flex-col justify-between shrink-0 relative">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] uppercase tracking-wider text-neutral-500 font-semibold truncate">
               Pendiente de Cobro
             </span>
-            <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-800 text-[11px] font-bold">
+            <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 text-[10px] font-bold shrink-0">
               Falta cobrar
             </span>
           </div>
-          <div className="mt-4">
-            <div className="font-headline-lg text-2xl sm:text-3xl text-red-600 font-bold tracking-tight">
+          <div className="mt-2.5">
+            <div className="font-headline-lg text-lg sm:text-xl text-red-600 font-bold tracking-tight">
               ${totalPending.toLocaleString('es-AR')}
             </div>
-            <p className="text-xs text-neutral-500 mt-1 flex items-center gap-1">
-              <span className="material-symbols-outlined text-[15px] text-red-600">schedule</span>
-              <span>{sales.filter((s) => s.pendingBalance > 0).length} cobros con saldo activo</span>
+            <p className="text-[11px] text-neutral-500 mt-0.5 flex items-center gap-1">
+              <span className="material-symbols-outlined text-[13px] text-red-600">schedule</span>
+              <span>{sales.filter((s) => s.pendingBalance > 0).length} con saldo activo</span>
             </p>
           </div>
-          <div className="w-full bg-[#efeded] h-1.5 rounded-full mt-4 overflow-hidden">
+          <div className="w-full bg-[#efeded] h-1.5 rounded-full mt-2.5 overflow-hidden">
             <div className="bg-red-600 h-full w-[35%]"></div>
           </div>
         </div>
 
         {/* Ventas Activas */}
-        <div className="p-5 rounded-xl bg-white shadow-xs border border-[#efeded] flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wider text-neutral-500 font-semibold">
+        <div className="min-w-[200px] sm:min-w-[220px] flex-1 p-3.5 rounded-xl bg-white shadow-xs border border-[#efeded] flex flex-col justify-between shrink-0">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] uppercase tracking-wider text-neutral-500 font-semibold truncate">
               Ventas Activas
             </span>
-            <div className="w-9 h-9 rounded-lg bg-[#f5f3f3] flex items-center justify-center text-black">
-              <span className="material-symbols-outlined text-[20px]">local_mall</span>
+            <div className="w-7 h-7 rounded-lg bg-[#f5f3f3] flex items-center justify-center text-black shrink-0">
+              <span className="material-symbols-outlined text-[16px]">local_mall</span>
             </div>
           </div>
-          <div className="mt-4">
-            <div className="font-headline-lg text-2xl sm:text-3xl text-black font-bold tracking-tight">
+          <div className="mt-2.5">
+            <div className="font-headline-lg text-lg sm:text-xl text-black font-bold tracking-tight">
               {activeSalesCount}
             </div>
-            <p className="text-xs text-neutral-500 mt-1">
+            <p className="text-[11px] text-neutral-500 mt-0.5">
               {sales.filter((s) => s.status === 'cobrada_total').length} liquidadas al 100%
             </p>
           </div>
-          <div className="flex items-center gap-1 mt-4">
-            <span className="w-2.5 h-2.5 rounded-full bg-neutral-900"></span>
-            <span className="w-2.5 h-2.5 rounded-full bg-neutral-700"></span>
-            <span className="w-2.5 h-2.5 rounded-full bg-neutral-400"></span>
-            <span className="text-[11px] text-neutral-500 pl-1 font-medium">
-              Promedio ticket ${avgTicket.toLocaleString('es-AR')}
+          <div className="flex items-center gap-1 mt-2.5">
+            <span className="w-2 h-2 rounded-full bg-neutral-900"></span>
+            <span className="w-2 h-2 rounded-full bg-neutral-700"></span>
+            <span className="w-2 h-2 rounded-full bg-neutral-400"></span>
+            <span className="text-[10px] text-neutral-500 pl-1 font-medium truncate">
+              Promedio ${avgTicket.toLocaleString('es-AR')}
             </span>
           </div>
         </div>
@@ -1309,100 +1349,130 @@ export const SalesView: React.FC<SalesViewProps> = ({
                       </div>
                     </td>
 
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        {isPreventa && onConfirmPreventaSale && (
-                          <button
-                            type="button"
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              await onConfirmPreventaSale(sale.id);
-                            }}
-                            className="px-2.5 py-1 rounded-lg bg-indigo-900 hover:bg-black text-white text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
-                            title="Confirmar Pedido y Descontar Stock"
-                          >
-                            <span className="material-symbols-outlined text-[13px]">check_circle</span>
-                            <span>Confirmar</span>
-                          </button>
-                        )}
-
-                        {Boolean(sale.customerPhone || (sale.contactInfo && sale.contactInfo.replace(/[^0-9]/g, '').length >= 8)) && (
-                          <a
-                            href={`https://wa.me/${(sale.customerPhone || sale.contactInfo).replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
-                              `Hola ${sale.customer || ''}! Te escribimos respecto a tu pedido #${sale.id}. ¿Te gustaría que coordinemos el pago y entrega?`
-                            )}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="p-1 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors"
-                            title="Abrir chat de WhatsApp con el cliente"
-                          >
-                            <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
-                              <path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766 0-3.18-2.587-5.771-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.007c.106.005.249-.04.39.299.144.347.491 1.2.534 1.288.043.088.072.19.014.305-.058.115-.087.187-.173.289l-.26.305c-.087.087-.179.18-.077.355.101.174.453.748.971 1.21.668.595 1.232.78 1.406.867.174.086.275.072.376-.044.101-.116.433-.506.549-.679.116-.174.231-.145.39-.087s1.011.477 1.184.564.289.13.332.202c.044.073.044.42-.1 1.825zM12 2C6.477 2 2 6.477 2 12c0 1.891.527 3.662 1.444 5.176L2 22l4.981-1.306C8.424 21.528 10.151 22 12 22c5.523 0 10-4.477 10-10S17.523 2 12 2z" />
-                            </svg>
-                          </a>
-                        )}
-
+                    <td className="px-4 py-3 text-right" data-sale-action-menu>
+                      <div className="relative inline-block text-left">
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleOpenSaleModal(sale);
+                            setActiveActionMenuSaleId(activeActionMenuSaleId === sale.id ? null : sale.id);
                           }}
-                          className="px-2.5 py-1 rounded-lg bg-[#efeded] hover:bg-neutral-200 text-black text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
-                        >
-                          <span className="material-symbols-outlined text-[14px]">checkroom</span>
-                          <span>Productos ({sale.items.length})</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenSaleModal(sale);
-                          }}
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer ${
-                            sale.pendingBalance > 0
-                              ? 'bg-black text-white hover:bg-neutral-800'
-                              : 'bg-[#efeded] text-black hover:bg-neutral-200'
+                          className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all cursor-pointer ${
+                            activeActionMenuSaleId === sale.id
+                              ? 'bg-black text-white shadow-xs'
+                              : 'bg-[#efeded] hover:bg-neutral-200 text-neutral-800'
                           }`}
+                          title="Acciones de la venta"
                         >
-                          <span className="material-symbols-outlined text-[14px]">
-                            {sale.pendingBalance > 0 ? 'payments' : 'receipt_long'}
-                          </span>
-                          <span>
-                            {sale.pendingBalance > 0
-                              ? `Cobros ($${Math.round(sale.pendingBalance / 1000)}k)`
-                              : 'Ver Cobro'}
+                          <span className="material-symbols-outlined text-[18px]">
+                            {activeActionMenuSaleId === sale.id ? 'close' : 'keyboard_arrow_down'}
                           </span>
                         </button>
 
-                        {!isCancelled ? (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setCancelModalSale(sale);
-                            }}
-                            className="p-1 rounded-lg text-neutral-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                            title="Cancelar Venta y Reponer Stock"
+                        {activeActionMenuSaleId === sale.id && (
+                          <div
+                            className="absolute right-0 top-full mt-1.5 z-30 w-56 bg-white rounded-xl shadow-xl border border-neutral-200 py-1.5 text-left text-xs divide-y divide-neutral-100"
+                            onClick={(e) => e.stopPropagation()}
                           >
-                            <span className="material-symbols-outlined text-[17px]">cancel</span>
-                          </button>
-                        ) : (
-                          onDeleteSale && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDeleteConfirmSale(sale);
-                              }}
-                              className="p-1 rounded-lg text-neutral-400 hover:text-red-700 hover:bg-red-50 transition-colors cursor-pointer"
-                              title="Eliminar definitivamente venta cancelada"
-                            >
-                              <span className="material-symbols-outlined text-[17px]">delete_forever</span>
-                            </button>
-                          )
+                            <div className="py-1">
+                              {/* Ver detalle y prendas */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveActionMenuSaleId(null);
+                                  handleOpenSaleModal(sale);
+                                }}
+                                className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-neutral-800 hover:bg-neutral-100 transition-colors font-medium cursor-pointer"
+                              >
+                                <span className="material-symbols-outlined text-[18px] text-neutral-500">checkroom</span>
+                                <span>Ver prendas ({sale.items.length})</span>
+                              </button>
+
+                              {/* Cobros / Pagos */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveActionMenuSaleId(null);
+                                  handleOpenSaleModal(sale);
+                                }}
+                                className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-neutral-800 hover:bg-neutral-100 transition-colors font-medium cursor-pointer"
+                              >
+                                <span className="material-symbols-outlined text-[18px] text-neutral-500">
+                                  {sale.pendingBalance > 0 ? 'payments' : 'receipt_long'}
+                                </span>
+                                <span>
+                                  {sale.pendingBalance > 0
+                                    ? `Cobros (resta $${sale.pendingBalance.toLocaleString('es-AR')})`
+                                    : 'Ver comprobante y pagos'}
+                                </span>
+                              </button>
+                            </div>
+
+                            {(isPreventa || Boolean(sale.customerPhone || (sale.contactInfo && sale.contactInfo.replace(/[^0-9]/g, '').length >= 8))) && (
+                              <div className="py-1">
+                                {isPreventa && onConfirmPreventaSale && (
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      setActiveActionMenuSaleId(null);
+                                      await onConfirmPreventaSale(sale.id);
+                                    }}
+                                    className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-indigo-900 hover:bg-indigo-50 transition-colors font-bold cursor-pointer"
+                                  >
+                                    <span className="material-symbols-outlined text-[18px] text-indigo-700">check_circle</span>
+                                    <span>Confirmar pedido y stock</span>
+                                  </button>
+                                )}
+
+                                {Boolean(sale.customerPhone || (sale.contactInfo && sale.contactInfo.replace(/[^0-9]/g, '').length >= 8)) && (
+                                  <a
+                                    href={`https://wa.me/${(sale.customerPhone || sale.contactInfo).replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
+                                      `Hola ${sale.customer || ''}! Te escribimos respecto a tu pedido #${sale.id}. ¿Te gustaría que coordinemos el pago y entrega?`
+                                    )}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={() => setActiveActionMenuSaleId(null)}
+                                    className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-emerald-700 hover:bg-emerald-50 transition-colors font-medium"
+                                  >
+                                    <svg className="w-4 h-4 fill-emerald-600 shrink-0" viewBox="0 0 24 24">
+                                      <path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766 0-3.18-2.587-5.771-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.007c.106.005.249-.04.39.299.144.347.491 1.2.534 1.288.043.088.072.19.014.305-.058.115-.087.187-.173.289l-.26.305c-.087.087-.179.18-.077.355.101.174.453.748.971 1.21.668.595 1.232.78 1.406.867.174.086.275.072.376-.044.101-.116.433-.506.549-.679.116-.174.231-.145.39-.087s1.011.477 1.184.564.289.13.332.202c.044.073.044.42-.1 1.825zM12 2C6.477 2 2 6.477 2 12c0 1.891.527 3.662 1.444 5.176L2 22l4.981-1.306C8.424 21.528 10.151 22 12 22c5.523 0 10-4.477 10-10S17.523 2 12 2z" />
+                                    </svg>
+                                    <span>Contactar por WhatsApp</span>
+                                  </a>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="py-1">
+                              {!isCancelled ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveActionMenuSaleId(null);
+                                    setCancelModalSale(sale);
+                                  }}
+                                  className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-red-600 hover:bg-red-50 transition-colors font-medium cursor-pointer"
+                                >
+                                  <span className="material-symbols-outlined text-[18px]">cancel</span>
+                                  <span>Cancelar venta</span>
+                                </button>
+                              ) : (
+                                onDeleteSale && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveActionMenuSaleId(null);
+                                      setDeleteConfirmSale(sale);
+                                    }}
+                                    className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-red-700 hover:bg-red-50 transition-colors font-medium cursor-pointer"
+                                  >
+                                    <span className="material-symbols-outlined text-[18px]">delete_forever</span>
+                                    <span>Eliminar definitivamente</span>
+                                  </button>
+                                )
+                              )}
+                            </div>
+                          </div>
                         )}
                       </div>
                     </td>
