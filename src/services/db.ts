@@ -205,7 +205,6 @@ export const createNewStore = async (data: {
   attribute1?: StoreAttribute;
   attribute2?: StoreAttribute;
   termsAcceptedAt?: string;
-  adminPassword?: string;
   whatsappNumber?: string;
   isSandbox?: boolean;
   featureFlags?: StoreFeatureFlags;
@@ -234,7 +233,6 @@ export const createNewStore = async (data: {
     extensions: [],
     isSandbox: !!data.isSandbox,
     featureFlags: data.featureFlags ? { ...DEFAULT_FEATURE_FLAGS, ...data.featureFlags } : { ...DEFAULT_FEATURE_FLAGS },
-    adminPassword: data.adminPassword?.trim() || 'AdminApolo2026!',
     whatsappNumber: data.whatsappNumber?.trim() || data.ownerPhone?.trim() || '',
     primaryColor: data.isSandbox ? '#4F46E5' : '#1A1A1A',
     logoUrl: '',
@@ -249,7 +247,6 @@ export const createNewStore = async (data: {
   // Initialize fresh store settings with rubro attributes if provided
   const storeSettings: StoreSettings = {
     storeName: data.name.trim(),
-    adminPassword: data.adminPassword?.trim() || 'AdminApolo2026!',
     logoUrl: '',
     logoScale: 100,
     primaryColor: data.isSandbox ? '#4F46E5' : '#1A1A1A',

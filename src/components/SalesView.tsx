@@ -72,6 +72,15 @@ export const SalesView: React.FC<SalesViewProps> = ({
     modalKey: 'sales-row-action-menu'
   });
 
+  useModalHistory({
+    isOpen: showNewSalePanel,
+    onClose: () => {
+      resetNewSaleForm();
+      setShowNewSalePanel(false);
+    },
+    modalKey: 'new-sale-modal'
+  });
+
   useEffect(() => {
     const el = newSaleBtnRef.current;
     if (!el) return;
@@ -119,6 +128,18 @@ export const SalesView: React.FC<SalesViewProps> = ({
 
   // Modal to confirm permanent deletion (avoids window.confirm blocking in iframe)
   const [deleteConfirmSale, setDeleteConfirmSale] = useState<Sale | null>(null);
+
+  useModalHistory({
+    isOpen: Boolean(cancelModalSale),
+    onClose: () => setCancelModalSale(null),
+    modalKey: 'cancel-sale-modal'
+  });
+
+  useModalHistory({
+    isOpen: Boolean(deleteConfirmSale),
+    onClose: () => setDeleteConfirmSale(null),
+    modalKey: 'delete-confirm-sale-modal'
+  });
 
   // Alphabetically sorted categories
   const sortedCategories = useMemo(() => {
@@ -193,6 +214,12 @@ export const SalesView: React.FC<SalesViewProps> = ({
   const [modalSelectQty, setModalSelectQty] = useState<number>(1);
   const [modalSaving, setModalSaving] = useState<boolean>(false);
   const [modalSuccessMsg, setModalSuccessMsg] = useState<string | null>(null);
+
+  useModalHistory({
+    isOpen: Boolean(modalSale),
+    onClose: () => setModalSale(null),
+    modalKey: 'view-sale-modal'
+  });
 
   // Initial Payment form for New Sale
   const [newSalePaymentAmount, setNewSalePaymentAmount] = useState<string>('');
@@ -1321,11 +1348,19 @@ export const SalesView: React.FC<SalesViewProps> = ({
                           </span>
                         )}
                         {isPreventa && (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-900 text-[10px] font-bold">
-                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-pulse" />
-                          <span>Consulta (Sin stock)</span>
-                        </span>
-                      )}
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                            sale.channel === 'mercadopago'
+                              ? 'bg-sky-100 text-sky-900 border border-sky-200'
+                              : 'bg-indigo-100 text-indigo-900'
+                          }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${
+                              sale.channel === 'mercadopago' ? 'bg-sky-600' : 'bg-indigo-600'
+                            }`} />
+                            <span>
+                              {sale.channel === 'mercadopago' ? 'MP Pendiente (Sin stock)' : 'Consulta (Sin stock)'}
+                            </span>
+                          </span>
+                        )}
                       {isPaid && (
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
                           Cobrada Total
@@ -1641,22 +1676,46 @@ export const SalesView: React.FC<SalesViewProps> = ({
                 </div>
               )}
 
-              {/* Preventa Banner (if sale is WhatsApp inquiry without stock discount) */}
+              {/* Preventa Banner (if sale is WhatsApp inquiry or MP pending without stock discount) */}
               {modalSale.status === 'preventa' && (
-                <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs ${
+                  modalSale.channel === 'mercadopago'
+                    ? 'bg-sky-50/70 border-sky-200'
+                    : 'bg-indigo-50 border-indigo-200'
+                }`}>
                   <div className="flex items-start gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
-                      <span className="material-symbols-outlined text-[20px]">help_outline</span>
+                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                      modalSale.channel === 'mercadopago'
+                        ? 'bg-sky-100 text-sky-700'
+                        : 'bg-indigo-100 text-indigo-700'
+                    }`}>
+                      <span className="material-symbols-outlined text-[20px]">
+                        {modalSale.channel === 'mercadopago' ? 'schedule' : 'help_outline'}
+                      </span>
                     </div>
                     <div>
-                      <div className="font-bold text-xs text-indigo-950 flex items-center gap-2">
-                        <span>Consulta / Preventa por WhatsApp</span>
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-200/80 text-indigo-900 font-bold">
+                      <div className="font-bold text-xs text-neutral-900 flex items-center gap-2">
+                        <span>
+                          {modalSale.channel === 'mercadopago'
+                            ? 'Pedido iniciado con Mercado Pago (Pendiente)'
+                            : 'Consulta / Preventa por WhatsApp'}
+                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                          modalSale.channel === 'mercadopago'
+                            ? 'bg-sky-100 text-sky-800'
+                            : 'bg-indigo-200/80 text-indigo-900'
+                        }`}>
                           Sin stock descontado
                         </span>
                       </div>
-                      <p className="text-[11px] text-indigo-800/90 mt-0.5 leading-relaxed">
-                        Esta orden no descuenta inventario hasta ser confirmada. Cuando coordines el pago con el cliente, confirmala para descontar el stock del inventario.
+                      <p className={`text-[11px] mt-0.5 leading-relaxed ${
+                        modalSale.channel === 'mercadopago'
+                          ? 'text-sky-900/90'
+                          : 'text-indigo-800/90'
+                      }`}>
+                        {modalSale.channel === 'mercadopago'
+                          ? 'El cliente inició el pago por Mercado Pago pero aún no se acreditó. Cuando se apruebe el cobro, el sistema descontará el stock automáticamente y marcará la orden como pagada para que prepares la entrega. Si no paga con MP pero te abona por otro medio, podés confirmarla manualmente.'
+                          : 'Esta orden no descuenta inventario hasta ser confirmada. Cuando coordines el pago con el cliente, confirmala para descontar el stock del inventario.'}
                       </p>
                     </div>
                   </div>
@@ -1665,7 +1724,9 @@ export const SalesView: React.FC<SalesViewProps> = ({
                     {Boolean(modalSale.customerPhone || (modalSale.contactInfo && modalSale.contactInfo.replace(/[^0-9]/g, '').length >= 8)) && (
                       <a
                         href={`https://wa.me/${(modalSale.customerPhone || modalSale.contactInfo).replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
-                          `Hola ${modalSale.customer || ''}! Te escribimos respecto a tu pedido #${modalSale.id}. ¿Te gustaría que coordinemos el pago y entrega?`
+                          modalSale.channel === 'mercadopago'
+                            ? `Hola ${modalSale.customer || ''}! Te escribimos respecto a tu pedido #${modalSale.id} iniciado con Mercado Pago. ¿Tuviste algún inconveniente para completar el pago o te gustaría coordinarlo por otro medio?`
+                            : `Hola ${modalSale.customer || ''}! Te escribimos respecto a tu pedido #${modalSale.id}. ¿Te gustaría que coordinemos el pago y entrega?`
                         )}`}
                         target="_blank"
                         rel="noopener noreferrer"

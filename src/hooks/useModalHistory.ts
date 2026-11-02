@@ -4,6 +4,7 @@ export interface UseModalHistoryOptions {
   isOpen: boolean;
   onClose: () => void;
   modalKey: string;
+  closeOnEscape?: boolean;
   /**
    * Optional custom URL updater.
    * If provided, called with true on open (should push history entry)
@@ -14,16 +15,18 @@ export interface UseModalHistoryOptions {
 }
 
 /**
- * Custom React hook that connects modal/drawer visibility with the browser History API.
+ * Custom React hook that connects modal/drawer visibility with the browser History API
+ * and physical keyboard shortcuts.
  * 
- * Enables closing open overlays when the user presses the phone's physical or on-screen
- * "Back" button, or performs the Android/iOS swipe-back gesture, without navigating away
- * or leaving the application.
+ * Enables closing open overlays when:
+ * 1. The user presses the phone's physical or on-screen "Back" button, or swipes back
+ * 2. The user presses the "Escape" key on a desktop keyboard
  */
 export function useModalHistory({
   isOpen,
   onClose,
   modalKey,
+  closeOnEscape = true,
   customPush,
   customPop
 }: UseModalHistoryOptions) {
@@ -64,10 +67,18 @@ export function useModalHistory({
       onCloseRef.current();
     };
 
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (closeOnEscape && e.key === 'Escape') {
+        onCloseRef.current();
+      }
+    };
+
     window.addEventListener('popstate', handlePopState);
+    window.addEventListener('keydown', handleKeyDown);
 
     return () => {
       window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('keydown', handleKeyDown);
 
       // If the modal was dismissed via UI (X button, click backdrop, submit)
       // and NOT via the physical back button, remove the history entry

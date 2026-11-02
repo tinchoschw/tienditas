@@ -43,6 +43,12 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     typeof window !== 'undefined' ? window.innerWidth >= 768 : true
   );
   const [lastAddedProduct, setLastAddedProduct] = useState<string | null>(null);
+  const [stockNotice, setStockNotice] = useState<string | null>(null);
+
+  const showStockNotice = (msg: string) => {
+    setStockNotice(msg);
+    setTimeout(() => setStockNotice((prev) => (prev === msg ? null : prev)), 3500);
+  };
 
   // Deep link share feedback
   const [shareToast, setShareToast] = useState<string | null>(null);
@@ -469,7 +475,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
       visibleVariants[0];
 
     if (!matchedVariant) {
-      alert('Esta combinación no se encuentra visible o disponible.');
+      showStockNotice('Esta combinación no se encuentra disponible.');
       return;
     }
 
@@ -487,7 +493,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     const remainingStock = isUnlimited ? 999999 : Math.max(0, maxStock - inCart);
 
     if (!isUnlimited && remainingStock <= 0) {
-      alert(`No hay más stock disponible de esta combinación.`);
+      showStockNotice(`Ya agregaste todo el stock disponible de esta combinación al carrito.`);
       return;
     }
 
@@ -537,7 +543,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
       visibleVariants[0];
 
     if (!matchedVariant) {
-      alert('Esta prenda no tiene combinaciones visibles disponibles.');
+      showStockNotice('Esta prenda no tiene combinaciones disponibles.');
       return;
     }
 
@@ -555,7 +561,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     const remainingStock = isUnlimited ? 999999 : Math.max(0, maxStock - inCart);
 
     if (!isUnlimited && remainingStock <= 0) {
-      alert(`No hay más stock disponible de "${product.name}".`);
+      showStockNotice(`Ya agregaste todo el stock disponible de "${product.name}" al carrito.`);
       return;
     }
 
@@ -613,6 +619,23 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
         >
           <span className="material-symbols-outlined text-[18px] text-emerald-400">check_circle</span>
           <span className="font-medium text-white">{shareToast}</span>
+        </div>
+      )}
+
+      {/* Toast Notification for Stock Notice */}
+      {stockNotice && (
+        <div 
+          className="fixed top-20 sm:top-24 right-4 sm:right-8 z-[100] text-amber-950 text-xs px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 bg-amber-50 border border-amber-200/90 backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-200 max-w-sm"
+        >
+          <span className="material-symbols-outlined text-[19px] text-amber-600 shrink-0">inventory_2</span>
+          <span className="font-medium leading-snug">{stockNotice}</span>
+          <button
+            type="button"
+            onClick={() => setStockNotice(null)}
+            className="ml-auto text-amber-800 hover:text-black text-sm px-1 cursor-pointer font-bold"
+          >
+            ×
+          </button>
         </div>
       )}
 

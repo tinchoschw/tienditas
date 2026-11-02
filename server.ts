@@ -572,16 +572,6 @@ function renderOAuthErrorHtml(errorMsg: string, targetStore: string = '', fallba
   `;
 }
 
-// Endpoint for SuperAdmin Login authentication (verified securely server-side)
-app.post('/api/auth/superadmin-login', (req, res) => {
-  const { password } = req.body || {};
-  const expectedPassword = process.env.SUPERADMIN_PASSWORD || 'GenericaApolo2026!';
-  if (password && typeof password === 'string' && password.trim() === expectedPassword.trim()) {
-    return res.json({ success: true });
-  }
-  return res.status(401).json({ error: 'Contraseña de SuperAdmin incorrecta.' });
-});
-
 // Endpoint to verify SuperAdmin Google ID token
 app.post('/api/auth/superadmin-verify', async (req, res) => {
   try {

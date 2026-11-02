@@ -255,12 +255,6 @@ function MainContent() {
   });
 
   useModalHistory({
-    isOpen: isHelpAssistantOpen,
-    onClose: () => setIsHelpAssistantOpen(false),
-    modalKey: 'help-assistant'
-  });
-
-  useModalHistory({
     isOpen: isFeedbackModalOpen,
     onClose: () => setIsFeedbackModalOpen(false),
     modalKey: 'store-feedback'

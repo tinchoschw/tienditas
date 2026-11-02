@@ -61,7 +61,6 @@ export const BrandCustomizerView: React.FC<BrandCustomizerViewProps> = ({
   const [addPresetTarget, setAddPresetTarget] = useState<'primary' | 'secondary' | 'background' | null>(null);
   const [newPresetColor, setNewPresetColor] = useState<string>('#1A1A1A');
   const [newPresetName, setNewPresetName] = useState<string>('');
-  const [showAdminPassword, setShowAdminPassword] = useState<boolean>(false);
 
   const handleOpenAddPreset = (target: 'primary' | 'secondary' | 'background') => {
     setAddPresetTarget(target);
@@ -748,51 +747,6 @@ export const BrandCustomizerView: React.FC<BrandCustomizerViewProps> = ({
                   />
                   <div className="w-10 h-5 bg-neutral-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
                 </label>
-              </div>
-            </div>
-          </section>
-
-          {/* SECCIÓN 4: SEGURIDAD Y CLAVE DE ADMINISTRACIÓN */}
-          <section className="bg-white rounded-xl p-6 shadow-xs border border-[#efeded] space-y-4">
-            <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
-              <div>
-                <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">
-                  Sección 04
-                </span>
-                <h2 className="text-base font-bold text-black">Clave de Acceso para Administrar</h2>
-              </div>
-              <span className="material-symbols-outlined text-neutral-400">lock</span>
-            </div>
-
-            <div className="p-4 rounded-xl bg-[#f5f3f3] border border-neutral-200 space-y-3">
-              <div>
-                <label className="text-xs font-bold text-black block mb-1">
-                  Contraseña de Administrador
-                </label>
-                <p className="text-[11px] text-neutral-500 mb-2.5">
-                  Esta clave es solicitada para ingresar a la gestión de productos, inventario, ventas y personalización de marca.
-                </p>
-                <div className="relative w-full sm:max-w-md">
-                  <input
-                    type={showAdminPassword ? 'text' : 'password'}
-                    value={formSettings.adminPassword || 'AdminApolo2026!'}
-                    onChange={(e) =>
-                      setFormSettings({ ...formSettings, adminPassword: e.target.value })
-                    }
-                    placeholder="Escribe la clave de administrador"
-                    className="w-full pl-3.5 pr-10 py-2.5 rounded-xl bg-white border border-neutral-200 text-sm font-mono font-semibold text-black focus:outline-none focus:ring-1 focus:ring-black"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowAdminPassword(!showAdminPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-black transition-colors cursor-pointer"
-                    title={showAdminPassword ? 'Ocultar clave' : 'Mostrar clave'}
-                  >
-                    <span className="material-symbols-outlined text-[18px]">
-                      {showAdminPassword ? 'visibility_off' : 'visibility'}
-                    </span>
-                  </button>
-                </div>
               </div>
             </div>
           </section>

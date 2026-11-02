@@ -13,6 +13,7 @@ import { StoreSubscriptionManagerModal } from './StoreSubscriptionManagerModal';
 import { FeedbackViewerModal } from './FeedbackViewerModal';
 import { RubrosManagerModal } from './RubrosManagerModal';
 import { auth, signInWithGoogle, signOutUser } from '../firebase';
+import { useModalHistory } from '../hooks/useModalHistory';
 
 interface SuperAdminViewProps {
   stores: Store[];
@@ -119,6 +120,37 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   const [tempBasePrice, setTempBasePrice] = useState(24900);
   const [tempSupportWhatsApp, setTempSupportWhatsApp] = useState('5491100000000');
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+
+  // Mobile Back Button and Esc key handlers for SuperAdmin modals
+  useModalHistory({
+    isOpen: Boolean(subscriptionManagerStore),
+    onClose: () => setSubscriptionManagerStore(null),
+    modalKey: 'superadmin-subscription-manager'
+  });
+
+  useModalHistory({
+    isOpen: isCreateModalOpen,
+    onClose: () => setIsCreateModalOpen(false),
+    modalKey: 'superadmin-create-store'
+  });
+
+  useModalHistory({
+    isOpen: isFeedbackViewerOpen,
+    onClose: () => setIsFeedbackViewerOpen(false),
+    modalKey: 'superadmin-feedback-viewer'
+  });
+
+  useModalHistory({
+    isOpen: isRubrosModalOpen,
+    onClose: () => setIsRubrosModalOpen(false),
+    modalKey: 'superadmin-rubros-manager'
+  });
+
+  useModalHistory({
+    isOpen: isBasePriceModalOpen,
+    onClose: () => setIsBasePriceModalOpen(false),
+    modalKey: 'superadmin-base-price'
+  });
 
   // Store Filter and View Mode
   const [storeFilter, setStoreFilter] = useState<'all' | 'expiring' | 'trial' | 'active' | 'suspended'>('all');

@@ -271,7 +271,6 @@ export interface Store {
   logoUrl?: string;
   whatsappNumber?: string;
   primaryColor?: string;
-  adminPassword?: string;
   description?: string;
   productCount?: number;
   createdAt: string;
@@ -292,7 +291,6 @@ export interface StoreSettings {
   masterSizes?: MasterSize[];
   masterColors?: MasterColor[];
   storeName: string;
-  adminPassword?: string;
   primaryPresets?: ColorPreset[];
   secondaryPresets?: ColorPreset[];
   backgroundPresets?: ColorPreset[];

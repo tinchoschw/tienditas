@@ -56,7 +56,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
       } else {
         setUnauthorizedEmail(user.email);
         setError(
-          `La cuenta ${user.email} no tiene permisos de administración para ${store?.name || 'esta tienda'}. El dueño registrado es ${ownerEmail}.`
+          `La cuenta ${user.email} no tiene permisos de administración para ${store?.name || 'esta tienda'}. Por favor ingresá con la cuenta de Google titular.`
         );
       }
     } catch (err: any) {
@@ -132,18 +132,6 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
               </>
             )}
           </button>
-
-          {/* Owner hint badge */}
-          {store?.ownerEmail && (
-            <div className="p-3 bg-neutral-50 rounded-2xl border border-neutral-200/80 text-center">
-              <span className="text-[11px] text-neutral-400 uppercase tracking-wider block font-semibold mb-0.5">
-                Titular registrado
-              </span>
-              <span className="text-xs font-mono font-medium text-neutral-700">
-                {store.ownerEmail}
-              </span>
-            </div>
-          )}
 
           {/* Error Message */}
           {error && (

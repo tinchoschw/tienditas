@@ -37,7 +37,7 @@ const QUICK_PROMPTS = [
   '¿Cómo cargo talles, colores y stock?',
   '¿Cómo registro una venta en mostrador?',
   '¿Cómo vinculo mi cuenta de Mercado Pago?',
-  '¿Cómo cambio mi clave de administrador?',
+  '¿Cómo accedo al panel de administración?',
   '¿Qué significa "Cupo máximo alcanzado"?'
 ];
 
@@ -333,14 +333,7 @@ export const AdminHelpAssistant: React.FC<AdminHelpAssistantProps> = ({
 
   return (
     <>
-      {/* Mobile backdrop overlay to focus on the assistant */}
-      <div
-        onClick={onClose}
-        className="fixed inset-0 bg-black/40 backdrop-blur-2xs z-40 sm:hidden animate-fade-in"
-        title="Tocar para cerrar"
-      />
-
-      {/* Floating Chat Panel Modal */}
+      {/* Floating Chat Panel Modal (only closed via the X button) */}
       <div className="fixed bottom-3 sm:bottom-6 right-2 sm:right-6 z-50 w-[calc(100vw-16px)] sm:w-[430px] h-[580px] sm:h-[640px] max-h-[88vh] bg-white rounded-2xl shadow-2xl border border-neutral-200 flex flex-col overflow-hidden animate-fade-in font-sans">
           {/* Header */}
           <div className="bg-gradient-to-r from-neutral-900 via-neutral-800 to-neutral-900 text-white px-4 py-3.5 flex items-center justify-between border-b border-neutral-700/60 shrink-0">
