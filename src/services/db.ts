@@ -28,7 +28,8 @@ import {
   StoreFeedback,
   PlatformConfig,
   StoreAttribute,
-  Rubro
+  Rubro,
+  Supplier
 } from '../types';
 import { 
   INITIAL_PRODUCTS, 
@@ -1908,5 +1909,110 @@ export async function dismissSalePaymentAlert(storeSlug: string, saleId: string)
     });
   } catch (err) {
     console.warn('Could not dismiss payment alert in Firestore:', err);
+  }
+}
+
+// ========================================================
+// ------------------- SUPPLIERS (PROVEEDORES) ------------
+// ========================================================
+
+export function getSuppliersKey(storeId: string): string {
+  return `atelier_suppliers_${normalizeStoreId(storeId)}`;
+}
+
+export function subscribeSuppliers(
+  storeIdOrCb: string | ((suppliers: Supplier[]) => void),
+  maybeCb?: (suppliers: Supplier[]) => void
+) {
+  let storeId = 'apolo';
+  let onData: (suppliers: Supplier[]) => void;
+
+  if (typeof storeIdOrCb === 'function') {
+    onData = storeIdOrCb;
+  } else {
+    storeId = normalizeStoreId(storeIdOrCb);
+    onData = maybeCb || (() => {});
+  }
+
+  const key = getSuppliersKey(storeId);
+  const local = getLocalItem<Supplier[]>(key, []);
+  if (local && local.length > 0) {
+    onData(local);
+  }
+
+  try {
+    const colRef = collection(db, 'stores', storeId, 'suppliers');
+    const unsubscribe = onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: Supplier[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ id: docSnap.id, ...(docSnap.data() as Omit<Supplier, 'id'>) });
+        });
+        list.sort((a, b) => a.name.localeCompare(b.name));
+        setLocalItem(key, list);
+        onData(list);
+      },
+      (err) => {
+        console.warn(`Firestore suppliers listener error (${storeId}):`, err);
+        onData(getLocalItem<Supplier[]>(key, []));
+      }
+    );
+    return unsubscribe;
+  } catch (err) {
+    console.warn(`Error setting up suppliers snapshot listener:`, err);
+    onData(local);
+    return () => {};
+  }
+}
+
+export async function createSupplier(
+  storeSlug: string,
+  data: Omit<Supplier, 'id'> & { id?: string }
+): Promise<Supplier> {
+  const storeId = normalizeStoreId(storeSlug);
+  const key = getSuppliersKey(storeId);
+  const current = getLocalItem<Supplier[]>(key, []);
+
+  // Check if exists case-insensitively
+  const existing = current.find((s) => s.name.trim().toLowerCase() === data.name.trim().toLowerCase());
+  if (existing) {
+    return existing;
+  }
+
+  const newSupplier: Supplier = {
+    id: data.id || `sup_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    name: data.name.trim(),
+    phone: data.phone?.trim() || '',
+    instagram: data.instagram?.trim() || '',
+    website: data.website?.trim() || '',
+    createdAt: data.createdAt || new Date().toISOString()
+  };
+
+  const updated = [...current, newSupplier].sort((a, b) => a.name.localeCompare(b.name));
+  setLocalItem(key, updated);
+
+  try {
+    const docRef = doc(db, 'stores', storeId, 'suppliers', newSupplier.id);
+    await setDoc(docRef, sanitizeForFirestore(newSupplier));
+  } catch (err) {
+    console.warn('Could not save supplier to Firestore:', err);
+  }
+
+  return newSupplier;
+}
+
+export async function deleteSupplier(storeSlug: string, supplierId: string): Promise<void> {
+  const storeId = normalizeStoreId(storeSlug);
+  const key = getSuppliersKey(storeId);
+  const current = getLocalItem<Supplier[]>(key, []);
+  const updated = current.filter((s) => s.id !== supplierId);
+  setLocalItem(key, updated);
+
+  try {
+    const docRef = doc(db, 'stores', storeId, 'suppliers', supplierId);
+    await deleteDoc(docRef);
+  } catch (err) {
+    console.warn('Could not delete supplier from Firestore:', err);
   }
 }

@@ -47,8 +47,22 @@ export interface Product {
   variants: ProductVariant[];
   totalStock: number;
   isUnlimited?: boolean;
+  supplierId?: string;
+  supplierName?: string;
+  supplierProductTitle?: string;
+  supplierSku?: string;
+  customSku?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  phone?: string; // WhatsApp / Celular
+  instagram?: string;
+  website?: string;
+  createdAt?: string;
 }
 
 export interface CartItem {
@@ -295,6 +309,8 @@ export interface StoreSettings {
   secondaryPresets?: ColorPreset[];
   backgroundPresets?: ColorPreset[];
   mercadoPago?: MercadoPagoConfig;
+  storeSlug?: string;
+  slug?: string;
   updatedAt?: string;
   updatedBy?: string;
 }

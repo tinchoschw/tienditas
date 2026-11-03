@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Product, ProductVariant, StoreSettings, StoreAttribute, StoreAttributeOption } from '../types';
+import { Product, ProductVariant, StoreSettings, StoreAttribute, StoreAttributeOption, Supplier } from '../types';
 import { compressImageFile, optimizeProductImages } from '../utils/imageOptimizer';
 import { ensureStoreAttributes, getOptionLabel, getOptionHex, fuseProductVariants } from '../utils/attributeUtils';
 import { AttributeConfirmationModal } from './AttributeConfirmationModal';
+import { createSupplier } from '../services/db';
 
 /**
  * Converts Google Drive sharing links into direct Google CDN image URLs
@@ -51,6 +52,8 @@ interface ProductEditModalProps {
   settings: StoreSettings;
   allowDevicePhotos?: boolean;
   existingTags?: { name: string; color?: string }[];
+  suppliers?: Supplier[];
+  onAddSupplier?: (data: Omit<Supplier, 'id'>) => Promise<Supplier>;
 }
 
 export const ProductEditModal: React.FC<ProductEditModalProps> = ({
@@ -60,7 +63,9 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
   onSave,
   settings,
   allowDevicePhotos = true,
-  existingTags = []
+  existingTags = [],
+  suppliers = [],
+  onAddSupplier
 }) => {
   const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
 
@@ -83,6 +88,73 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showUnlimitedTooltip, setShowUnlimitedTooltip] = useState(false);
+
+  // Supplier & Internal SKU states
+  const [localSuppliers, setLocalSuppliers] = useState<Supplier[]>(suppliers);
+  useEffect(() => {
+    setLocalSuppliers(suppliers);
+  }, [suppliers]);
+
+  const [isSupplierSectionOpen, setIsSupplierSectionOpen] = useState<boolean>(() =>
+    Boolean(
+      initialProduct.supplierId ||
+      initialProduct.supplierName ||
+      initialProduct.supplierProductTitle ||
+      initialProduct.supplierSku ||
+      initialProduct.customSku
+    )
+  );
+
+  const [isNewSupplierModalOpen, setIsNewSupplierModalOpen] = useState(false);
+  const [newSupplierName, setNewSupplierName] = useState('');
+  const [newSupplierPhone, setNewSupplierPhone] = useState('');
+  const [newSupplierInstagram, setNewSupplierInstagram] = useState('');
+  const [newSupplierWebsite, setNewSupplierWebsite] = useState('');
+  const [isCreatingSupplier, setIsCreatingSupplier] = useState(false);
+
+  const handleCreateSupplier = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = newSupplierName.trim();
+    if (!name) return;
+    setIsCreatingSupplier(true);
+    try {
+      const storeSlug = settings.storeSlug || (settings as any).slug || '';
+      let created: Supplier;
+      if (onAddSupplier) {
+        created = await onAddSupplier({
+          name,
+          phone: newSupplierPhone.trim(),
+          instagram: newSupplierInstagram.trim(),
+          website: newSupplierWebsite.trim()
+        });
+      } else {
+        created = await createSupplier(storeSlug, {
+          name,
+          phone: newSupplierPhone.trim(),
+          instagram: newSupplierInstagram.trim(),
+          website: newSupplierWebsite.trim()
+        });
+      }
+      setLocalSuppliers((prev) => {
+        const without = prev.filter((s) => s.id !== created.id && s.name.toLowerCase() !== created.name.toLowerCase());
+        return [...without, created].sort((a, b) => a.name.localeCompare(b.name));
+      });
+      setProduct((prev) => ({
+        ...prev,
+        supplierId: created.id,
+        supplierName: created.name
+      }));
+      setNewSupplierName('');
+      setNewSupplierPhone('');
+      setNewSupplierInstagram('');
+      setNewSupplierWebsite('');
+      setIsNewSupplierModalOpen(false);
+    } catch (err) {
+      console.error('Error creating supplier:', err);
+    } finally {
+      setIsCreatingSupplier(false);
+    }
+  };
 
   // Modal confirmation for attribute add/remove
   const [attrConfirmModal, setAttrConfirmModal] = useState<{
@@ -185,6 +257,16 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
       )
     );
     setSelectedOptIds2(fromVariants2.length > 0 ? fromVariants2 : attribute2.options.map((o) => o.id));
+
+    setIsSupplierSectionOpen(
+      Boolean(
+        initialProduct.supplierId ||
+        initialProduct.supplierName ||
+        initialProduct.supplierProductTitle ||
+        initialProduct.supplierSku ||
+        initialProduct.customSku
+      )
+    );
   }, [initialProduct, isOpen, attribute1, attribute2, storeEnabledAttrs]);
 
   if (!isOpen) return null;
@@ -1351,6 +1433,183 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
               </div>
             </div>
           </section>
+
+          {/* SECTION 4: DATOS DE PROVEEDOR E IDENTIFICACIÓN (OPCIONAL) */}
+          {!isSupplierSectionOpen ? (
+            <div className="pt-4 border-t border-[#efeded]">
+              <button
+                type="button"
+                onClick={() => setIsSupplierSectionOpen(true)}
+                className="inline-flex items-center gap-2 text-xs font-semibold text-neutral-600 hover:text-black py-2.5 px-3.5 rounded-xl bg-neutral-50 hover:bg-neutral-100 border border-neutral-200 transition-all cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[18px] text-neutral-500">local_shipping</span>
+                <span>+ Asignar datos de proveedor y códigos de identificación (opcional)</span>
+              </button>
+            </div>
+          ) : (
+            <section className="bg-white rounded-2xl border border-[#efeded] p-6 shadow-xs space-y-5 animate-in fade-in duration-200">
+              <div className="flex items-start justify-between gap-4 pb-3 border-b border-[#efeded]">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-neutral-100 flex items-center justify-center text-neutral-700">
+                    <span className="material-symbols-outlined text-[20px]">local_shipping</span>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-[#1b1c1c] tracking-tight flex items-center gap-2">
+                      <span>Datos del Proveedor & Identificación</span>
+                      <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-md bg-neutral-100 text-neutral-600">
+                        Opcional / Interno
+                      </span>
+                    </h3>
+                    <p className="text-[11px] text-[#5f5e5b] mt-0.5">
+                      Información de compras y control de stock. Estos datos nunca son visibles en el catálogo público para los clientes.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!product.supplierId && !product.supplierName && !product.supplierProductTitle && !product.supplierSku && !product.customSku) {
+                      setIsSupplierSectionOpen(false);
+                    } else if (confirm('¿Deseas desvincular los datos de proveedor de este producto?')) {
+                      setProduct({
+                        ...product,
+                        supplierId: undefined,
+                        supplierName: undefined,
+                        supplierProductTitle: undefined,
+                        supplierSku: undefined,
+                        customSku: undefined
+                      });
+                      setIsSupplierSectionOpen(false);
+                    }
+                  }}
+                  className="text-neutral-400 hover:text-neutral-700 p-1 rounded-lg hover:bg-neutral-100 transition-colors"
+                  title="Ocultar o desvincular sección"
+                >
+                  <span className="material-symbols-outlined text-[18px]">close</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Proveedor Combobox */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-neutral-700">
+                      Proveedor Asociado
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setIsNewSupplierModalOpen(true)}
+                      className="text-[11px] font-semibold text-black hover:underline flex items-center gap-0.5 cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">add</span>
+                      <span>Nuevo Proveedor</span>
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <select
+                      value={product.supplierId || (product.supplierName ? `name:${product.supplierName}` : '')}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!val) {
+                          setProduct({ ...product, supplierId: undefined, supplierName: undefined });
+                        } else if (val.startsWith('name:')) {
+                          const n = val.replace('name:', '');
+                          setProduct({ ...product, supplierId: undefined, supplierName: n });
+                        } else {
+                          const match = localSuppliers.find((s) => s.id === val);
+                          setProduct({
+                            ...product,
+                            supplierId: val,
+                            supplierName: match ? match.name : undefined
+                          });
+                        }
+                      }}
+                      className="w-full appearance-none px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium pr-8"
+                    >
+                      <option value="">(Sin proveedor asignado)</option>
+                      {localSuppliers.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} {s.phone ? `• Tel: ${s.phone}` : ''}
+                        </option>
+                      ))}
+                      {product.supplierName && !localSuppliers.some((s) => s.id === product.supplierId || s.name.toLowerCase() === product.supplierName?.toLowerCase()) && (
+                        <option value={`name:${product.supplierName}`}>
+                          {product.supplierName} (Personalizado)
+                        </option>
+                      )}
+                    </select>
+                    <span className="material-symbols-outlined text-[18px] text-neutral-400 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2">
+                      expand_more
+                    </span>
+                  </div>
+                  {product.supplierName && (
+                    <div className="flex items-center justify-between pt-0.5 text-[11px] text-neutral-500">
+                      <span>Proveedor actual: <strong className="text-black">{product.supplierName}</strong></span>
+                      <button
+                        type="button"
+                        onClick={() => setProduct({ ...product, supplierId: undefined, supplierName: undefined })}
+                        className="text-red-500 hover:text-red-700 font-medium hover:underline cursor-pointer"
+                      >
+                        Quitar
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* SKU Propio del Comercio */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-neutral-700">
+                    Código Propio de la Tienda (SKU General)
+                  </label>
+                  <input
+                    type="text"
+                    value={product.customSku || ''}
+                    onChange={(e) => setProduct({ ...product, customSku: e.target.value })}
+                    placeholder="Ej: REM-001, ART-LISA-01"
+                    className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium"
+                  />
+                  <p className="text-[10px] text-neutral-400">
+                    Tu identificador propio para este modelo (útil para búsqueda y sincronización con tu Excel).
+                  </p>
+                </div>
+
+                {/* Título / Nombre en Proveedor */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-neutral-700">
+                    Nombre del Producto en el Proveedor
+                  </label>
+                  <input
+                    type="text"
+                    value={product.supplierProductTitle || ''}
+                    onChange={(e) => setProduct({ ...product, supplierProductTitle: e.target.value })}
+                    placeholder="Ej: Remera Lisa Algodón 24/1 Cuello Redondo"
+                    className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium"
+                  />
+                  <p className="text-[10px] text-neutral-400">
+                    Cómo figura en la lista o catálogo del proveedor para identificarlo al reponer.
+                  </p>
+                </div>
+
+                {/* Código / Artículo en Proveedor */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-neutral-700">
+                    Código / Artículo del Proveedor
+                  </label>
+                  <input
+                    type="text"
+                    value={product.supplierSku || ''}
+                    onChange={(e) => setProduct({ ...product, supplierSku: e.target.value })}
+                    placeholder="Ej: ART-781, MOD-PROV-9"
+                    className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium"
+                  />
+                  <p className="text-[10px] text-neutral-400">
+                    El código o referencia que utiliza la fábrica/distribuidor.
+                  </p>
+                </div>
+              </div>
+            </section>
+          )}
         </div>
 
         {/* Error notification banner if save fails */}
@@ -1395,6 +1654,101 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
           confirmColor={attrConfirmModal.confirmColor}
           onConfirm={attrConfirmModal.onConfirm}
         />
+      )}
+
+      {/* Modal: Nuevo Proveedor */}
+      {isNewSupplierModalOpen && (
+        <div className="fixed inset-0 z-60 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-neutral-200 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-100 mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-neutral-100 flex items-center justify-center text-neutral-800">
+                  <span className="material-symbols-outlined text-[20px]">local_shipping</span>
+                </div>
+                <h3 className="text-sm font-bold text-neutral-900">Nuevo Proveedor</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsNewSupplierModalOpen(false)}
+                className="p-1 rounded text-neutral-400 hover:text-black hover:bg-neutral-100"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateSupplier} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Nombre del Proveedor <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ej: Confecciones Avellaneda, Textil Sur"
+                  value={newSupplierName}
+                  onChange={(e) => setNewSupplierName(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  WhatsApp / Celular (Opcional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ej: +54 9 11 1234-5678"
+                  value={newSupplierPhone}
+                  onChange={(e) => setNewSupplierPhone(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Instagram (Opcional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ej: @textilsur.mayorista"
+                  value={newSupplierInstagram}
+                  onChange={(e) => setNewSupplierInstagram(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Sitio Web o Catálogo (Opcional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ej: https://mayorista.com"
+                  value={newSupplierWebsite}
+                  onChange={(e) => setNewSupplierWebsite(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 font-medium"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100">
+                <button
+                  type="button"
+                  onClick={() => setIsNewSupplierModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newSupplierName.trim() || isCreatingSupplier}
+                  className="px-4 py-2 text-xs font-bold bg-black hover:bg-neutral-800 disabled:opacity-40 text-white rounded-xl transition-all shadow-xs cursor-pointer"
+                >
+                  {isCreatingSupplier ? 'Guardando...' : 'Crear Proveedor'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

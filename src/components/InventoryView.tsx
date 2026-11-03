@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from 'react';
-import { Product, StoreSettings, StoreFeatureFlags, StoreAttribute, StoreAttributeOption } from '../types';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { Product, StoreSettings, StoreFeatureFlags, StoreAttribute, StoreAttributeOption, Supplier } from '../types';
 import { ProductEditModal } from './ProductEditModal';
 import { AiProductModal } from './AiProductModal';
+import { CatalogImportModal } from './CatalogImportModal';
 import { AttributeConfirmationModal } from './AttributeConfirmationModal';
 import { useModalHistory } from '../hooks/useModalHistory';
 import {
@@ -10,6 +11,7 @@ import {
   formatVariantLine,
   fuseProductVariants
 } from '../utils/attributeUtils';
+import { subscribeSuppliers, createSupplier } from '../services/db';
 
 interface InventoryViewProps {
   products: Product[];
@@ -29,6 +31,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   featureFlags
 }) => {
   const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
+  const storeSlug = settings.storeSlug || (settings as any).slug || '';
 
   const [selectedSubTab, setSelectedSubTab] = useState<'products' | 'categories' | 'attr1' | 'attr2'>('products');
   const [searchQuery, setSearchQuery] = useState('');
@@ -36,6 +39,40 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [statusFilter, setStatusFilter] = useState('all');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+
+  // Suppliers & multiselect filter state
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [selectedSuppliers, setSelectedSuppliers] = useState<string[]>(['__NONE__']);
+  const [hasCustomizedSupplierFilter, setHasCustomizedSupplierFilter] = useState(false);
+  const [isSupplierFilterOpen, setIsSupplierFilterOpen] = useState(false);
+  const supplierFilterRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!storeSlug) return;
+    const unsub = subscribeSuppliers(storeSlug, (list) => {
+      setSuppliers(list);
+      if (!hasCustomizedSupplierFilter) {
+        setSelectedSuppliers([...list.map((s) => s.name), '__NONE__']);
+      }
+    });
+    return () => unsub();
+  }, [storeSlug, hasCustomizedSupplierFilter]);
+
+  // Click outside listener for supplier filter dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (supplierFilterRef.current && !supplierFilterRef.current.contains(event.target as Node)) {
+        setIsSupplierFilterOpen(false);
+      }
+    };
+    if (isSupplierFilterOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isSupplierFilterOpen]);
 
   // In-app deletion confirmation dialog states
   const [categoryToDelete, setCategoryToDelete] = useState<string | null>(null);
@@ -120,10 +157,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   // Filtered Products
   const filteredProducts = useMemo(() => {
     return products.filter((prod) => {
+      const q = searchQuery.toLowerCase().trim();
       const matchesSearch =
-        prod.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        prod.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        prod.variants.some((v) => v.sku.toLowerCase().includes(searchQuery.toLowerCase()));
+        !q ||
+        prod.name.toLowerCase().includes(q) ||
+        prod.category.toLowerCase().includes(q) ||
+        (prod.customSku && prod.customSku.toLowerCase().includes(q)) ||
+        (prod.supplierName && prod.supplierName.toLowerCase().includes(q)) ||
+        (prod.supplierSku && prod.supplierSku.toLowerCase().includes(q)) ||
+        (prod.supplierProductTitle && prod.supplierProductTitle.toLowerCase().includes(q)) ||
+        prod.variants.some((v) => v.sku.toLowerCase().includes(q));
 
       const matchesCategory =
         categoryFilter === 'Todas' || prod.category.toLowerCase() === categoryFilter.toLowerCase();
@@ -135,9 +178,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       if (statusFilter === 'draft') matchesStatus = !prod.enabledOnline;
       if (statusFilter === 'out_of_stock') matchesStatus = !isProdInStock;
 
-      return matchesSearch && matchesCategory && matchesStatus;
+      const matchesSupplier =
+        (prod.supplierName && selectedSuppliers.includes(prod.supplierName)) ||
+        (!prod.supplierName && selectedSuppliers.includes('__NONE__'));
+
+      return matchesSearch && matchesCategory && matchesStatus && matchesSupplier;
     });
-  }, [products, searchQuery, categoryFilter, statusFilter]);
+  }, [products, searchQuery, categoryFilter, statusFilter, selectedSuppliers]);
 
   // Out of stock alert count (excluding unlimited products)
   const outOfStockCount = products.filter(
@@ -327,37 +374,100 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
-  // CSV Export with dynamic attributes and unlimited stock labels
+  // CSV Export with 1 row per variant (symmetric with import)
   const handleExportCsv = () => {
-    const attr1Name = attribute1.name || 'Atributo 1';
-    const attr2Name = attribute2.name || 'Atributo 2';
-    let csv = `ID,Nombre,Categoria,Precio,Costo,StockTotal,Estado,Variantes\n`;
+    const escapeCsv = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      const str = String(val);
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+
+    const header = [
+      'ID_Sistema',
+      'Codigo_Producto',
+      'Nombre',
+      'Descripcion',
+      'Categoria',
+      'Atributo_1',
+      'Atributo_2',
+      'Stock',
+      'Costo',
+      'Precio',
+      'Precio_Promo',
+      'Proveedor',
+      'SKU_Variante',
+      'Fotos'
+    ].join(',');
+
+    const rows: string[] = [header];
 
     products.forEach((p) => {
-      const vars = p.variants
-        .map((v) => {
-          const val1 = attribute1.enabled ? getOptionLabel(attribute1, v.attributeOptionId1, v.color) : v.color;
-          const val2 = attribute2.enabled ? getOptionLabel(attribute2, v.attributeOptionId2, v.size) : v.size;
-          const combo = [val1, val2].filter(Boolean).join(' / ');
-          const stockText = v.unlimited ? 'Ilimitado' : `${v.stock}u`;
-          return `${v.sku}${combo ? ` (${combo}: ${stockText})` : `: ${stockText}`}`;
-        })
-        .join('; ');
+      const photosStr = (p.images || []).join(';');
+      if (p.variants && p.variants.length > 0) {
+        p.variants.forEach((v) => {
+          const val1 = attribute1.enabled ? getOptionLabel(attribute1, v.attributeOptionId1, v.color) : v.color || '';
+          const val2 = attribute2.enabled ? getOptionLabel(attribute2, v.attributeOptionId2, v.size) : v.size || '';
+          const stockVal = v.unlimited || p.isUnlimited ? 'ILIMITADO' : v.stock ?? 0;
+          const promoPriceVal = p.discountPrice && p.discountPrice > 0 ? p.discountPrice : '';
 
-      const totalStockText = p.isUnlimited || p.variants.some((v) => v.unlimited) ? 'Ilimitado' : p.totalStock;
-      csv += `"${p.id}","${p.name}","${p.category}",${p.price},${p.cost},"${totalStockText}","${
-        p.enabledOnline ? 'Activo' : 'Borrador'
-      }","${vars}"\n`;
+          const row = [
+            escapeCsv(p.id),
+            escapeCsv(p.customSku || ''),
+            escapeCsv(p.name),
+            escapeCsv(p.description || ''),
+            escapeCsv(p.category || ''),
+            escapeCsv(val1),
+            escapeCsv(val2),
+            stockVal === 'ILIMITADO' ? '"ILIMITADO"' : stockVal,
+            p.cost ?? 0,
+            p.price ?? 0,
+            promoPriceVal ? promoPriceVal : '""',
+            escapeCsv(p.supplierName || ''),
+            escapeCsv(v.sku || ''),
+            escapeCsv(photosStr)
+          ].join(',');
+
+          rows.push(row);
+        });
+      } else {
+        // Product without variants
+        const stockVal = p.isUnlimited ? 'ILIMITADO' : p.totalStock ?? 0;
+        const promoPriceVal = p.discountPrice && p.discountPrice > 0 ? p.discountPrice : '';
+
+        const row = [
+          escapeCsv(p.id),
+          escapeCsv(p.customSku || ''),
+          escapeCsv(p.name),
+          escapeCsv(p.description || ''),
+          escapeCsv(p.category || ''),
+          '""',
+          '""',
+          stockVal === 'ILIMITADO' ? '"ILIMITADO"' : stockVal,
+          p.cost ?? 0,
+          p.price ?? 0,
+          promoPriceVal ? promoPriceVal : '""',
+          escapeCsv(p.supplierName || ''),
+          '""',
+          escapeCsv(photosStr)
+        ].join(',');
+
+        rows.push(row);
+      }
     });
 
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const csvContent = rows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `inventario-${settings.storeName || 'tienda'}-${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute(
+      'download',
+      `inventario-${settings.storeName || 'tienda'}-${new Date().toISOString().slice(0, 10)}.csv`
+    );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // CATEGORY ACTIONS
@@ -1294,19 +1404,128 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     expand_more
                   </span>
                 </div>
+
+                {/* Supplier Multiselect Combobox Filter */}
+                <div className="relative" ref={supplierFilterRef}>
+                  <button
+                    type="button"
+                    onClick={() => setIsSupplierFilterOpen(!isSupplierFilterOpen)}
+                    className="w-full sm:w-auto flex items-center justify-between gap-2 px-3 py-2 bg-[#f5f3f3] hover:bg-[#eae8e8] rounded-xl text-xs text-black border border-transparent focus:border-neutral-300 font-medium cursor-pointer transition-colors"
+                  >
+                    <div className="flex items-center gap-1.5 truncate max-w-[170px]">
+                      <span className="material-symbols-outlined text-[16px] text-neutral-500">local_shipping</span>
+                      <span className="truncate">
+                        {selectedSuppliers.length === suppliers.length + 1
+                          ? 'Todos los Proveedores'
+                          : selectedSuppliers.length === 0
+                          ? 'Sin Proveedores'
+                          : `${selectedSuppliers.length} proveedores`}
+                      </span>
+                    </div>
+                    <span className="material-symbols-outlined text-[18px] text-neutral-400">
+                      {isSupplierFilterOpen ? 'expand_less' : 'expand_more'}
+                    </span>
+                  </button>
+
+                  {isSupplierFilterOpen && (
+                    <div className="absolute left-0 sm:right-0 sm:left-auto top-full mt-1.5 w-64 bg-white rounded-2xl shadow-xl border border-neutral-200 z-30 p-2.5 space-y-2 animate-in fade-in zoom-in-95">
+                      <div className="flex items-center justify-between pb-2 border-b border-neutral-100 px-1">
+                        <span className="text-[11px] font-bold text-neutral-700">Filtrar Proveedores</span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedSuppliers([...suppliers.map((s) => s.name), '__NONE__']);
+                              setHasCustomizedSupplierFilter(true);
+                            }}
+                            className="px-2 py-0.5 text-[10px] font-semibold bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-md transition-colors cursor-pointer"
+                          >
+                            Todos
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedSuppliers([]);
+                              setHasCustomizedSupplierFilter(true);
+                            }}
+                            className="px-2 py-0.5 text-[10px] font-semibold bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-md transition-colors cursor-pointer"
+                          >
+                            Limpiar
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
+                        {/* Option: Sin Proveedor */}
+                        <label className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-neutral-50 cursor-pointer text-xs select-none">
+                          <input
+                            type="checkbox"
+                            checked={selectedSuppliers.includes('__NONE__')}
+                            onChange={(e) => {
+                              setHasCustomizedSupplierFilter(true);
+                              if (e.target.checked) {
+                                setSelectedSuppliers([...selectedSuppliers, '__NONE__']);
+                              } else {
+                                setSelectedSuppliers(selectedSuppliers.filter((s) => s !== '__NONE__'));
+                              }
+                            }}
+                            className="rounded text-black focus:ring-0 cursor-pointer"
+                          />
+                          <span className="text-neutral-700 truncate font-medium">(Sin proveedor asignado)</span>
+                        </label>
+
+                        {/* Suppliers list */}
+                        {suppliers.map((sup) => {
+                          const isChecked = selectedSuppliers.includes(sup.name);
+                          return (
+                            <label
+                              key={sup.id}
+                              className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-neutral-50 cursor-pointer text-xs select-none"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  setHasCustomizedSupplierFilter(true);
+                                  if (e.target.checked) {
+                                    setSelectedSuppliers([...selectedSuppliers, sup.name]);
+                                  } else {
+                                    setSelectedSuppliers(selectedSuppliers.filter((s) => s !== sup.name));
+                                  }
+                                }}
+                                className="rounded text-black focus:ring-0 cursor-pointer"
+                              />
+                              <span className="text-neutral-900 truncate font-medium">{sup.name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Primary Trigger Buttons */}
               <div className="flex items-center gap-2 flex-wrap">
                 {featureFlags?.exportProducts !== false && (
-                  <button
-                    onClick={handleExportCsv}
-                    className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#efeded] hover:bg-[#e4e2e2] text-black text-xs font-medium transition-colors"
-                    title="Exportar inventario y existencias a CSV"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">file_download</span>
-                    <span>Exportar Planilla</span>
-                  </button>
+                  <>
+                    <button
+                      onClick={() => setIsImportModalOpen(true)}
+                      className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs font-semibold transition-all shadow-xs cursor-pointer"
+                      title="Importar catálogo masivo desde archivo CSV"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">file_upload</span>
+                      <span>Importar Catálogo (CSV)</span>
+                    </button>
+                    <button
+                      onClick={handleExportCsv}
+                      className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#efeded] hover:bg-[#e4e2e2] text-black text-xs font-medium transition-colors"
+                      title="Exportar inventario y existencias a CSV"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">file_download</span>
+                      <span>Exportar Planilla</span>
+                    </button>
+                  </>
                 )}
               </div>
             </div>
@@ -1319,6 +1538,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     <tr className="bg-[#f5f3f3] border-b border-[#efeded] text-[#444748] font-bold uppercase tracking-wider text-[11px] h-11">
                       <th className="py-3 px-4">Prenda / Modelo</th>
                       <th className="py-3 px-4">Categoría</th>
+                      <th className="py-3 px-4">Proveedor</th>
                       <th className="py-3 px-4">Precio Venta</th>
                       <th className="py-3 px-4">Precio Promoción</th>
                       <th className="py-3 px-4">Variantes & Stock</th>
@@ -1329,7 +1549,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   <tbody className="divide-y divide-[#efeded]">
                     {filteredProducts.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="py-12 text-center text-neutral-400">
+                        <td colSpan={8} className="py-12 text-center text-neutral-400">
                           <div className="flex flex-col items-center justify-center gap-2">
                             <span className="material-symbols-outlined text-[36px] text-neutral-300">
                               inventory_2
@@ -1364,9 +1584,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                   )}
                                 </div>
                                 <div className="flex flex-col min-w-0">
-                                  <span className="font-bold text-black text-sm truncate max-w-[220px]">
-                                    {prod.name}
-                                  </span>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-bold text-black text-sm truncate max-w-[220px]">
+                                      {prod.name}
+                                    </span>
+                                    {prod.customSku && (
+                                      <span className="px-1.5 py-0.5 rounded bg-neutral-100 text-[10px] font-mono text-neutral-600 font-semibold">
+                                        {prod.customSku}
+                                      </span>
+                                    )}
+                                  </div>
                                   <span className="text-[11px] text-neutral-500 mt-0.5 truncate max-w-[220px]">
                                     {prod.description || 'Sin descripción'}
                                   </span>
@@ -1379,6 +1606,24 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                               <span className="px-2.5 py-1 rounded-lg bg-[#f5f3f3] text-[11px] font-medium text-black">
                                 {prod.category}
                               </span>
+                            </td>
+
+                            {/* Supplier */}
+                            <td className="py-3.5 px-4">
+                              {prod.supplierName ? (
+                                <div className="flex flex-col min-w-0">
+                                  <span className="font-semibold text-xs text-black truncate max-w-[140px]" title={prod.supplierName}>
+                                    {prod.supplierName}
+                                  </span>
+                                  {prod.supplierSku && (
+                                    <span className="text-[10px] text-neutral-400 font-mono truncate max-w-[140px]">
+                                      Art: {prod.supplierSku}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-neutral-400 font-medium">—</span>
+                              )}
                             </td>
 
                             {/* Price */}
@@ -1686,8 +1931,35 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           settings={settings}
           allowDevicePhotos={featureFlags?.uploadDevicePhotos !== false}
           existingTags={allExistingTags}
+          suppliers={suppliers}
+          onAddSupplier={async (data) => {
+            const created = await createSupplier(storeSlug, data);
+            setSuppliers((prev) => {
+              const without = prev.filter((s) => s.id !== created.id);
+              return [...without, created].sort((a, b) => a.name.localeCompare(b.name));
+            });
+            return created;
+          }}
         />
       )}
+
+      {/* Catalog Import Modal */}
+      <CatalogImportModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        products={products}
+        settings={settings}
+        suppliers={suppliers}
+        onSaveProduct={onSaveProduct}
+        onUpdateSettings={onUpdateSettings}
+        storeSlug={storeSlug}
+        onSuccess={(stats) => {
+          showNotification(
+            'success',
+            `Catálogo importado: ${stats.created} creados, ${stats.updated} actualizados (${stats.variants} variantes).`
+          );
+        }}
+      />
 
       {/* Attribute Generic Confirmation Modal */}
       {confirmModal && (

@@ -609,6 +609,21 @@ function MainContent() {
   const totalCartUnits = cart.reduce((acc, it) => acc + it.quantity, 0);
   const totalCartPrice = cart.reduce((acc, it) => acc + (it.price * it.quantity), 0);
 
+  // Sanitize products for public storefront (costs and supplier info are never passed to the customer view)
+  const publicCatalogProducts = React.useMemo(() => {
+    return products.map((p) => {
+      const {
+        cost,
+        supplierId,
+        supplierName,
+        supplierProductTitle,
+        supplierSku,
+        ...safeProd
+      } = p;
+      return safeProd as Product;
+    });
+  }, [products]);
+
   // 1. LANDING ROUTE (Default without specified store)
   if (routeInfo.route === 'landing') {
     return (
@@ -796,7 +811,7 @@ function MainContent() {
         {/* PUBLIC STOREFRONT (Customer facing) */}
         {routeInfo.route === 'storefront' && (
           <StorefrontView
-            products={products}
+            products={publicCatalogProducts}
             settings={settings}
             cart={cart}
             isLoading={!isProductsLoaded}
