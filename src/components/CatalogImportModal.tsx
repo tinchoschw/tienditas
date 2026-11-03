@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { Product, ProductVariant, StoreSettings, Supplier } from '../types';
 import { useModalHistory } from '../hooks/useModalHistory';
-import { ensureStoreAttributes, getOptionLabel } from '../utils/attributeUtils';
+import { ensureStoreAttributes } from '../utils/attributeUtils';
 import { createSupplier } from '../services/db';
 
 interface CatalogImportModalProps {
@@ -32,12 +32,11 @@ interface ParsedVariantRow {
   discountPrice?: number;
   supplierName: string;
   variantSku: string;
-  images: string[];
 }
 
 interface GroupedProductPlan {
   productKey: string;
-  matchType: 'id' | 'sku' | 'name_category' | 'new';
+  isExisting: boolean;
   existingProduct?: Product;
   targetName: string;
   targetCategory: string;
@@ -47,18 +46,16 @@ interface GroupedProductPlan {
   targetPrice: number;
   targetCost: number;
   targetDiscountPrice?: number;
-  targetImages: string[];
   variantRows: ParsedVariantRow[];
 }
 
 /**
- * Standard CSV line parser that properly handles quotes, commas, semicolons, and escaped quotes.
+ * Standard CSV parser that cleanly handles quotes, commas, semicolons, and CRLF line breaks.
  */
 function parseCsvToMatrix(text: string): string[][] {
-  const cleanText = text.replace(/^\uFEFF/, '').trim(); // Remove UTF-8 BOM
+  const cleanText = text.replace(/^\uFEFF/, '').trim();
   if (!cleanText) return [];
 
-  // Detect delimiter: check first line for semicolons vs commas
   const firstLine = cleanText.split('\n')[0] || '';
   const semicolonCount = (firstLine.match(/;/g) || []).length;
   const commaCount = (firstLine.match(/,/g) || []).length;
@@ -76,7 +73,7 @@ function parseCsvToMatrix(text: string): string[][] {
     if (char === '"') {
       if (insideQuotes && nextChar === '"') {
         currentField += '"';
-        i++; // skip escaped quote
+        i++;
       } else {
         insideQuotes = !insideQuotes;
       }
@@ -85,7 +82,7 @@ function parseCsvToMatrix(text: string): string[][] {
       currentField = '';
     } else if ((char === '\r' || char === '\n') && !insideQuotes) {
       if (char === '\r' && nextChar === '\n') {
-        i++; // skip \r\n
+        i++;
       }
       currentRow.push(currentField.trim());
       currentField = '';
@@ -128,15 +125,12 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
   const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
 
   const [step, setStep] = useState<'upload' | 'preview' | 'processing' | 'success' | 'error'>('upload');
-  const [stockMode, setStockMode] = useState<'replace' | 'add'>('replace');
   const [fileName, setFileName] = useState<string>('');
   const [fileSize, setFileSize] = useState<string>('');
   const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [groupedPlans, setGroupedPlans] = useState<GroupedProductPlan[]>([]);
   const [totalVariantCount, setTotalVariantCount] = useState<number>(0);
-  const [newSuppliersDetected, setNewSuppliersDetected] = useState<string[]>([]);
 
-  // Execution states
   const [progressPercent, setProgressPercent] = useState<number>(0);
   const [progressMessage, setProgressMessage] = useState<string>('');
   const [importSessionId, setImportSessionId] = useState<string>('');
@@ -151,10 +145,23 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Generate and download a sample CSV matching the store's configured attributes and categories
+  // Download sample CSV template matching store attributes
   const handleDownloadSampleCsv = () => {
-    const attr1Header = 'Atributo_1';
-    const attr2Header = 'Atributo_2';
+    const header = [
+      'ID_Sistema',
+      'Codigo_Producto',
+      'Nombre',
+      'Descripcion',
+      'Categoria',
+      'Atributo_1',
+      'Atributo_2',
+      'Stock',
+      'Costo',
+      'Precio',
+      'Precio_Promo',
+      'Proveedor',
+      'SKU_Variante'
+    ].join(',');
 
     const sampleCat = settings.categories.find((c) => c !== 'Todas') || 'General';
     const sampleOpt1A = attribute1.options[0]?.label || 'Negro';
@@ -162,28 +169,11 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
     const sampleOpt2A = attribute2.options[0]?.label || 'M';
     const sampleOpt2B = attribute2.options[1]?.label || 'L';
 
-    const header = [
-      'ID_Sistema',
-      'Codigo_Producto',
-      'Nombre',
-      'Descripcion',
-      'Categoria',
-      attr1Header,
-      attr2Header,
-      'Stock',
-      'Costo',
-      'Precio',
-      'Precio_Promo',
-      'Proveedor',
-      'SKU_Variante',
-      'Fotos'
-    ].join(',');
-
     const row1 = [
       '""',
       '"REM-001"',
       '"Remera Lisa Algodon"',
-      '"Remera clásica peinada"',
+      '"Remera 100% algodon peinado"',
       `"${sampleCat}"`,
       `"${sampleOpt1A}"`,
       `"${sampleOpt2A}"`,
@@ -192,15 +182,14 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       '9900',
       '8900',
       '"Textil Central"',
-      '"REM-001-NEG-M"',
-      '"https://ejemplo.com/foto1.jpg"'
+      '"REM-001-NEG-M"'
     ].join(',');
 
     const row2 = [
       '""',
       '"REM-001"',
       '"Remera Lisa Algodon"',
-      '"Remera clásica peinada"',
+      '"Remera 100% algodon peinado"',
       `"${sampleCat}"`,
       `"${sampleOpt1B}"`,
       `"${sampleOpt2B}"`,
@@ -209,8 +198,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       '9900',
       '8900',
       '"Textil Central"',
-      '"REM-001-BLA-L"',
-      '""'
+      '"REM-001-BLA-L"'
     ].join(',');
 
     const sampleContent = `${header}\n${row1}\n${row2}\n`;
@@ -225,7 +213,6 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  // Process chosen CSV file
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -248,41 +235,31 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
   const parseAndValidateCsv = (csvText: string) => {
     const matrix = parseCsvToMatrix(csvText);
     if (matrix.length < 2) {
-      setParseErrors([
-        'El archivo CSV está vacío o solo contiene la cabecera. Debe incluir al menos una fila de productos.'
-      ]);
+      setParseErrors(['El archivo está vacío o solo contiene la cabecera. Debe incluir al menos una fila de productos.']);
       setGroupedPlans([]);
       setStep('preview');
       return;
     }
 
-    const rawHeaders = matrix[0].map((h) =>
-      h.toLowerCase().replace(/[^a-z0-9_]/g, '')
-    );
-
-    // Map column positions
-    const findCol = (candidates: string[]) =>
-      rawHeaders.findIndex((h) => candidates.some((c) => h.includes(c)));
+    const rawHeaders = matrix[0].map((h) => h.toLowerCase().replace(/[^a-z0-9_]/g, ''));
+    const findCol = (candidates: string[]) => rawHeaders.findIndex((h) => candidates.some((c) => h.includes(c)));
 
     const colId = findCol(['idsistema', 'id_sistema', 'id']);
-    const colCustomSku = findCol(['codigoproducto', 'codigo_producto', 'codigoproducto', 'articulo', 'art']);
+    const colCustomSku = findCol(['codigoproducto', 'codigo_producto', 'codigo', 'sku_producto']);
     const colName = findCol(['nombre', 'titulo', 'prenda', 'modelo']);
     const colDesc = findCol(['descripcion', 'detalle']);
     const colCat = findCol(['categoria', 'rubro']);
     const colAttr1 = findCol(['atributo1', 'atributo_1', 'color', 'attr1']);
-    const colAttr2 = findCol(['atributo2', 'atributo_2', 'talle', 'tamano', 'attr2', 'medida']);
+    const colAttr2 = findCol(['atributo2', 'atributo_2', 'talle', 'tamano', 'attr2']);
     const colStock = findCol(['stock', 'cantidad', 'existencia', 'stocktotal']);
     const colCost = findCol(['costo', 'preciocosto']);
     const colPrice = findCol(['precio', 'precioventa', 'pvp']);
     const colDiscount = findCol(['preciopromo', 'precio_promo', 'oferta', 'descuento']);
     const colSupplier = findCol(['proveedor', 'distribuidor', 'fabricante']);
     const colVariantSku = findCol(['skuvariante', 'sku_variante', 'sku']);
-    const colImages = findCol(['fotos', 'imagenes', 'imagen', 'fotosurls', 'images']);
 
     if (colName === -1) {
-      setParseErrors([
-        'No se encontró la columna requerida "Nombre" o "Titulo" en la cabecera del archivo CSV.'
-      ]);
+      setParseErrors(['No se encontró la columna "Nombre" o "Titulo" en la cabecera del archivo CSV.']);
       setGroupedPlans([]);
       setStep('preview');
       return;
@@ -295,32 +272,28 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       const row = matrix[i];
       const rowNum = i + 1;
 
-      // Skip completely empty lines
       if (row.every((f) => !f.trim())) continue;
 
       const name = (colName !== -1 ? row[colName] : '')?.trim() || '';
       if (!name) {
-        errors.push(`Fila ${rowNum}: El nombre de la prenda es obligatorio.`);
+        errors.push(`Fila ${rowNum}: El nombre del producto es obligatorio.`);
         continue;
       }
 
-      // Price validation
       const rawPrice = (colPrice !== -1 ? row[colPrice] : '')?.trim() || '0';
       const cleanPrice = rawPrice.replace('$', '').replace(/\./g, '').replace(',', '.');
       const priceNum = parseFloat(cleanPrice);
       if (isNaN(priceNum) || priceNum < 0) {
-        errors.push(`Fila ${rowNum} ("${name}"): El precio de venta "${rawPrice}" no es un número válido.`);
+        errors.push(`Fila ${rowNum} ("${name}"): El precio "${rawPrice}" debe ser un número mayor o igual a 0.`);
       }
 
-      // Cost validation
       const rawCost = (colCost !== -1 ? row[colCost] : '')?.trim() || '0';
       const cleanCost = rawCost ? rawCost.replace('$', '').replace(/\./g, '').replace(',', '.') : '0';
       const costNum = cleanCost ? parseFloat(cleanCost) : 0;
       if (isNaN(costNum) || costNum < 0) {
-        errors.push(`Fila ${rowNum} ("${name}"): El costo "${rawCost}" no es un número válido.`);
+        errors.push(`Fila ${rowNum} ("${name}"): El costo "${rawCost}" debe ser un número válido.`);
       }
 
-      // Discount price
       let discountPriceNum: number | undefined = undefined;
       const rawDiscount = (colDiscount !== -1 ? row[colDiscount] : '')?.trim();
       if (rawDiscount) {
@@ -331,16 +304,13 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
         }
       }
 
-      // Stock validation
       const rawStock = (colStock !== -1 ? row[colStock] : '')?.trim() || '0';
       const isUnlimited = rawStock.toUpperCase() === 'ILIMITADO' || rawStock === '∞';
       let stockNum = 0;
       if (!isUnlimited) {
         stockNum = parseInt(rawStock.replace(/[^0-9-]/g, ''), 10);
         if (isNaN(stockNum) || stockNum < 0) {
-          errors.push(
-            `Fila ${rowNum} ("${name}"): El stock "${rawStock}" debe ser un número entero mayor o igual a 0 o la palabra "ILIMITADO".`
-          );
+          errors.push(`Fila ${rowNum} ("${name}"): El stock "${rawStock}" debe ser un número entero o "ILIMITADO".`);
         }
       }
 
@@ -352,15 +322,6 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       const attr2Val = (colAttr2 !== -1 ? row[colAttr2] : '')?.trim() || '';
       const supplierName = (colSupplier !== -1 ? row[colSupplier] : '')?.trim() || '';
       const variantSku = (colVariantSku !== -1 ? row[colVariantSku] : '')?.trim() || '';
-
-      // Photos separation by semicolon or comma if urls
-      const rawPhotos = (colImages !== -1 ? row[colImages] : '')?.trim() || '';
-      const images = rawPhotos
-        ? rawPhotos
-            .split(/[;|\n]/)
-            .map((u) => u.trim())
-            .filter((u) => u.startsWith('http://') || u.startsWith('https://') || u.startsWith('data:image'))
-        : [];
 
       parsedRows.push({
         rowNum,
@@ -377,307 +338,264 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
         price: priceNum,
         discountPrice: discountPriceNum,
         supplierName,
-        variantSku,
-        images
+        variantSku
       });
     }
 
-    // Now group parsedRows by resolved target product
-    // Matching hierarchy:
-    // 1. By idSistema if matches existing product.id
-    // 2. By customSku if matches existing product.customSku
-    // 3. By exact name + category (case-insensitive)
-    // 4. Otherwise -> new product
+    // Group rows by target product
+    // Hierarchy:
+    // 1. By ID_Sistema if matches an existing product
+    // 2. By Codigo_Producto if matches an existing product's customSku
+    // 3. By exact Nombre (case-insensitive) if matches an existing product
+    // 4. Otherwise -> New product (grouped by customSku if provided, else by Nombre)
     const groupsMap = new Map<string, GroupedProductPlan>();
-    const knownSuppliers = new Set(suppliers.map((s) => s.name.trim().toLowerCase()));
-    const newSuppliersFound = new Set<string>();
 
     parsedRows.forEach((row) => {
-      if (row.supplierName && !knownSuppliers.has(row.supplierName.trim().toLowerCase())) {
-        newSuppliersFound.add(row.supplierName.trim());
-      }
-
-      // Check match in existing products
       let matchedProd: Product | undefined;
-      let matchType: 'id' | 'sku' | 'name_category' | 'new' = 'new';
 
       if (row.idSistema) {
         matchedProd = products.find((p) => p.id === row.idSistema);
-        if (matchedProd) matchType = 'id';
       }
-
       if (!matchedProd && row.customSku) {
         matchedProd = products.find(
           (p) => p.customSku && p.customSku.toLowerCase() === row.customSku.toLowerCase()
         );
-        if (matchedProd) matchType = 'sku';
       }
-
-      if (!matchedProd) {
+      if (!matchedProd && row.name) {
         matchedProd = products.find(
-          (p) =>
-            p.name.trim().toLowerCase() === row.name.trim().toLowerCase() &&
-            p.category.trim().toLowerCase() === row.category.trim().toLowerCase()
+          (p) => p.name.trim().toLowerCase() === row.name.trim().toLowerCase()
         );
-        if (matchedProd) matchType = 'name_category';
       }
 
-      // Product grouping key
       const key = matchedProd
         ? `existing:${matchedProd.id}`
         : row.customSku
-        ? `sku:${row.customSku.toLowerCase()}`
-        : `name:${row.name.trim().toLowerCase()}__cat:${row.category.trim().toLowerCase()}`;
+        ? `new_sku:${row.customSku.toLowerCase()}`
+        : `new_name:${row.name.trim().toLowerCase()}`;
 
       if (!groupsMap.has(key)) {
         groupsMap.set(key, {
           productKey: key,
-          matchType,
+          isExisting: Boolean(matchedProd),
           existingProduct: matchedProd,
           targetName: row.name,
-          targetCategory: row.category,
+          targetCategory: row.category || matchedProd?.category || 'General',
           targetDescription: row.description || matchedProd?.description || '',
           targetCustomSku: row.customSku || matchedProd?.customSku || '',
           targetSupplierName: row.supplierName || matchedProd?.supplierName || '',
           targetPrice: row.price,
           targetCost: row.cost || matchedProd?.cost || 0,
           targetDiscountPrice: row.discountPrice ?? matchedProd?.discountPrice,
-          targetImages: row.images.length > 0 ? row.images : matchedProd?.images || [],
           variantRows: []
         });
       }
 
-      const plan = groupsMap.get(key)!;
-      plan.variantRows.push(row);
-      // If row has images and plan doesn't, add them
-      if (row.images.length > 0 && plan.targetImages.length === 0) {
-        plan.targetImages = row.images;
-      }
+      groupsMap.get(key)!.variantRows.push(row);
     });
 
     setParseErrors(errors);
     setGroupedPlans(Array.from(groupsMap.values()));
     setTotalVariantCount(parsedRows.length);
-    setNewSuppliersDetected(Array.from(newSuppliersFound));
     setStep('preview');
   };
 
-  const newProductsCount = groupedPlans.filter((p) => !p.existingProduct).length;
-  const updatedProductsCount = groupedPlans.filter((p) => Boolean(p.existingProduct)).length;
+  const newProductsCount = groupedPlans.filter((p) => !p.isExisting).length;
+  const updatedProductsCount = groupedPlans.filter((p) => p.isExisting).length;
 
-  // Execute the import in chunked batches
   const handleExecuteImport = async () => {
     if (parseErrors.length > 0 || groupedPlans.length === 0) return;
 
     setStep('processing');
     setProgressPercent(5);
-    setProgressMessage('Iniciando sesión de importación y registrando proveedores...');
+    setProgressMessage('Iniciando importación...');
 
-    const sessionId = `IMP_${(storeSlug || 'store').toUpperCase()}_${Date.now()}_${Math.random()
-      .toString(36)
-      .substring(2, 6)
-      .toUpperCase()}`;
+    const sessionId = `IMP_${(storeSlug || 'store').toUpperCase()}_${Date.now()}`;
     setImportSessionId(sessionId);
 
-    console.log(
-      `[IMPORT_CATALOG][${sessionId}] Iniciando importación: ${groupedPlans.length} productos agrupados, ${totalVariantCount} variantes. Modo stock=${stockMode}.`
-    );
-
     try {
-      // 1. Auto-register new suppliers
-      const supplierMap = new Map<string, Supplier>();
-      suppliers.forEach((s) => supplierMap.set(s.name.trim().toLowerCase(), s));
+      const knownSuppliers = new Map<string, Supplier>();
+      suppliers.forEach((s) => knownSuppliers.set(s.name.trim().toLowerCase(), s));
 
-      for (const supName of newSuppliersDetected) {
-        try {
-          const created = await createSupplier(storeSlug, { name: supName });
-          supplierMap.set(created.name.trim().toLowerCase(), created);
-          console.log(`[IMPORT_CATALOG][${sessionId}] Nuevo proveedor registrado automáticamente: "${supName}" (ID: ${created.id})`);
-        } catch (supErr) {
-          console.warn(`[IMPORT_CATALOG][${sessionId}] No se pudo registrar proveedor "${supName}":`, supErr);
-        }
-      }
-
-      // 2. Track new categories to update settings if needed
       const currentCategories = new Set(settings.categories);
       const categoriesToAdd = new Set<string>();
 
-      // 3. Process products in batches of 20 to keep UI alive and respect Firestore batch limits
-      const BATCH_SIZE = 25;
-      const totalBatches = Math.ceil(groupedPlans.length / BATCH_SIZE);
       let createdCounter = 0;
       let updatedCounter = 0;
       let processedVariants = 0;
 
-      for (let b = 0; b < totalBatches; b++) {
-        const batchPlans = groupedPlans.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE);
-        const batchProgress = Math.round(((b + 1) / totalBatches) * 90);
-        setProgressPercent(Math.min(90, Math.max(10, batchProgress)));
-        setProgressMessage(
-          `Guardando productos (Lote ${b + 1} de ${totalBatches}) - ${createdCounter + updatedCounter} de ${groupedPlans.length} procesados...`
-        );
+      const totalPlans = groupedPlans.length;
 
-        for (const plan of batchPlans) {
-          if (plan.targetCategory && !currentCategories.has(plan.targetCategory)) {
-            categoriesToAdd.add(plan.targetCategory);
+      for (let i = 0; i < totalPlans; i++) {
+        const plan = groupedPlans[i];
+        const pct = Math.round(((i + 1) / totalPlans) * 90);
+        setProgressPercent(Math.min(95, pct));
+        setProgressMessage(`Guardando producto ${i + 1} de ${totalPlans}: "${plan.targetName}"...`);
+
+        // Check category
+        if (plan.targetCategory && !currentCategories.has(plan.targetCategory)) {
+          categoriesToAdd.add(plan.targetCategory);
+        }
+
+        // Auto-register supplier if new
+        let supplierId = plan.existingProduct?.supplierId;
+        if (plan.targetSupplierName && storeSlug) {
+          const supKey = plan.targetSupplierName.trim().toLowerCase();
+          if (knownSuppliers.has(supKey)) {
+            supplierId = knownSuppliers.get(supKey)!.id;
+          } else {
+            try {
+              const createdSup = await createSupplier(storeSlug, { name: plan.targetSupplierName.trim() });
+              knownSuppliers.set(supKey, createdSup);
+              supplierId = createdSup.id;
+            } catch (err) {
+              console.warn('No se pudo registrar proveedor en Firestore:', err);
+            }
+          }
+        }
+
+        if (plan.existingProduct) {
+          // ================= ACTUALIZAR PRODUCTO EXISTENTE =================
+          const existing = plan.existingProduct;
+          let baseVariants = [...existing.variants];
+
+          // REGLA CLAVE: Si el producto anterior tenía solo 1 variante simple/genérica (sin atributos reales)
+          // y el archivo ahora define variantes explícitas (con color o talle), descartar la genérica anterior
+          const hadOnlySimpleVariant =
+            baseVariants.length === 1 &&
+            (!baseVariants[0].color || baseVariants[0].color.toLowerCase() === 'único') &&
+            (!baseVariants[0].size || baseVariants[0].size.toLowerCase() === 'u');
+
+          if (hadOnlySimpleVariant && plan.variantRows.some((r) => r.attr1Val || r.attr2Val)) {
+            baseVariants = [];
           }
 
-          const matchedSupplier = plan.targetSupplierName
-            ? supplierMap.get(plan.targetSupplierName.trim().toLowerCase())
-            : undefined;
-
-          if (plan.existingProduct) {
-            // ================= UPDATE EXISTING PRODUCT =================
-            const existing = plan.existingProduct;
-            const updatedVariants: ProductVariant[] = [...existing.variants];
-
-            plan.variantRows.forEach((vRow) => {
-              processedVariants++;
-              // Try to find variant in existing product
-              const matchedVarIndex = updatedVariants.findIndex((ev) => {
-                if (vRow.variantSku && ev.sku && ev.sku.toLowerCase() === vRow.variantSku.toLowerCase()) {
-                  return true;
-                }
-                const match1 = (ev.color || '').trim().toLowerCase() === vRow.attr1Val.trim().toLowerCase();
-                const match2 = (ev.size || '').trim().toLowerCase() === vRow.attr2Val.trim().toLowerCase();
-                return match1 && match2;
-              });
-
-              if (matchedVarIndex !== -1) {
-                // Update variant
-                const ev = updatedVariants[matchedVarIndex];
-                const newStock =
-                  vRow.isUnlimited
-                    ? 999999
-                    : stockMode === 'add'
-                    ? Math.max(0, (ev.stock || 0) + vRow.stock)
-                    : Math.max(0, vRow.stock);
-
-                updatedVariants[matchedVarIndex] = {
-                  ...ev,
-                  stock: newStock,
-                  unlimited: vRow.isUnlimited || ev.unlimited,
-                  sku: vRow.variantSku || ev.sku
-                };
-              } else {
-                // Variant does not exist in product -> add it
-                const prefix = (existing.name || 'PR').trim().slice(0, 3).toUpperCase();
-                const newVarSku =
-                  vRow.variantSku ||
-                  `${prefix}-${vRow.attr1Val.slice(0, 3).toUpperCase()}-${vRow.attr2Val.slice(0, 3).toUpperCase()}`;
-
-                updatedVariants.push({
-                  id: `var-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-                  color: vRow.attr1Val,
-                  size: vRow.attr2Val,
-                  sku: newVarSku,
-                  stock: vRow.stock,
-                  enabled: true,
-                  unlimited: vRow.isUnlimited
-                });
+          // Merge or append variants
+          plan.variantRows.forEach((vRow, vIdx) => {
+            processedVariants++;
+            const matchIndex = baseVariants.findIndex((ev) => {
+              if (vRow.variantSku && ev.sku && ev.sku.toLowerCase() === vRow.variantSku.toLowerCase()) {
+                return true;
               }
+              const match1 = (ev.color || '').trim().toLowerCase() === vRow.attr1Val.trim().toLowerCase();
+              const match2 = (ev.size || '').trim().toLowerCase() === vRow.attr2Val.trim().toLowerCase();
+              return match1 && match2;
             });
 
-            // Recalculate totalStock
-            const newTotalStock = updatedVariants.reduce(
-              (acc, v) => acc + (v.enabled !== false && !v.unlimited ? Number(v.stock || 0) : 0),
-              0
-            );
-
-            // Images: preserve existing if CSV had none
-            const finalImages = plan.targetImages.length > 0 ? plan.targetImages : existing.images;
-
-            const productToSave: Product = {
-              ...existing,
-              name: plan.targetName || existing.name,
-              category: plan.targetCategory || existing.category,
-              description: plan.targetDescription || existing.description,
-              customSku: plan.targetCustomSku || existing.customSku,
-              price: plan.targetPrice > 0 ? plan.targetPrice : existing.price,
-              cost: plan.targetCost > 0 ? plan.targetCost : existing.cost,
-              discountPrice: plan.targetDiscountPrice ?? existing.discountPrice,
-              supplierId: matchedSupplier?.id || existing.supplierId,
-              supplierName: plan.targetSupplierName || existing.supplierName,
-              images: finalImages,
-              variants: updatedVariants,
-              totalStock: newTotalStock,
-              isUnlimited: updatedVariants.length > 0 && updatedVariants.every((v) => v.unlimited),
-              updatedAt: new Date().toISOString()
-            };
-
-            await onSaveProduct(productToSave);
-            updatedCounter++;
-          } else {
-            // ================= CREATE NEW PRODUCT =================
-            const newProductId =
-              plan.variantRows[0]?.idSistema ||
-              `prod-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-
-            const prefix = (plan.targetName || 'PR').trim().slice(0, 3).toUpperCase();
-            const newVariants: ProductVariant[] = plan.variantRows.map((vRow, vIdx) => {
-              processedVariants++;
-              const varSku =
+            if (matchIndex !== -1) {
+              // Update existing variant stock
+              baseVariants[matchIndex] = {
+                ...baseVariants[matchIndex],
+                stock: vRow.stock,
+                unlimited: vRow.isUnlimited,
+                sku: vRow.variantSku || baseVariants[matchIndex].sku
+              };
+            } else {
+              // Add new variant
+              const prefix = (existing.name || 'PR').trim().slice(0, 3).toUpperCase();
+              const newSku =
                 vRow.variantSku ||
                 `${prefix}-${vRow.attr1Val.slice(0, 3).toUpperCase() || 'V'}-${vRow.attr2Val.slice(0, 3).toUpperCase() || vIdx}`;
 
-              return {
+              baseVariants.push({
                 id: `var-${Date.now()}-${vIdx}-${Math.random().toString(36).substring(2, 6)}`,
                 color: vRow.attr1Val,
                 size: vRow.attr2Val,
-                sku: varSku,
+                sku: newSku,
                 stock: vRow.stock,
                 enabled: true,
                 unlimited: vRow.isUnlimited
-              };
-            });
+              });
+            }
+          });
 
-            const newTotalStock = newVariants.reduce(
-              (acc, v) => acc + (!v.unlimited ? Number(v.stock || 0) : 0),
-              0
-            );
+          const totalStock = baseVariants.reduce(
+            (acc, v) => acc + (!v.unlimited ? Number(v.stock || 0) : 0),
+            0
+          );
 
-            const newProduct: Product = {
-              id: newProductId,
-              name: plan.targetName,
-              category: plan.targetCategory || 'General',
-              description: plan.targetDescription || '',
-              customSku: plan.targetCustomSku || undefined,
-              tags: [],
-              tagColors: {},
-              price: plan.targetPrice,
-              discountPrice: plan.targetDiscountPrice,
-              cost: plan.targetCost || 0,
-              enabledOnline: true,
-              images: plan.targetImages,
-              coverIndex: 0,
-              totalStock: newTotalStock,
-              isUnlimited: newVariants.length > 0 && newVariants.every((v) => v.unlimited),
-              attributesUsed: ['attr1', 'attr2'],
-              variants: newVariants,
-              supplierId: matchedSupplier?.id,
-              supplierName: plan.targetSupplierName || undefined,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
+          const updatedProduct: Product = {
+            ...existing,
+            name: plan.targetName || existing.name,
+            category: plan.targetCategory || existing.category,
+            description: plan.targetDescription || existing.description,
+            customSku: plan.targetCustomSku || existing.customSku,
+            price: plan.targetPrice > 0 ? plan.targetPrice : existing.price,
+            cost: plan.targetCost > 0 ? plan.targetCost : existing.cost,
+            discountPrice: plan.targetDiscountPrice ?? existing.discountPrice,
+            supplierId: supplierId || existing.supplierId,
+            supplierName: plan.targetSupplierName || existing.supplierName,
+            variants: baseVariants,
+            totalStock,
+            isUnlimited: baseVariants.length > 0 && baseVariants.every((v) => v.unlimited),
+            updatedAt: new Date().toISOString()
+          };
+
+          await onSaveProduct(updatedProduct);
+          updatedCounter++;
+        } else {
+          // ================= CREAR PRODUCTO NUEVO =================
+          const prefix = (plan.targetName || 'PR').trim().slice(0, 3).toUpperCase();
+          const newVariants: ProductVariant[] = plan.variantRows.map((vRow, vIdx) => {
+            processedVariants++;
+            const varSku =
+              vRow.variantSku ||
+              `${prefix}-${vRow.attr1Val.slice(0, 3).toUpperCase() || 'V'}-${vRow.attr2Val.slice(0, 3).toUpperCase() || vIdx}`;
+
+            return {
+              id: `var-${Date.now()}-${vIdx}-${Math.random().toString(36).substring(2, 6)}`,
+              color: vRow.attr1Val,
+              size: vRow.attr2Val,
+              sku: varSku,
+              stock: vRow.stock,
+              enabled: true,
+              unlimited: vRow.isUnlimited
             };
+          });
 
-            await onSaveProduct(newProduct);
-            createdCounter++;
-          }
+          const totalStock = newVariants.reduce(
+            (acc, v) => acc + (!v.unlimited ? Number(v.stock || 0) : 0),
+            0
+          );
 
-          // Small yield to allow React DOM re-renders and smooth progress
-          await new Promise((r) => setTimeout(r, 15));
+          const newProduct: Product = {
+            id: `prod-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
+            name: plan.targetName,
+            category: plan.targetCategory || 'General',
+            description: plan.targetDescription || '',
+            customSku: plan.targetCustomSku || undefined,
+            tags: [],
+            tagColors: {},
+            price: plan.targetPrice,
+            discountPrice: plan.targetDiscountPrice,
+            cost: plan.targetCost || 0,
+            enabledOnline: true,
+            images: [],
+            coverIndex: 0,
+            totalStock,
+            isUnlimited: newVariants.length > 0 && newVariants.every((v) => v.unlimited),
+            attributesUsed: ['attr1', 'attr2'],
+            variants: newVariants,
+            supplierId: supplierId || undefined,
+            supplierName: plan.targetSupplierName || undefined,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+
+          await onSaveProduct(newProduct);
+          createdCounter++;
         }
+
+        await new Promise((r) => setTimeout(r, 10));
       }
 
-      // 4. Update new categories in store settings if any were introduced
+      // Add new categories if any
       if (categoriesToAdd.size > 0 && onUpdateSettings) {
         const mergedCategories = [...settings.categories, ...Array.from(categoriesToAdd)];
         await onUpdateSettings({ categories: mergedCategories });
-        console.log(`[IMPORT_CATALOG][${sessionId}] Categorías nuevas incorporadas:`, Array.from(categoriesToAdd));
       }
 
       setProgressPercent(100);
-      setProgressMessage('¡Importación finalizada con éxito!');
+      setProgressMessage('¡Catálogo importado exitosamente!');
 
       const stats = {
         created: createdCounter,
@@ -687,16 +605,12 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       setFinalStats(stats);
       setStep('success');
 
-      console.log(
-        `[IMPORT_CATALOG][${sessionId}] Operación completada con éxito. Creados: ${createdCounter}, Actualizados: ${updatedCounter}, Variantes procesadas: ${processedVariants}.`
-      );
-
       if (onSuccess) {
         onSuccess(stats);
       }
     } catch (err: any) {
-      console.error(`[IMPORT_CATALOG][${sessionId}] Error fatal al procesar importación:`, err);
-      setFatalErrorMessage(err?.message || 'Error inesperado durante la escritura de datos.');
+      console.error('Error durante la importación:', err);
+      setFatalErrorMessage(err?.message || 'Error al guardar los productos en la base de datos.');
       setStep('error');
     }
   };
@@ -708,7 +622,6 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
     setParseErrors([]);
     setGroupedPlans([]);
     setTotalVariantCount(0);
-    setNewSuppliersDetected([]);
     setProgressPercent(0);
     setProgressMessage('');
     setFatalErrorMessage('');
@@ -719,7 +632,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 overflow-hidden bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
-      <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-neutral-200 flex flex-col max-h-[90vh] overflow-hidden">
+      <div className="bg-white rounded-3xl max-w-xl w-full shadow-2xl border border-neutral-200 flex flex-col max-h-[90vh] overflow-hidden">
         {/* Header */}
         <div className="px-6 py-4 bg-[#fbf9f8] border-b border-[#efeded] flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -728,10 +641,10 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-neutral-900">
-                Importar Catálogo (CSV)
+                Importar Productos y Variantes
               </h2>
               <p className="text-xs text-neutral-500">
-                Carga y actualización masiva de inventario, precios y variantes
+                Carga masiva de catálogo o nuevas presentaciones
               </p>
             </div>
           </div>
@@ -746,99 +659,41 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1 text-xs">
+        <div className="p-6 overflow-y-auto space-y-5 flex-1 text-xs">
           {/* STEP 1: UPLOAD & INSTRUCTIONS */}
           {step === 'upload' && (
-            <div className="space-y-5">
-              {/* Informational Guidance Box */}
-              <div className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-2.5">
+            <div className="space-y-4">
+              <div className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-2">
                 <div className="flex items-center gap-2 text-neutral-900 font-bold text-xs">
                   <span className="material-symbols-outlined text-[18px] text-neutral-700">info</span>
-                  <span>¿Cómo funciona la importación masiva?</span>
+                  <span>Instrucciones para la carga:</span>
                 </div>
                 <ul className="space-y-1.5 text-neutral-600 leading-relaxed list-disc list-inside">
                   <li>
-                    <strong className="text-black">1 fila por variante:</strong> Cada combinación de producto (color/talle) debe ocupar un renglón.
+                    <strong className="text-black">1 fila por cada variante:</strong> Cada combinación de talle o color debe figurar en un renglón.
                   </li>
                   <li>
-                    <strong className="text-black">Productos nuevos:</strong> Si no coinciden con ninguno existente, se crean automáticamente.
+                    <strong className="text-black">Mismo producto:</strong> Las filas con el mismo Código o Nombre se agruparán en una sola prenda con sus distintas presentaciones.
                   </li>
                   <li>
-                    <strong className="text-black">Productos existentes:</strong> Se identifican por <code className="bg-neutral-200 px-1 py-0.5 rounded text-[11px]">ID_Sistema</code>, <code className="bg-neutral-200 px-1 py-0.5 rounded text-[11px]">Codigo_Producto</code> o <code className="bg-neutral-200 px-1 py-0.5 rounded text-[11px]">Nombre + Categoria</code>. Solo se actualizarán stock, precios, costo y proveedor.
-                  </li>
-                  <li>
-                    <strong className="text-black">Fotos protegidas:</strong> Si dejas la columna de fotos vacía en un producto existente, sus imágenes actuales no se borrarán.
+                    <strong className="text-black">Stock y precios:</strong> Cada variante tomará el stock indicado en su fila.
                   </li>
                 </ul>
 
                 <div className="pt-2 border-t border-neutral-200 flex items-center justify-between">
-                  <span className="text-[11px] text-neutral-500">¿Primera vez usando esta función?</span>
+                  <span className="text-[11px] text-neutral-500">¿Necesitas un modelo?</span>
                   <button
                     type="button"
                     onClick={handleDownloadSampleCsv}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-neutral-100 text-neutral-800 border border-neutral-300 font-semibold text-[11px] transition-colors cursor-pointer shadow-2xs"
                   >
                     <span className="material-symbols-outlined text-[15px]">download</span>
-                    <span>Descargar planilla CSV de ejemplo</span>
+                    <span>Descargar plantilla CSV</span>
                   </button>
                 </div>
               </div>
 
-              {/* Stock Strategy Selector */}
-              <div className="p-4 rounded-2xl border border-neutral-200 bg-white space-y-3">
-                <label className="block text-xs font-bold text-neutral-900">
-                  Modo de actualización de Stock:
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <label
-                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      stockMode === 'replace'
-                        ? 'border-black bg-neutral-50 ring-1 ring-black'
-                        : 'border-neutral-200 hover:border-neutral-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="stockMode"
-                      value="replace"
-                      checked={stockMode === 'replace'}
-                      onChange={() => setStockMode('replace')}
-                      className="mt-0.5 text-black focus:ring-0 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-black text-xs">Reemplazar stock</div>
-                      <div className="text-[11px] text-neutral-500 mt-0.5">
-                        Fija el inventario de cada prenda al valor exacto que viene en la planilla.
-                      </div>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      stockMode === 'add'
-                        ? 'border-black bg-neutral-50 ring-1 ring-black'
-                        : 'border-neutral-200 hover:border-neutral-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="stockMode"
-                      value="add"
-                      checked={stockMode === 'add'}
-                      onChange={() => setStockMode('add')}
-                      className="mt-0.5 text-black focus:ring-0 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-black text-xs">Sumar stock (Ingreso)</div>
-                      <div className="text-[11px] text-neutral-500 mt-0.5">
-                        Suma las unidades de la planilla al stock que ya tenías cargado.
-                      </div>
-                    </div>
-                  </label>
-                </div>
-              </div>
-
-              {/* Dropzone / File Picker */}
+              {/* Dropzone */}
               <div
                 onClick={() => fileInputRef.current?.click()}
                 className="border-2 border-dashed border-neutral-300 hover:border-black rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-colors bg-neutral-50/50 hover:bg-white group"
@@ -854,20 +709,19 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                   <span className="material-symbols-outlined text-[24px]">cloud_upload</span>
                 </div>
                 <p className="font-bold text-neutral-800 text-sm">
-                  Haz clic para seleccionar tu archivo CSV
+                  Haz clic para elegir tu archivo CSV
                 </p>
                 <p className="text-neutral-500 text-[11px] mt-1">
-                  Compatible con Excel, Google Sheets y LibreOffice (formato .csv delimitado por coma o punto y coma)
+                  Formatos compatibles: .csv (delimitado por coma o punto y coma)
                 </p>
               </div>
             </div>
           )}
 
-          {/* STEP 2: PREVIEW & VALIDATION SUMMARY */}
+          {/* STEP 2: PREVIEW */}
           {step === 'preview' && (
-            <div className="space-y-5 animate-in fade-in duration-200">
-              {/* File Info Bar */}
-              <div className="flex items-center justify-between p-3.5 rounded-2xl bg-neutral-100 border border-neutral-200">
+            <div className="space-y-4 animate-in fade-in duration-200">
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-neutral-100 border border-neutral-200">
                 <div className="flex items-center gap-2.5">
                   <span className="material-symbols-outlined text-[20px] text-neutral-700">description</span>
                   <div>
@@ -884,12 +738,11 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                 </button>
               </div>
 
-              {/* Parse Errors if any */}
               {parseErrors.length > 0 && (
                 <div className="p-4 rounded-2xl bg-red-50 border border-red-200 text-red-900 space-y-2">
                   <div className="flex items-center gap-2 font-bold text-xs text-red-800">
                     <span className="material-symbols-outlined text-[18px]">error</span>
-                    <span>Se detectaron {parseErrors.length} inconsistencias en el archivo:</span>
+                    <span>Se detectaron {parseErrors.length} errores en la planilla:</span>
                   </div>
                   <ul className="max-h-40 overflow-y-auto space-y-1 text-[11px] pl-5 list-disc leading-relaxed text-red-700">
                     {parseErrors.map((err, idx) => (
@@ -897,17 +750,16 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                     ))}
                   </ul>
                   <p className="text-[11px] text-red-800 pt-1 font-medium">
-                    Por favor corregí tu planilla y subila nuevamente para continuar.
+                    Por favor corregí tu archivo para poder continuar.
                   </p>
                 </div>
               )}
 
-              {/* Validation Summary Cards */}
               {parseErrors.length === 0 && (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <div className="p-3.5 rounded-2xl bg-neutral-50 border border-neutral-200 flex flex-col">
-                      <span className="text-[11px] text-neutral-500 font-medium">Nuevos Productos</span>
+                      <span className="text-[11px] text-neutral-500 font-medium">Productos Nuevos</span>
                       <span className="text-xl font-bold text-emerald-600 mt-1">{newProductsCount}</span>
                       <span className="text-[10px] text-neutral-400">Se darán de alta</span>
                     </div>
@@ -923,35 +775,15 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                       <span className="text-xl font-bold text-neutral-900 mt-1">{totalVariantCount}</span>
                       <span className="text-[10px] text-neutral-400">Renglones de stock</span>
                     </div>
-
-                    <div className="p-3.5 rounded-2xl bg-neutral-50 border border-neutral-200 flex flex-col">
-                      <span className="text-[11px] text-neutral-500 font-medium">Modo de Stock</span>
-                      <span className="text-sm font-bold text-neutral-900 mt-1 truncate">
-                        {stockMode === 'replace' ? 'Reemplazar' : 'Sumar (+)'}
-                      </span>
-                      <span className="text-[10px] text-neutral-400">
-                        {stockMode === 'replace' ? 'Pisa existencias' : 'Ingreso mercadería'}
-                      </span>
-                    </div>
                   </div>
 
-                  {newSuppliersDetected.length > 0 && (
-                    <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
-                      <span className="material-symbols-outlined text-[18px] text-amber-600">local_shipping</span>
-                      <span>
-                        Se registrarán automáticamente <strong>{newSuppliersDetected.length}</strong> nuevos proveedores detectados ({newSuppliersDetected.join(', ')}).
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Sample Preview Table */}
+                  {/* Preview list */}
                   <div className="border border-neutral-200 rounded-2xl overflow-hidden">
-                    <div className="px-4 py-2.5 bg-neutral-50 border-b border-neutral-200 font-bold text-neutral-700 text-[11px] flex items-center justify-between">
-                      <span>Vista previa de productos detectados ({groupedPlans.length})</span>
-                      <span className="text-neutral-400 font-normal">Mostrando los primeros 6</span>
+                    <div className="px-4 py-2.5 bg-neutral-50 border-b border-neutral-200 font-bold text-neutral-700 text-[11px]">
+                      Productos detectados ({groupedPlans.length})
                     </div>
                     <div className="divide-y divide-neutral-100 max-h-56 overflow-y-auto">
-                      {groupedPlans.slice(0, 6).map((plan, idx) => (
+                      {groupedPlans.map((plan, idx) => (
                         <div key={idx} className="px-4 py-2.5 flex items-center justify-between text-xs hover:bg-neutral-50">
                           <div className="flex flex-col min-w-0 pr-2">
                             <span className="font-bold text-neutral-900 truncate">{plan.targetName}</span>
@@ -960,18 +792,18 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                               {plan.targetSupplierName ? ` • Prov: ${plan.targetSupplierName}` : ''}
                             </span>
                           </div>
-                          <div className="flex items-center gap-3 shrink-0">
+                          <div className="flex items-center gap-2 shrink-0">
                             <span className="font-bold text-neutral-900">
                               ${plan.targetPrice.toLocaleString('es-AR')}
                             </span>
                             <span
                               className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                                plan.existingProduct
+                                plan.isExisting
                                   ? 'bg-blue-50 text-blue-700 border border-blue-200'
                                   : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                               }`}
                             >
-                              {plan.existingProduct ? 'Actualizar' : 'Nuevo'}
+                              {plan.isExisting ? 'Actualizar' : 'Nuevo'}
                             </span>
                           </div>
                         </div>
@@ -983,104 +815,88 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
             </div>
           )}
 
-          {/* STEP 3: PROCESSING & PROGRESS */}
+          {/* STEP 3: PROCESSING */}
           {step === 'processing' && (
             <div className="py-8 flex flex-col items-center justify-center text-center space-y-4 animate-in fade-in duration-200">
-              <div className="w-14 h-14 rounded-2xl bg-neutral-900 text-white flex items-center justify-center animate-pulse shadow-md">
-                <span className="material-symbols-outlined text-[28px]">sync</span>
+              <div className="w-12 h-12 rounded-2xl bg-neutral-900 text-white flex items-center justify-center animate-pulse shadow-md">
+                <span className="material-symbols-outlined text-[24px]">sync</span>
               </div>
 
               <div>
                 <h3 className="text-sm font-bold text-neutral-900">
-                  Procesando importación masiva...
+                  Guardando productos en el sistema...
                 </h3>
-                <p className="text-neutral-500 text-xs mt-1 max-w-sm">
+                <p className="text-neutral-500 text-xs mt-1">
                   {progressMessage}
                 </p>
               </div>
 
-              {/* Progress Bar */}
-              <div className="w-full max-w-md bg-neutral-100 rounded-full h-3 overflow-hidden border border-neutral-200">
+              <div className="w-full max-w-sm bg-neutral-100 rounded-full h-2.5 overflow-hidden border border-neutral-200">
                 <div
                   className="bg-black h-full transition-all duration-300 rounded-full"
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
 
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold max-w-md">
-                Por favor no actualices ni cierres la página, espera hasta que termine el proceso.
-              </div>
+              <p className="text-[11px] text-neutral-400">
+                Por favor no cierres la ventana hasta finalizar.
+              </p>
             </div>
           )}
 
-          {/* STEP 4: SUCCESS CONFIRMATION */}
+          {/* STEP 4: SUCCESS */}
           {step === 'success' && (
             <div className="py-6 flex flex-col items-center justify-center text-center space-y-4 animate-in fade-in zoom-in-95">
-              <div className="w-16 h-16 rounded-3xl bg-emerald-100 text-emerald-700 flex items-center justify-center shadow-xs">
-                <span className="material-symbols-outlined text-[36px]">check_circle</span>
+              <div className="w-14 h-14 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shadow-xs">
+                <span className="material-symbols-outlined text-[32px]">check_circle</span>
               </div>
 
               <div>
                 <h3 className="text-base font-bold text-neutral-900">
-                  ¡Importación completada con éxito!
+                  ¡Productos importados exitosamente!
                 </h3>
                 <p className="text-neutral-500 text-xs mt-1">
-                  Los registros fueron validados y sincronizados con la base de datos de tu tienda.
+                  Tu catálogo fue actualizado y está listo para vender.
                 </p>
               </div>
 
-              {/* Summary Stats */}
-              <div className="grid grid-cols-3 gap-3 w-full max-w-md">
-                <div className="p-3 rounded-2xl bg-neutral-50 border border-neutral-200">
-                  <span className="text-[11px] text-neutral-500">Nuevos</span>
-                  <p className="text-lg font-bold text-emerald-700 mt-0.5">{finalStats.created}</p>
+              <div className="grid grid-cols-3 gap-3 w-full max-w-xs">
+                <div className="p-2.5 rounded-xl bg-neutral-50 border border-neutral-200">
+                  <span className="text-[10px] text-neutral-500">Nuevos</span>
+                  <p className="text-base font-bold text-emerald-700">{finalStats.created}</p>
                 </div>
-                <div className="p-3 rounded-2xl bg-neutral-50 border border-neutral-200">
-                  <span className="text-[11px] text-neutral-500">Actualizados</span>
-                  <p className="text-lg font-bold text-blue-700 mt-0.5">{finalStats.updated}</p>
+                <div className="p-2.5 rounded-xl bg-neutral-50 border border-neutral-200">
+                  <span className="text-[10px] text-neutral-500">Actualizados</span>
+                  <p className="text-base font-bold text-blue-700">{finalStats.updated}</p>
                 </div>
-                <div className="p-3 rounded-2xl bg-neutral-50 border border-neutral-200">
-                  <span className="text-[11px] text-neutral-500">Variantes</span>
-                  <p className="text-lg font-bold text-neutral-900 mt-0.5">{finalStats.variants}</p>
+                <div className="p-2.5 rounded-xl bg-neutral-50 border border-neutral-200">
+                  <span className="text-[10px] text-neutral-500">Variantes</span>
+                  <p className="text-base font-bold text-neutral-900">{finalStats.variants}</p>
                 </div>
-              </div>
-
-              <div className="text-[11px] text-neutral-400 font-mono">
-                Código de seguimiento: {importSessionId}
               </div>
             </div>
           )}
 
-          {/* STEP 5: FATAL ERROR */}
+          {/* STEP 5: ERROR */}
           {step === 'error' && (
             <div className="py-6 flex flex-col items-center justify-center text-center space-y-4 animate-in fade-in zoom-in-95">
-              <div className="w-16 h-16 rounded-3xl bg-red-100 text-red-700 flex items-center justify-center shadow-xs">
-                <span className="material-symbols-outlined text-[36px]">report_problem</span>
+              <div className="w-14 h-14 rounded-2xl bg-red-100 text-red-700 flex items-center justify-center shadow-xs">
+                <span className="material-symbols-outlined text-[32px]">report_problem</span>
               </div>
 
               <div>
                 <h3 className="text-base font-bold text-neutral-900">
-                  Ocurrió un inconveniente al procesar la importación
+                  Ocurrió un error al procesar el archivo
                 </h3>
-                <p className="text-neutral-500 text-xs mt-1 max-w-md">
-                  Por favor intentá más tarde o comunicate con el administrador con el siguiente código de seguimiento:
+                <p className="text-neutral-500 text-xs mt-1 max-w-sm">
+                  {fatalErrorMessage || 'Por favor revisá el formato de tu planilla e intentá nuevamente.'}
                 </p>
               </div>
-
-              <div className="p-3 bg-neutral-100 border border-neutral-200 rounded-xl font-mono text-xs text-neutral-800 select-all font-bold">
-                {importSessionId || 'IMP_ERROR_GENERIC'}
-              </div>
-
-              {fatalErrorMessage && (
-                <div className="text-[11px] text-red-600 bg-red-50 p-3 rounded-xl border border-red-200 max-w-md">
-                  Detalle del error: {fatalErrorMessage}
-                </div>
-              )}
             </div>
           )}
         </div>
 
-        {/* Action Footer */}
+        {/* Footer */}
         <div className="px-6 py-4 bg-[#fbf9f8] border-t border-[#efeded] flex items-center justify-end gap-2.5">
           {step === 'upload' && (
             <button
@@ -1099,7 +915,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                 onClick={handleReset}
                 className="px-4 py-2 rounded-xl bg-neutral-200 hover:bg-neutral-300 text-black text-xs font-semibold transition-colors cursor-pointer"
               >
-                Descartar y volver
+                Volver
               </button>
               <button
                 type="button"
@@ -1108,7 +924,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                 className="px-5 py-2 rounded-xl bg-black hover:bg-neutral-800 disabled:opacity-40 text-white text-xs font-semibold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[16px]">check</span>
-                <span>Confirmar e Importar ({groupedPlans.length} productos)</span>
+                <span>Confirmar e Importar</span>
               </button>
             </>
           )}
@@ -1119,7 +935,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
               onClick={onClose}
               className="px-6 py-2.5 rounded-xl bg-black hover:bg-neutral-800 text-white text-xs font-semibold transition-all shadow-xs cursor-pointer"
             >
-              Cerrar y ver inventario
+              Cerrar y ver catálogo
             </button>
           )}
 

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Product, CartItem, StoreSettings, StoreFeatureFlags } from '../types';
+import { Product, CartItem, StoreSettings, StoreFeatureFlags, StoreAttribute } from '../types';
 import { useModalHistory } from '../hooks/useModalHistory';
 import { ensureStoreAttributes, formatVariantSummary } from '../utils/attributeUtils';
 
@@ -120,38 +120,56 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     return visible.length > 0 ? visible : attribute2.options;
   }, [attribute2, products]);
 
+  // Check if an attribute value represents a meaningful distinction rather than empty or placeholder
+  const isAttrValueMeaningful = (val?: string | null): boolean => {
+    if (!val) return false;
+    const trimmed = val.trim().toLowerCase();
+    return trimmed !== '' && trimmed !== 'único' && trimmed !== 'unico' && trimmed !== 'u' && trimmed !== 'general' && trimmed !== '-' && trimmed !== 'default';
+  };
+
+  // Helper to determine whether a product actively uses Attribute 1 and/or Attribute 2
+  const getProductAttributeUsage = (
+    product: Product,
+    attr1: StoreAttribute,
+    attr2: StoreAttribute
+  ) => {
+    const visible = product.variants.filter(isVariantVisible);
+    const declaredAttr1 = !product.attributesUsed || product.attributesUsed.includes('attr1');
+    const declaredAttr2 = !product.attributesUsed || product.attributesUsed.includes('attr2');
+
+    const distinctColors = Array.from(new Set(visible.map((v) => (v.color || '').trim()).filter(Boolean)));
+    const distinctSizes = Array.from(new Set(visible.map((v) => (v.size || '').trim()).filter(Boolean)));
+
+    const hasMeaningfulColors = distinctColors.some((c) => isAttrValueMeaningful(c));
+    const hasMeaningfulSizes = distinctSizes.some((s) => isAttrValueMeaningful(s));
+
+    const usesAttr1 = Boolean(
+      attr1.enabled &&
+      declaredAttr1 &&
+      (hasMeaningfulColors || (distinctColors.length > 1 && visible.some((v) => Boolean(v.attributeOptionId1))))
+    );
+
+    const usesAttr2 = Boolean(
+      attr2.enabled &&
+      declaredAttr2 &&
+      (hasMeaningfulSizes || (distinctSizes.length > 1 && visible.some((v) => Boolean(v.attributeOptionId2))))
+    );
+
+    return { usesAttr1, usesAttr2 };
+  };
+
   // Helper to check if a product has variants configured with Attribute 1
   const productHasAttr1 = (p: Product) => {
-    if (Array.isArray(p.attributesUsed)) {
-      return p.attributesUsed.includes('attr1');
-    }
-    return p.variants.some((v) => {
-      if (v.attributeOptionId1) return true;
-      if (attribute1.type === 'color' && v.color && v.color.toLowerCase() !== 'único' && v.color.toLowerCase() !== 'unico') {
-        return attribute1.options.some((o) => o.label.toLowerCase() === v.color.toLowerCase());
-      }
-      if (attribute1.type !== 'color' && v.size && v.size.toLowerCase() !== 'u' && v.size.toLowerCase() !== 'único' && v.size.toLowerCase() !== 'unico') {
-        return attribute1.options.some((o) => o.label.toLowerCase() === v.size.toLowerCase());
-      }
-      return false;
-    });
+    if (!attribute1.enabled) return false;
+    const { usesAttr1 } = getProductAttributeUsage(p, attribute1, attribute2);
+    return usesAttr1;
   };
 
   // Helper to check if a product has variants configured with Attribute 2
   const productHasAttr2 = (p: Product) => {
-    if (Array.isArray(p.attributesUsed)) {
-      return p.attributesUsed.includes('attr2');
-    }
-    return p.variants.some((v) => {
-      if (v.attributeOptionId2) return true;
-      if (attribute2.type === 'color' && v.color && v.color.toLowerCase() !== 'único' && v.color.toLowerCase() !== 'unico') {
-        return attribute2.options.some((o) => o.label.toLowerCase() === v.color.toLowerCase());
-      }
-      if (attribute2.type !== 'color' && v.size && v.size.toLowerCase() !== 'u' && v.size.toLowerCase() !== 'único' && v.size.toLowerCase() !== 'unico') {
-        return attribute2.options.some((o) => o.label.toLowerCase() === v.size.toLowerCase());
-      }
-      return false;
-    });
+    if (!attribute2.enabled) return false;
+    const { usesAttr2 } = getProductAttributeUsage(p, attribute1, attribute2);
+    return usesAttr2;
   };
 
   // Check if there are active products without Attribute 1 to show "Otros" filter
@@ -341,17 +359,29 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     setSelectedProductModal(product);
     setModalActiveImageIndex(product.coverIndex || 0);
     const visibleVariants = product.variants.filter(isVariantVisible);
-    const uniqueColors = Array.from(new Set(visibleVariants.map((v) => v.color)));
-    const initialColor =
-      cardSelectedColor[product.id] && uniqueColors.includes(cardSelectedColor[product.id])
-        ? cardSelectedColor[product.id]
-        : uniqueColors[0] || 'Único';
-    const currentColorVariants = visibleVariants.filter((v) => v.color === initialColor);
-    const uniqueSizes = Array.from(new Set(currentColorVariants.map((v) => v.size)));
-    const initialSize =
-      cardSelectedSize[product.id] && uniqueSizes.includes(cardSelectedSize[product.id])
-        ? cardSelectedSize[product.id]
-        : uniqueSizes[0] || 'U';
+    const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
+
+    const availableColors = usesAttr1
+      ? Array.from(new Set(visibleVariants.map((v) => (v.color || '').trim()).filter((c) => isAttrValueMeaningful(c))))
+      : [];
+    const initialColor = usesAttr1
+      ? (cardSelectedColor[product.id] && availableColors.includes(cardSelectedColor[product.id])
+          ? cardSelectedColor[product.id]
+          : availableColors[0] || '')
+      : '';
+
+    const currentColorVariants = usesAttr1 && initialColor
+      ? visibleVariants.filter((v) => (v.color || '').toLowerCase() === initialColor.toLowerCase())
+      : visibleVariants;
+
+    const availableSizes = usesAttr2
+      ? Array.from(new Set(currentColorVariants.map((v) => (v.size || '').trim()).filter((s) => isAttrValueMeaningful(s))))
+      : [];
+    const initialSize = usesAttr2
+      ? (cardSelectedSize[product.id] && availableSizes.includes(cardSelectedSize[product.id])
+          ? cardSelectedSize[product.id]
+          : availableSizes[0] || '')
+      : '';
 
     setModalSelectedColor(initialColor);
     setModalSelectedSize(initialSize);
@@ -463,33 +493,47 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
   const handleModalAddToCart = () => {
     if (!selectedProductModal) return;
-    const color = modalSelectedColor;
-    const size = modalSelectedSize;
-    const visibleVariants = selectedProductModal.variants.filter(isVariantVisible);
+    const product = selectedProductModal;
+    const visibleVariants = product.variants.filter(isVariantVisible);
+    const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
 
-    const matchedVariant =
-      visibleVariants.find(
-        (v) => v.color.toLowerCase() === color.toLowerCase() && v.size.toLowerCase() === size.toLowerCase()
-      ) ||
-      visibleVariants.find((v) => v.size.toLowerCase() === size.toLowerCase()) ||
-      visibleVariants[0];
+    let matchedVariant = visibleVariants[0];
+    if (usesAttr1 && usesAttr2) {
+      matchedVariant =
+        visibleVariants.find(
+          (v) =>
+            (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase() &&
+            (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()
+        ) ||
+        visibleVariants.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()) ||
+        visibleVariants[0];
+    } else if (usesAttr1) {
+      matchedVariant =
+        visibleVariants.find((v) => (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase()) ||
+        visibleVariants[0];
+    } else if (usesAttr2) {
+      matchedVariant =
+        visibleVariants.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()) ||
+        visibleVariants[0];
+    }
 
     if (!matchedVariant) {
       showStockNotice('Esta combinación no se encuentra disponible.');
       return;
     }
 
-    const isUnlimited = !!matchedVariant.unlimited;
+    const isUnlimited = Boolean(matchedVariant.unlimited || product.isUnlimited);
 
     const inCart =
       cart.find(
         (c) =>
           c.productId === selectedProductModal.id &&
-          c.color.toLowerCase() === color.toLowerCase() &&
-          c.size.toLowerCase() === size.toLowerCase()
+          (c.variantId ? c.variantId === matchedVariant.id : true) &&
+          (usesAttr1 ? (c.color || '').toLowerCase() === (matchedVariant.color || '').toLowerCase() : true) &&
+          (usesAttr2 ? (c.size || '').toLowerCase() === (matchedVariant.size || '').toLowerCase() : true)
       )?.quantity || 0;
 
-    const maxStock = isUnlimited ? 999999 : (matchedVariant ? Number(matchedVariant.stock || 0) : 0);
+    const maxStock = isUnlimited ? 999999 : Number(matchedVariant.stock || 0);
     const remainingStock = isUnlimited ? 999999 : Math.max(0, maxStock - inCart);
 
     if (!isUnlimited && remainingStock <= 0) {
@@ -510,9 +554,9 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     onAddToCart({
       productId: selectedProductModal.id,
       productName: selectedProductModal.name,
-      variantId: matchedVariant?.id || 'v-default',
-      size,
-      color,
+      variantId: matchedVariant.id || 'v-default',
+      size: usesAttr2 ? matchedVariant.size : '',
+      color: usesAttr1 ? matchedVariant.color : '',
       attributeSummary: formatVariantSummary(matchedVariant, attribute1, attribute2, selectedProductModal),
       unlimited: isUnlimited,
       price: effectiveModalPrice,
@@ -526,38 +570,72 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
   const handleAddToCart = (product: Product) => {
     const visibleVariants = product.variants.filter(isVariantVisible);
-    const uniqueColors = Array.from(new Set(visibleVariants.map((v) => v.color)));
-    const color =
-      cardSelectedColor[product.id] && uniqueColors.includes(cardSelectedColor[product.id])
-        ? cardSelectedColor[product.id]
-        : uniqueColors[0] || 'Único';
-    const currentColorVariants = visibleVariants.filter((v) => v.color === color);
-    const uniqueSizes = Array.from(new Set(currentColorVariants.map((v) => v.size)));
-    const size =
-      cardSelectedSize[product.id] && uniqueSizes.includes(cardSelectedSize[product.id])
-        ? cardSelectedSize[product.id]
-        : uniqueSizes[0] || 'U';
+    if (visibleVariants.length === 0) {
+      showStockNotice('Esta prenda no tiene variantes disponibles.');
+      return;
+    }
+    const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
 
-    const matchedVariant =
-      visibleVariants.find((v) => v.color.toLowerCase() === color.toLowerCase() && v.size.toLowerCase() === size.toLowerCase()) ||
-      visibleVariants[0];
+    const availableColors = usesAttr1
+      ? Array.from(new Set(visibleVariants.map((v) => (v.color || '').trim()).filter((c) => isAttrValueMeaningful(c))))
+      : [];
+    const color = usesAttr1
+      ? (cardSelectedColor[product.id] && availableColors.includes(cardSelectedColor[product.id])
+          ? cardSelectedColor[product.id]
+          : availableColors[0] || '')
+      : '';
+
+    const currentColorVariants = usesAttr1 && color
+      ? visibleVariants.filter((v) => (v.color || '').toLowerCase() === color.toLowerCase())
+      : visibleVariants;
+
+    const availableSizes = usesAttr2
+      ? Array.from(new Set(currentColorVariants.map((v) => (v.size || '').trim()).filter((s) => isAttrValueMeaningful(s))))
+      : [];
+    const size = usesAttr2
+      ? (cardSelectedSize[product.id] && availableSizes.includes(cardSelectedSize[product.id])
+          ? cardSelectedSize[product.id]
+          : availableSizes[0] || '')
+      : '';
+
+    let matchedVariant = visibleVariants[0];
+    if (usesAttr1 && usesAttr2) {
+      matchedVariant =
+        visibleVariants.find(
+          (v) =>
+            (v.color || '').toLowerCase() === color.toLowerCase() &&
+            (v.size || '').toLowerCase() === size.toLowerCase()
+        ) ||
+        currentColorVariants.find((v) => (v.size || '').toLowerCase() === size.toLowerCase()) ||
+        currentColorVariants[0] ||
+        visibleVariants[0];
+    } else if (usesAttr1) {
+      matchedVariant =
+        visibleVariants.find((v) => (v.color || '').toLowerCase() === color.toLowerCase()) ||
+        visibleVariants[0];
+    } else if (usesAttr2) {
+      matchedVariant =
+        visibleVariants.find((v) => (v.size || '').toLowerCase() === size.toLowerCase()) ||
+        visibleVariants[0];
+    }
 
     if (!matchedVariant) {
       showStockNotice('Esta prenda no tiene combinaciones disponibles.');
       return;
     }
 
-    const isUnlimited = !!matchedVariant.unlimited;
+    const isUnlimited = Boolean(matchedVariant.unlimited || product.isUnlimited);
 
     const inCart =
       cart.find(
         (c) =>
           c.productId === product.id &&
-          c.color.toLowerCase() === color.toLowerCase() &&
-          c.size.toLowerCase() === size.toLowerCase()
+          (c.variantId ? c.variantId === matchedVariant.id : true) &&
+          (usesAttr1 ? (c.color || '').toLowerCase() === (matchedVariant.color || '').toLowerCase() : true) &&
+          (usesAttr2 ? (c.size || '').toLowerCase() === (matchedVariant.size || '').toLowerCase() : true)
       )?.quantity || 0;
 
-    const maxStock = isUnlimited ? 999999 : (matchedVariant ? Number(matchedVariant.stock || 0) : 0);
+    const maxStock = isUnlimited ? 999999 : Number(matchedVariant.stock || 0);
     const remainingStock = isUnlimited ? 999999 : Math.max(0, maxStock - inCart);
 
     if (!isUnlimited && remainingStock <= 0) {
@@ -577,9 +655,9 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     onAddToCart({
       productId: product.id,
       productName: product.name,
-      variantId: matchedVariant?.id || 'v-default',
-      size,
-      color,
+      variantId: matchedVariant.id || 'v-default',
+      size: usesAttr2 ? matchedVariant.size : '',
+      color: usesAttr1 ? matchedVariant.color : '',
       attributeSummary: formatVariantSummary(matchedVariant, attribute1, attribute2, product),
       unlimited: isUnlimited,
       price: effectiveCardPrice,
@@ -1124,56 +1202,83 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
             <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2.5 sm:gap-6">
                 {filteredProducts.map((product) => {
                   const visibleVariants = product.variants.filter(isVariantVisible);
-                  const uniqueColors = Array.from(new Set(visibleVariants.map((v) => v.color)));
-                  // Prefer user's active attribute 1 filter if available for this product
+                  const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
+
+                  // Available colors if attribute 1 is active for this product
+                  const availableColors = usesAttr1
+                    ? Array.from(new Set(visibleVariants.map((v) => (v.color || '').trim()).filter((c) => isAttrValueMeaningful(c))))
+                    : [];
+
                   const preferredFilterColor = selectedAttr1.find((sc) => {
                     const opt = attribute1.options.find((o) => o.id === sc);
                     const val = opt?.label || sc;
-                    return uniqueColors.some((c) => c.toLowerCase() === val.toLowerCase());
+                    return availableColors.some((c) => c.toLowerCase() === val.toLowerCase());
                   });
-                  const currentColorName =
-                    cardSelectedColor[product.id] && uniqueColors.includes(cardSelectedColor[product.id])
-                      ? cardSelectedColor[product.id]
-                      : (preferredFilterColor
-                          ? (uniqueColors.find((c) => {
-                              const opt = attribute1.options.find((o) => o.id === preferredFilterColor);
-                              const val = opt?.label || preferredFilterColor;
-                              return c.toLowerCase() === val.toLowerCase();
-                            }) || uniqueColors[0] || '')
-                          : uniqueColors[0] || '');
-                  const currentColorVariants = visibleVariants.filter(
-                    (v) => v.color === currentColorName
-                  );
 
-                  const uniqueSizes = Array.from(new Set(currentColorVariants.map((v) => v.size)));
-                  // Prefer user's active attribute 2 filter if available in current color
+                  const currentColorName = usesAttr1
+                    ? (cardSelectedColor[product.id] && availableColors.includes(cardSelectedColor[product.id])
+                        ? cardSelectedColor[product.id]
+                        : (preferredFilterColor
+                            ? (availableColors.find((c) => {
+                                const opt = attribute1.options.find((o) => o.id === preferredFilterColor);
+                                const val = opt?.label || preferredFilterColor;
+                                return c.toLowerCase() === val.toLowerCase();
+                              }) || availableColors[0] || '')
+                            : availableColors[0] || ''))
+                    : '';
+
+                  const currentColorVariants = usesAttr1 && currentColorName
+                    ? visibleVariants.filter((v) => (v.color || '').toLowerCase() === currentColorName.toLowerCase())
+                    : visibleVariants;
+
+                  // Available sizes if attribute 2 is active for this product
+                  const availableSizes = usesAttr2
+                    ? Array.from(new Set(currentColorVariants.map((v) => (v.size || '').trim()).filter((s) => isAttrValueMeaningful(s))))
+                    : [];
+
                   const preferredFilterSize = selectedAttr2.find((sz) => {
                     const opt = attribute2.options.find((o) => o.id === sz);
                     const val = opt?.label || sz;
-                    return uniqueSizes.some((s) => s.toLowerCase() === val.toLowerCase());
+                    return availableSizes.some((s) => s.toLowerCase() === val.toLowerCase());
                   });
-                  const currentSizeName =
-                    cardSelectedSize[product.id] && uniqueSizes.includes(cardSelectedSize[product.id])
-                      ? cardSelectedSize[product.id]
-                      : (preferredFilterSize
-                          ? (uniqueSizes.find((s) => {
-                              const opt = attribute2.options.find((o) => o.id === preferredFilterSize);
-                              const val = opt?.label || preferredFilterSize;
-                              return s.toLowerCase() === val.toLowerCase();
-                            }) || uniqueSizes[0] || '')
-                          : uniqueSizes[0] || '');
 
-                  const selectedVariant =
-                    visibleVariants.find(
-                      (v) => v.color === currentColorName && v.size === currentSizeName
-                    ) || currentColorVariants[0] || visibleVariants[0];
-                  const inCartCount = cart.find(
-                    (ci) =>
-                      ci.productId === product.id &&
-                      ci.color.toLowerCase() === currentColorName.toLowerCase() &&
-                      ci.size.toLowerCase() === currentSizeName.toLowerCase()
-                  )?.quantity || 0;
-                  const isVariantUnlimited = !!selectedVariant?.unlimited;
+                  const currentSizeName = usesAttr2
+                    ? (cardSelectedSize[product.id] && availableSizes.includes(cardSelectedSize[product.id])
+                        ? cardSelectedSize[product.id]
+                        : (preferredFilterSize
+                            ? (availableSizes.find((s) => {
+                                const opt = attribute2.options.find((o) => o.id === preferredFilterSize);
+                                const val = opt?.label || preferredFilterSize;
+                                return s.toLowerCase() === val.toLowerCase();
+                              }) || availableSizes[0] || '')
+                            : availableSizes[0] || ''))
+                    : '';
+
+                  let selectedVariant = visibleVariants[0];
+                  if (usesAttr1 && usesAttr2) {
+                    selectedVariant =
+                      visibleVariants.find(
+                        (v) =>
+                          (v.color || '').toLowerCase() === currentColorName.toLowerCase() &&
+                          (v.size || '').toLowerCase() === currentSizeName.toLowerCase()
+                      ) ||
+                      currentColorVariants.find((v) => (v.size || '').toLowerCase() === currentSizeName.toLowerCase()) ||
+                      currentColorVariants[0] ||
+                      visibleVariants[0];
+                  } else if (usesAttr1) {
+                    selectedVariant =
+                      visibleVariants.find((v) => (v.color || '').toLowerCase() === currentColorName.toLowerCase()) ||
+                      visibleVariants[0];
+                  } else if (usesAttr2) {
+                    selectedVariant =
+                      visibleVariants.find((v) => (v.size || '').toLowerCase() === currentSizeName.toLowerCase()) ||
+                      visibleVariants[0];
+                  }
+
+                  const inCartCount = selectedVariant
+                    ? (cart.find((ci) => ci.productId === product.id && (ci.variantId ? ci.variantId === selectedVariant.id : true))?.quantity || 0)
+                    : 0;
+                  const isVariantUnlimited = Boolean(selectedVariant?.unlimited || product.isUnlimited);
                   const variantStock = selectedVariant ? Number(selectedVariant.stock || 0) : 0;
                   const remainingStock = isVariantUnlimited ? 999999 : Math.max(0, variantStock - inCartCount);
                   const isVariantOutOfStock = !isVariantUnlimited && remainingStock <= 0;
@@ -1305,19 +1410,19 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                             </h3>
 
                             {/* Color / Variant Subtitle */}
-                            {currentColorName && (
+                            {usesAttr1 && currentColorName && (
                               <p className="text-[11px] sm:text-xs text-neutral-500 font-normal truncate mt-0.5">
                                 {currentColorName}
                               </p>
                             )}
 
-                            {/* Size Badges / Selector - compact chips like in the screenshot */}
-                            {uniqueSizes.length > 0 && (
+                            {/* Size Badges / Selector - only shown when attribute 2 is active */}
+                            {usesAttr2 && availableSizes.length > 0 && (
                               <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                                {uniqueSizes.map((sName) => {
-                                  const match = currentColorVariants.find((v) => v.size === sName);
-                                  const isSelected = currentSizeName === sName;
-                                  const isOutOfStock = !match?.unlimited && (!match || match.stock <= 0);
+                                {availableSizes.map((sName) => {
+                                  const match = currentColorVariants.find((v) => (v.size || '').toLowerCase() === sName.toLowerCase());
+                                  const isSelected = currentSizeName.toLowerCase() === sName.toLowerCase();
+                                  const isOutOfStock = !match?.unlimited && !product.isUnlimited && (!match || match.stock <= 0);
                                   return (
                                     <button
                                       key={sName}
@@ -1365,28 +1470,47 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                               </div>
                             )}
 
-                            {/* Color swatch dots if multiple colors available */}
-                            {uniqueColors.length > 1 && (
-                              <div className="flex items-center gap-1.5 mt-2">
-                                {uniqueColors.map((cName) => {
-                                  const matchVar = visibleVariants.find((v) => v.color === cName);
-                                  const isSelected = currentColorName === cName;
+                            {/* Color swatch dots if multiple colors available and attribute 1 is active */}
+                            {usesAttr1 && availableColors.length > 1 && (
+                              <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                                {availableColors.map((cName) => {
+                                  const matchVar = visibleVariants.find((v) => (v.color || '').toLowerCase() === cName.toLowerCase());
+                                  const isSelected = currentColorName.toLowerCase() === cName.toLowerCase();
+                                  if (attribute1.type === 'color') {
+                                    return (
+                                      <button
+                                        key={cName}
+                                        type="button"
+                                        title={cName}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setCardSelectedColor((prev) => ({ ...prev, [product.id]: cName }));
+                                        }}
+                                        style={{ backgroundColor: matchVar?.colorHex || '#000000' }}
+                                        className={`w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full border border-black/15 transition-all cursor-pointer ${
+                                          isSelected
+                                            ? 'ring-2 ring-black ring-offset-1 scale-110'
+                                            : 'hover:scale-110 opacity-80 hover:opacity-100'
+                                        }`}
+                                      />
+                                    );
+                                  }
                                   return (
                                     <button
                                       key={cName}
                                       type="button"
-                                      title={cName}
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setCardSelectedColor((prev) => ({ ...prev, [product.id]: cName }));
                                       }}
-                                      style={{ backgroundColor: matchVar?.colorHex || '#000000' }}
-                                      className={`w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full border border-black/15 transition-all cursor-pointer ${
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all ${
                                         isSelected
-                                          ? 'ring-2 ring-black ring-offset-1 scale-110'
-                                          : 'hover:scale-110 opacity-80 hover:opacity-100'
+                                          ? 'bg-neutral-900 text-white border-neutral-900 shadow-2xs'
+                                          : 'bg-[#f5f5f5] text-neutral-700 border-neutral-200 hover:border-black cursor-pointer'
                                       }`}
-                                    />
+                                    >
+                                      {cName}
+                                    </button>
                                   );
                                 })}
                               </div>
@@ -1461,23 +1585,43 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
         const activeImg = images[modalActiveImageIndex] || images[0];
 
         const visibleVariants = product.variants.filter(isVariantVisible);
-        const uniqueColors = Array.from(new Set(visibleVariants.map((v) => v.color)));
-        const currentColorVariants = visibleVariants.filter((v) => v.color === modalSelectedColor);
-        const uniqueSizes = Array.from(new Set(currentColorVariants.map((v) => v.size)));
+        const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
 
-        const activeVariant =
-          visibleVariants.find((v) => v.color === modalSelectedColor && v.size === modalSelectedSize) ||
-          currentColorVariants[0] ||
-          visibleVariants[0];
+        const availableColors = usesAttr1
+          ? Array.from(new Set(visibleVariants.map((v) => (v.color || '').trim()).filter((c) => isAttrValueMeaningful(c))))
+          : [];
+        const currentColorVariants = usesAttr1 && modalSelectedColor
+          ? visibleVariants.filter((v) => (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase())
+          : visibleVariants;
+        const availableSizes = usesAttr2
+          ? Array.from(new Set(currentColorVariants.map((v) => (v.size || '').trim()).filter((s) => isAttrValueMeaningful(s))))
+          : [];
 
-        const inCartModal = cart.find(
-          (ci) =>
-            ci.productId === product.id &&
-            ci.color.toLowerCase() === modalSelectedColor.toLowerCase() &&
-            ci.size.toLowerCase() === modalSelectedSize.toLowerCase()
-        )?.quantity || 0;
+        let activeVariant = visibleVariants[0];
+        if (usesAttr1 && usesAttr2) {
+          activeVariant =
+            visibleVariants.find(
+              (v) =>
+                (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase() &&
+                (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()
+            ) ||
+            currentColorVariants[0] ||
+            visibleVariants[0];
+        } else if (usesAttr1) {
+          activeVariant =
+            visibleVariants.find((v) => (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase()) ||
+            visibleVariants[0];
+        } else if (usesAttr2) {
+          activeVariant =
+            visibleVariants.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()) ||
+            visibleVariants[0];
+        }
 
-        const isModalVariantUnlimited = !!activeVariant?.unlimited;
+        const inCartModal = activeVariant
+          ? (cart.find((ci) => ci.productId === product.id && (ci.variantId ? ci.variantId === activeVariant.id : true))?.quantity || 0)
+          : 0;
+
+        const isModalVariantUnlimited = Boolean(activeVariant?.unlimited || product.isUnlimited);
         const rawVariantStock = activeVariant ? Number(activeVariant.stock || 0) : 0;
         const maxStock = isModalVariantUnlimited ? 99 : Math.max(0, rawVariantStock - inCartModal);
         const isOutOfStock = !isModalVariantUnlimited && maxStock <= 0;
@@ -1612,7 +1756,9 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     )}
                     {isOutOfStock && !isModalVariantUnlimited && (
                       <span className="px-2.5 py-0.5 rounded-full bg-neutral-800 text-white text-xs font-bold">
-                        {rawVariantStock <= 0 ? 'Agotado en este talle' : 'Todo el stock disponible en tu carrito'}
+                        {rawVariantStock <= 0
+                          ? (usesAttr2 ? `Agotado en este ${attribute2.name.toLowerCase()}` : usesAttr1 ? `Agotado en este ${attribute1.name.toLowerCase()}` : 'Agotado')
+                          : 'Todo el stock disponible en tu carrito'}
                       </span>
                     )}
                   </div>
@@ -1667,46 +1813,72 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     </div>
                   )}
 
-                  {/* Color Selector */}
-                  {uniqueColors.length > 0 && (
+                  {/* Color Selector - only if product actively uses attribute 1 */}
+                  {usesAttr1 && availableColors.length > 0 && (
                     <div className="pt-2 border-t border-neutral-100">
                       <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
                         <span>{attribute1.name || 'Color'}: <strong className="text-black font-semibold">{modalSelectedColor}</strong></span>
-                        <span className="text-[11px] text-neutral-400">{uniqueColors.length} disponibles</span>
+                        <span className="text-[11px] text-neutral-400">{availableColors.length} disponibles</span>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap">
-                        {uniqueColors.map((cName) => {
-                          const matchVar = visibleVariants.find((v) => v.color === cName);
-                          const isSelected = modalSelectedColor === cName;
+                        {availableColors.map((cName) => {
+                          const matchVar = visibleVariants.find((v) => (v.color || '').toLowerCase() === cName.toLowerCase());
+                          const isSelected = modalSelectedColor.toLowerCase() === cName.toLowerCase();
+                          if (attribute1.type === 'color') {
+                            return (
+                              <button
+                                key={cName}
+                                type="button"
+                                title={cName}
+                                onClick={() => {
+                                  setModalSelectedColor(cName);
+                                  if (usesAttr2) {
+                                    const newColorVars = visibleVariants.filter((v) => (v.color || '').toLowerCase() === cName.toLowerCase());
+                                    const matchingSize = newColorVars.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase() && (v.unlimited || product.isUnlimited || v.stock > 0));
+                                    if (!matchingSize && newColorVars[0]) {
+                                      setModalSelectedSize(newColorVars[0].size);
+                                    }
+                                  }
+                                }}
+                                style={{ backgroundColor: matchVar?.colorHex || '#000000' }}
+                                className={`w-7 h-7 rounded-full border border-black/20 transition-all cursor-pointer ${
+                                  isSelected
+                                    ? 'ring-2 ring-black ring-offset-2 scale-110 shadow-xs'
+                                    : 'hover:scale-105'
+                                }`}
+                              />
+                            );
+                          }
                           return (
                             <button
                               key={cName}
                               type="button"
-                              title={cName}
                               onClick={() => {
                                 setModalSelectedColor(cName);
-                                // Auto-select first available size for that color if current is out of stock
-                                const newColorVars = visibleVariants.filter((v) => v.color === cName);
-                                const matchingSize = newColorVars.find((v) => v.size === modalSelectedSize && (v.unlimited || v.stock > 0));
-                                if (!matchingSize && newColorVars[0]) {
-                                  setModalSelectedSize(newColorVars[0].size);
+                                if (usesAttr2) {
+                                  const newColorVars = visibleVariants.filter((v) => (v.color || '').toLowerCase() === cName.toLowerCase());
+                                  const matchingSize = newColorVars.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase() && (v.unlimited || product.isUnlimited || v.stock > 0));
+                                  if (!matchingSize && newColorVars[0]) {
+                                    setModalSelectedSize(newColorVars[0].size);
+                                  }
                                 }
                               }}
-                              style={{ backgroundColor: matchVar?.colorHex || '#000' }}
-                              className={`w-7 h-7 rounded-full border border-black/20 transition-all cursor-pointer ${
+                              className={`py-1.5 px-3.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                                 isSelected
-                                  ? 'ring-2 ring-black ring-offset-2 scale-110 shadow-xs'
-                                  : 'hover:scale-105'
+                                  ? 'bg-neutral-900 text-white shadow-xs'
+                                  : 'bg-[#f5f3f3] text-black hover:bg-[#efeded] border border-transparent'
                               }`}
-                            />
+                            >
+                              {cName}
+                            </button>
                           );
                         })}
                       </div>
                     </div>
                   )}
 
-                  {/* Size Selector */}
-                  {uniqueSizes.length > 0 && (
+                  {/* Size Selector - only if product actively uses attribute 2 */}
+                  {usesAttr2 && availableSizes.length > 0 && (
                     <div className="pt-1">
                       <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
                         <span>{attribute2.name || 'Talle'} disponible:</span>
@@ -1715,10 +1887,10 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                         </span>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        {uniqueSizes.map((sName) => {
-                          const match = currentColorVariants.find((v) => v.size === sName);
-                          const isSelected = modalSelectedSize === sName;
-                          const isNoStock = !match?.unlimited && (!match || match.stock <= 0);
+                        {availableSizes.map((sName) => {
+                          const match = currentColorVariants.find((v) => (v.size || '').toLowerCase() === sName.toLowerCase());
+                          const isSelected = modalSelectedSize.toLowerCase() === sName.toLowerCase();
+                          const isNoStock = !match?.unlimited && !product.isUnlimited && (!match || match.stock <= 0);
 
                           return (
                             <button

@@ -20,6 +20,7 @@ interface InventoryViewProps {
   onDeleteProduct: (productId: string) => Promise<any>;
   onUpdateSettings?: (settings: Partial<StoreSettings>) => Promise<any>;
   featureFlags?: StoreFeatureFlags;
+  storeSlug?: string;
 }
 
 export const InventoryView: React.FC<InventoryViewProps> = ({
@@ -28,10 +29,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   onSaveProduct,
   onDeleteProduct,
   onUpdateSettings,
-  featureFlags
+  featureFlags,
+  storeSlug: propStoreSlug = ''
 }) => {
   const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
-  const storeSlug = settings.storeSlug || (settings as any).slug || '';
+  const storeSlug = propStoreSlug || settings.storeSlug || (settings as any).slug || '';
 
   const [selectedSubTab, setSelectedSubTab] = useState<'products' | 'categories' | 'attr1' | 'attr2'>('products');
   const [searchQuery, setSearchQuery] = useState('');
@@ -48,16 +50,34 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [isSupplierFilterOpen, setIsSupplierFilterOpen] = useState(false);
   const supplierFilterRef = useRef<HTMLDivElement | null>(null);
 
+  // All known suppliers (from store collection + any already set on products)
+  const allKnownSuppliers = useMemo(() => {
+    const map = new Map<string, string>();
+    suppliers.forEach((s) => map.set(s.name.trim().toLowerCase(), s.name.trim()));
+    products.forEach((p) => {
+      if (p.supplierName && p.supplierName.trim()) {
+        const key = p.supplierName.trim().toLowerCase();
+        if (!map.has(key)) {
+          map.set(key, p.supplierName.trim());
+        }
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+  }, [suppliers, products]);
+
   useEffect(() => {
     if (!storeSlug) return;
     const unsub = subscribeSuppliers(storeSlug, (list) => {
       setSuppliers(list);
-      if (!hasCustomizedSupplierFilter) {
-        setSelectedSuppliers([...list.map((s) => s.name), '__NONE__']);
-      }
     });
     return () => unsub();
-  }, [storeSlug, hasCustomizedSupplierFilter]);
+  }, [storeSlug]);
+
+  useEffect(() => {
+    if (!hasCustomizedSupplierFilter) {
+      setSelectedSuppliers([...allKnownSuppliers, '__NONE__']);
+    }
+  }, [allKnownSuppliers, hasCustomizedSupplierFilter]);
 
   // Click outside listener for supplier filter dropdown
   useEffect(() => {
@@ -179,12 +199,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       if (statusFilter === 'out_of_stock') matchesStatus = !isProdInStock;
 
       const matchesSupplier =
+        !hasCustomizedSupplierFilter ||
         (prod.supplierName && selectedSuppliers.includes(prod.supplierName)) ||
         (!prod.supplierName && selectedSuppliers.includes('__NONE__'));
 
       return matchesSearch && matchesCategory && matchesStatus && matchesSupplier;
     });
-  }, [products, searchQuery, categoryFilter, statusFilter, selectedSuppliers]);
+  }, [products, searchQuery, categoryFilter, statusFilter, selectedSuppliers, hasCustomizedSupplierFilter]);
 
   // Out of stock alert count (excluding unlimited products)
   const outOfStockCount = products.filter(
@@ -395,14 +416,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       'Precio',
       'Precio_Promo',
       'Proveedor',
-      'SKU_Variante',
-      'Fotos'
+      'SKU_Variante'
     ].join(',');
 
     const rows: string[] = [header];
 
     products.forEach((p) => {
-      const photosStr = (p.images || []).join(';');
       if (p.variants && p.variants.length > 0) {
         p.variants.forEach((v) => {
           const val1 = attribute1.enabled ? getOptionLabel(attribute1, v.attributeOptionId1, v.color) : v.color || '';
@@ -423,8 +442,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             p.price ?? 0,
             promoPriceVal ? promoPriceVal : '""',
             escapeCsv(p.supplierName || ''),
-            escapeCsv(v.sku || ''),
-            escapeCsv(photosStr)
+            escapeCsv(v.sku || '')
           ].join(',');
 
           rows.push(row);
@@ -447,8 +465,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           p.price ?? 0,
           promoPriceVal ? promoPriceVal : '""',
           escapeCsv(p.supplierName || ''),
-          '""',
-          escapeCsv(photosStr)
+          '""'
         ].join(',');
 
         rows.push(row);
@@ -1435,7 +1452,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              setSelectedSuppliers([...suppliers.map((s) => s.name), '__NONE__']);
+                              setSelectedSuppliers([...allKnownSuppliers, '__NONE__']);
                               setHasCustomizedSupplierFilter(true);
                             }}
                             className="px-2 py-0.5 text-[10px] font-semibold bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-md transition-colors cursor-pointer"
@@ -1475,11 +1492,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         </label>
 
                         {/* Suppliers list */}
-                        {suppliers.map((sup) => {
-                          const isChecked = selectedSuppliers.includes(sup.name);
+                        {allKnownSuppliers.map((supName) => {
+                          const isChecked = selectedSuppliers.includes(supName);
                           return (
                             <label
-                              key={sup.id}
+                              key={supName}
                               className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-neutral-50 cursor-pointer text-xs select-none"
                             >
                               <input
@@ -1488,14 +1505,14 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                 onChange={(e) => {
                                   setHasCustomizedSupplierFilter(true);
                                   if (e.target.checked) {
-                                    setSelectedSuppliers([...selectedSuppliers, sup.name]);
+                                    setSelectedSuppliers([...selectedSuppliers, supName]);
                                   } else {
-                                    setSelectedSuppliers(selectedSuppliers.filter((s) => s !== sup.name));
+                                    setSelectedSuppliers(selectedSuppliers.filter((s) => s !== supName));
                                   }
                                 }}
                                 className="rounded text-black focus:ring-0 cursor-pointer"
                               />
-                              <span className="text-neutral-900 truncate font-medium">{sup.name}</span>
+                              <span className="text-neutral-900 truncate font-medium">{supName}</span>
                             </label>
                           );
                         })}
@@ -1938,6 +1955,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               const without = prev.filter((s) => s.id !== created.id);
               return [...without, created].sort((a, b) => a.name.localeCompare(b.name));
             });
+            setSelectedSuppliers((prev) => Array.from(new Set([...prev, created.name])));
             return created;
           }}
         />

@@ -1490,121 +1490,134 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Proveedor Combobox */}
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-neutral-700">
-                      Proveedor Asociado
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setIsNewSupplierModalOpen(true)}
-                      className="text-[11px] font-semibold text-black hover:underline flex items-center gap-0.5 cursor-pointer"
-                    >
-                      <span className="material-symbols-outlined text-[14px]">add</span>
-                      <span>Nuevo Proveedor</span>
-                    </button>
-                  </div>
-                  <div className="relative">
-                    <select
-                      value={product.supplierId || (product.supplierName ? `name:${product.supplierName}` : '')}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (!val) {
-                          setProduct({ ...product, supplierId: undefined, supplierName: undefined });
-                        } else if (val.startsWith('name:')) {
-                          const n = val.replace('name:', '');
-                          setProduct({ ...product, supplierId: undefined, supplierName: n });
-                        } else {
-                          const match = localSuppliers.find((s) => s.id === val);
-                          setProduct({
-                            ...product,
-                            supplierId: val,
-                            supplierName: match ? match.name : undefined
-                          });
-                        }
-                      }}
-                      className="w-full appearance-none px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium pr-8"
-                    >
-                      <option value="">(Sin proveedor asignado)</option>
-                      {localSuppliers.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name} {s.phone ? `• Tel: ${s.phone}` : ''}
-                        </option>
-                      ))}
-                      {product.supplierName && !localSuppliers.some((s) => s.id === product.supplierId || s.name.toLowerCase() === product.supplierName?.toLowerCase()) && (
-                        <option value={`name:${product.supplierName}`}>
-                          {product.supplierName} (Personalizado)
-                        </option>
-                      )}
-                    </select>
-                    <span className="material-symbols-outlined text-[18px] text-neutral-400 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2">
-                      expand_more
-                    </span>
-                  </div>
-                  {product.supplierName && (
-                    <div className="flex items-center justify-between pt-0.5 text-[11px] text-neutral-500">
-                      <span>Proveedor actual: <strong className="text-black">{product.supplierName}</strong></span>
-                      <button
-                        type="button"
-                        onClick={() => setProduct({ ...product, supplierId: undefined, supplierName: undefined })}
-                        className="text-red-500 hover:text-red-700 font-medium hover:underline cursor-pointer"
-                      >
-                        Quitar
-                      </button>
-                    </div>
-                  )}
+              {/* BLOQUE SUPERIOR: DATOS DEL PROVEEDOR */}
+              <div className="space-y-4">
+                <div className="text-xs font-bold text-neutral-800 uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px] text-neutral-500">store</span>
+                  <span>Datos del Proveedor</span>
                 </div>
 
-                {/* SKU Propio del Comercio */}
-                <div className="space-y-1.5">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Proveedor Combobox */}
+                  <div className="space-y-1.5 sm:col-span-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-neutral-700">
+                        Proveedor
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setIsNewSupplierModalOpen(true)}
+                        className="text-[11px] font-semibold text-black hover:underline flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-[13px]">add</span>
+                        <span>Nuevo</span>
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <select
+                        value={product.supplierId || (product.supplierName ? `name:${product.supplierName}` : '')}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (!val) {
+                            setProduct({ ...product, supplierId: undefined, supplierName: undefined });
+                          } else if (val.startsWith('name:')) {
+                            const n = val.replace('name:', '');
+                            setProduct({ ...product, supplierId: undefined, supplierName: n });
+                          } else {
+                            const match = localSuppliers.find((s) => s.id === val);
+                            setProduct({
+                              ...product,
+                              supplierId: val,
+                              supplierName: match ? match.name : undefined
+                            });
+                          }
+                        }}
+                        className="w-full appearance-none px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium pr-8 truncate"
+                      >
+                        <option value="">(Sin proveedor asignado)</option>
+                        {localSuppliers.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                        {product.supplierName && !localSuppliers.some((s) => s.id === product.supplierId || s.name.toLowerCase() === product.supplierName?.toLowerCase()) && (
+                          <option value={`name:${product.supplierName}`}>
+                            {product.supplierName} (Personalizado)
+                          </option>
+                        )}
+                      </select>
+                      <span className="material-symbols-outlined text-[18px] text-neutral-400 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2">
+                        expand_more
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Código / Artículo en Proveedor */}
+                  <div className="space-y-1.5 sm:col-span-1">
+                    <label className="text-xs font-bold text-neutral-700">
+                      Código / Art. Proveedor
+                    </label>
+                    <input
+                      type="text"
+                      value={product.supplierSku || ''}
+                      onChange={(e) => setProduct({ ...product, supplierSku: e.target.value })}
+                      placeholder="Ej: ART-781, MOD-9"
+                      className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium"
+                    />
+                  </div>
+
+                  {/* Título / Nombre en Proveedor */}
+                  <div className="space-y-1.5 sm:col-span-1">
+                    <label className="text-xs font-bold text-neutral-700">
+                      Nombre en Proveedor
+                    </label>
+                    <input
+                      type="text"
+                      value={product.supplierProductTitle || ''}
+                      onChange={(e) => setProduct({ ...product, supplierProductTitle: e.target.value })}
+                      placeholder="Ej: Remera Lisa Algodón 24/1"
+                      className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium"
+                    />
+                  </div>
+                </div>
+
+                {product.supplierName && (
+                  <div className="flex items-center justify-between text-[11px] text-neutral-500 bg-neutral-50 px-3 py-1.5 rounded-lg border border-neutral-100">
+                    <span>Proveedor seleccionado: <strong className="text-black">{product.supplierName}</strong></span>
+                    <button
+                      type="button"
+                      onClick={() => setProduct({ ...product, supplierId: undefined, supplierName: undefined })}
+                      className="text-red-500 hover:text-red-700 font-medium hover:underline cursor-pointer"
+                    >
+                      Quitar proveedor
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* LÍNEA DIVISORIA */}
+              <div className="border-t border-neutral-200 my-4" />
+
+              {/* BLOQUE INFERIOR: IDENTIFICACIÓN PROPIA DE LA TIENDA */}
+              <div className="space-y-3">
+                <div className="text-xs font-bold text-neutral-800 uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px] text-neutral-500">tag</span>
+                  <span>Identificador Propio de la Tienda</span>
+                </div>
+
+                <div className="max-w-md space-y-1.5">
                   <label className="text-xs font-bold text-neutral-700">
-                    Código Propio de la Tienda (SKU General)
+                    Código Propio / SKU General del Producto
                   </label>
                   <input
                     type="text"
                     value={product.customSku || ''}
                     onChange={(e) => setProduct({ ...product, customSku: e.target.value })}
                     placeholder="Ej: REM-001, ART-LISA-01"
-                    className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium"
+                    className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium font-mono"
                   />
-                  <p className="text-[10px] text-neutral-400">
-                    Tu identificador propio para este modelo (útil para búsqueda y sincronización con tu Excel).
-                  </p>
-                </div>
-
-                {/* Título / Nombre en Proveedor */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-neutral-700">
-                    Nombre del Producto en el Proveedor
-                  </label>
-                  <input
-                    type="text"
-                    value={product.supplierProductTitle || ''}
-                    onChange={(e) => setProduct({ ...product, supplierProductTitle: e.target.value })}
-                    placeholder="Ej: Remera Lisa Algodón 24/1 Cuello Redondo"
-                    className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium"
-                  />
-                  <p className="text-[10px] text-neutral-400">
-                    Cómo figura en la lista o catálogo del proveedor para identificarlo al reponer.
-                  </p>
-                </div>
-
-                {/* Código / Artículo en Proveedor */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-neutral-700">
-                    Código / Artículo del Proveedor
-                  </label>
-                  <input
-                    type="text"
-                    value={product.supplierSku || ''}
-                    onChange={(e) => setProduct({ ...product, supplierSku: e.target.value })}
-                    placeholder="Ej: ART-781, MOD-PROV-9"
-                    className="w-full px-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 border border-transparent focus:border-neutral-300 focus:bg-white focus:outline-none transition-all font-medium"
-                  />
-                  <p className="text-[10px] text-neutral-400">
-                    El código o referencia que utiliza la fábrica/distribuidor.
+                  <p className="text-[11px] text-neutral-400">
+                    Identificador único de tu comercio para este producto (útil para búsqueda y control de stock propio).
                   </p>
                 </div>
               </div>

@@ -506,7 +506,11 @@ function MainContent() {
       if (!isUnlimited && maxStock <= 0) return prev;
 
       const existingIdx = prev.findIndex(
-        (ci) => ci.productId === item.productId && ci.size === item.size && ci.color === item.color
+        (ci) =>
+          (ci.variantId && item.variantId && ci.variantId === item.variantId) ||
+          (ci.productId === item.productId &&
+            (ci.size || '').toLowerCase() === (item.size || '').toLowerCase() &&
+            (ci.color || '').toLowerCase() === (item.color || '').toLowerCase())
       );
       if (existingIdx >= 0) {
         const copy = [...prev];
@@ -851,6 +855,7 @@ function MainContent() {
               <InventoryView
                 products={products}
                 settings={settings}
+                storeSlug={currentStoreSlug}
                 featureFlags={activeStore?.featureFlags}
                 onSaveProduct={(p) => saveProduct(currentStoreSlug, p)}
                 onDeleteProduct={(id) => deleteProduct(currentStoreSlug, id)}
