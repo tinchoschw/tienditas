@@ -20,6 +20,50 @@ export const isVariantVisible = (v: { enabled?: boolean | string | number | null
   return v.enabled !== false && (v.enabled as any) !== 'false' && (v.enabled as any) !== 0 && (v.enabled as any) !== '0';
 };
 
+export function getVariantAttr1(
+  v: { attributeOptionId1?: string; color?: string; size?: string; colorHex?: string },
+  attr1?: StoreAttribute
+): { label: string; hex?: string; optionId?: string } {
+  if (v.attributeOptionId1 && attr1) {
+    const match = attr1.options.find((o) => o.id === v.attributeOptionId1);
+    if (match) return { label: match.label, hex: match.hex || v.colorHex, optionId: match.id };
+  }
+  const vColor = v.color ? v.color.trim().toLowerCase() : '';
+  if (vColor && attr1) {
+    const match = attr1.options.find((o) => o.label.toLowerCase() === vColor);
+    if (match) return { label: match.label, hex: match.hex || v.colorHex, optionId: match.id };
+  }
+  const vSize = v.size ? v.size.trim().toLowerCase() : '';
+  if (vSize && attr1 && attr1.type === 'text' && !vColor) {
+    const match = attr1.options.find((o) => o.label.toLowerCase() === vSize);
+    if (match) return { label: match.label, hex: v.colorHex, optionId: match.id };
+  }
+  const label = (v.color || (attr1?.type === 'text' && !v.attributeOptionId1 ? v.size : '') || '').trim();
+  return { label, hex: v.colorHex, optionId: v.attributeOptionId1 };
+}
+
+export function getVariantAttr2(
+  v: { attributeOptionId2?: string; color?: string; size?: string; colorHex?: string },
+  attr2?: StoreAttribute
+): { label: string; hex?: string; optionId?: string } {
+  if (v.attributeOptionId2 && attr2) {
+    const match = attr2.options.find((o) => o.id === v.attributeOptionId2);
+    if (match) return { label: match.label, hex: match.hex || v.colorHex, optionId: match.id };
+  }
+  const vSize = v.size ? v.size.trim().toLowerCase() : '';
+  if (vSize && attr2) {
+    const match = attr2.options.find((o) => o.label.toLowerCase() === vSize);
+    if (match) return { label: match.label, hex: match.hex || v.colorHex, optionId: match.id };
+  }
+  const vColor = v.color ? v.color.trim().toLowerCase() : '';
+  if (vColor && attr2 && attr2.type === 'color' && !vSize) {
+    const match = attr2.options.find((o) => o.label.toLowerCase() === vColor);
+    if (match) return { label: match.label, hex: match.hex || v.colorHex, optionId: match.id };
+  }
+  const label = (v.size || (attr2?.type === 'color' && !v.attributeOptionId2 ? v.color : '') || '').trim();
+  return { label, hex: v.colorHex, optionId: v.attributeOptionId2 };
+}
+
 export const StorefrontView: React.FC<StorefrontViewProps> = ({
   products,
   settings,
@@ -137,22 +181,22 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     const declaredAttr1 = !product.attributesUsed || product.attributesUsed.includes('attr1');
     const declaredAttr2 = !product.attributesUsed || product.attributesUsed.includes('attr2');
 
-    const distinctColors = Array.from(new Set(visible.map((v) => (v.color || '').trim()).filter(Boolean)));
-    const distinctSizes = Array.from(new Set(visible.map((v) => (v.size || '').trim()).filter(Boolean)));
-
-    const hasMeaningfulColors = distinctColors.some((c) => isAttrValueMeaningful(c));
-    const hasMeaningfulSizes = distinctSizes.some((s) => isAttrValueMeaningful(s));
-
     const usesAttr1 = Boolean(
       attr1.enabled &&
       declaredAttr1 &&
-      (hasMeaningfulColors || (distinctColors.length > 1 && visible.some((v) => Boolean(v.attributeOptionId1))))
+      visible.some((v) => {
+        const val = getVariantAttr1(v, attr1).label;
+        return isAttrValueMeaningful(val);
+      })
     );
 
     const usesAttr2 = Boolean(
       attr2.enabled &&
       declaredAttr2 &&
-      (hasMeaningfulSizes || (distinctSizes.length > 1 && visible.some((v) => Boolean(v.attributeOptionId2))))
+      visible.some((v) => {
+        const val = getVariantAttr2(v, attr2).label;
+        return isAttrValueMeaningful(val);
+      })
     );
 
     return { usesAttr1, usesAttr2 };
@@ -250,15 +294,11 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
               if (!hasOther1) return false;
             } else {
               if (!hasSpecificOptions1) return false;
-              const vOpt1 = v.attributeOptionId1 || '';
+              const val1 = getVariantAttr1(v, attribute1);
               const match1 = selectedAttr1.filter((s) => s !== '__other__').some((sel) => {
-                if (vOpt1 && sel === vOpt1) return true;
+                if (val1.optionId && sel === val1.optionId) return true;
                 const opt = attribute1.options.find((o) => o.id === sel);
-                if (opt) {
-                  if (v.color && v.color.toLowerCase() === opt.label.toLowerCase()) return true;
-                  if (v.size && v.size.toLowerCase() === opt.label.toLowerCase()) return true;
-                }
-                return false;
+                return opt && val1.label.toLowerCase() === opt.label.toLowerCase();
               });
               if (!match1) return false;
             }
@@ -273,15 +313,11 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
               if (!hasOther2) return false;
             } else {
               if (!hasSpecificOptions2) return false;
-              const vOpt2 = v.attributeOptionId2 || '';
+              const val2 = getVariantAttr2(v, attribute2);
               const match2 = selectedAttr2.filter((s) => s !== '__other__').some((sel) => {
-                if (vOpt2 && sel === vOpt2) return true;
+                if (val2.optionId && sel === val2.optionId) return true;
                 const opt = attribute2.options.find((o) => o.id === sel);
-                if (opt) {
-                  if (v.size && v.size.toLowerCase() === opt.label.toLowerCase()) return true;
-                  if (v.color && v.color.toLowerCase() === opt.label.toLowerCase()) return true;
-                }
-                return false;
+                return opt && val2.label.toLowerCase() === opt.label.toLowerCase();
               });
               if (!match2) return false;
             }
@@ -361,26 +397,28 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     const visibleVariants = product.variants.filter(isVariantVisible);
     const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
 
-    const availableColors = usesAttr1
-      ? Array.from(new Set(visibleVariants.map((v) => (v.color || '').trim()).filter((c) => isAttrValueMeaningful(c))))
-      : [];
+    const attr1Map = new Map<string, string>();
+    const attr2Map = new Map<string, string>();
+    visibleVariants.forEach((v) => {
+      const v1 = getVariantAttr1(v, attribute1).label;
+      if (v1 && !attr1Map.has(v1.toLowerCase())) attr1Map.set(v1.toLowerCase(), v1);
+      const v2 = getVariantAttr2(v, attribute2).label;
+      if (v2 && !attr2Map.has(v2.toLowerCase())) attr2Map.set(v2.toLowerCase(), v2);
+    });
+
+    const availableAttr1 = Array.from(attr1Map.values());
+    const availableAttr2 = Array.from(attr2Map.values());
+
     const initialColor = usesAttr1
-      ? (cardSelectedColor[product.id] && availableColors.includes(cardSelectedColor[product.id])
+      ? (cardSelectedColor[product.id] && availableAttr1.some((l) => l.toLowerCase() === cardSelectedColor[product.id].toLowerCase())
           ? cardSelectedColor[product.id]
-          : availableColors[0] || '')
+          : availableAttr1[0] || '')
       : '';
 
-    const currentColorVariants = usesAttr1 && initialColor
-      ? visibleVariants.filter((v) => (v.color || '').toLowerCase() === initialColor.toLowerCase())
-      : visibleVariants;
-
-    const availableSizes = usesAttr2
-      ? Array.from(new Set(currentColorVariants.map((v) => (v.size || '').trim()).filter((s) => isAttrValueMeaningful(s))))
-      : [];
     const initialSize = usesAttr2
-      ? (cardSelectedSize[product.id] && availableSizes.includes(cardSelectedSize[product.id])
+      ? (cardSelectedSize[product.id] && availableAttr2.some((l) => l.toLowerCase() === cardSelectedSize[product.id].toLowerCase())
           ? cardSelectedSize[product.id]
-          : availableSizes[0] || '')
+          : availableAttr2[0] || '')
       : '';
 
     setModalSelectedColor(initialColor);
@@ -497,24 +535,22 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     const visibleVariants = product.variants.filter(isVariantVisible);
     const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
 
-    let matchedVariant = visibleVariants[0];
-    if (usesAttr1 && usesAttr2) {
-      matchedVariant =
-        visibleVariants.find(
-          (v) =>
-            (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase() &&
-            (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()
-        ) ||
-        visibleVariants.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()) ||
-        visibleVariants[0];
-    } else if (usesAttr1) {
-      matchedVariant =
-        visibleVariants.find((v) => (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase()) ||
-        visibleVariants[0];
-    } else if (usesAttr2) {
-      matchedVariant =
-        visibleVariants.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()) ||
-        visibleVariants[0];
+    let matchedVariant = visibleVariants.find((v) => {
+      const v1 = getVariantAttr1(v, attribute1).label.toLowerCase();
+      const v2 = getVariantAttr2(v, attribute2).label.toLowerCase();
+      const m1 = !usesAttr1 || !modalSelectedColor || v1 === modalSelectedColor.toLowerCase();
+      const m2 = !usesAttr2 || !modalSelectedSize || v2 === modalSelectedSize.toLowerCase();
+      return m1 && m2;
+    });
+
+    if (!matchedVariant && usesAttr1 && modalSelectedColor) {
+      matchedVariant = visibleVariants.find((v) => getVariantAttr1(v, attribute1).label.toLowerCase() === modalSelectedColor.toLowerCase());
+    }
+    if (!matchedVariant && usesAttr2 && modalSelectedSize) {
+      matchedVariant = visibleVariants.find((v) => getVariantAttr2(v, attribute2).label.toLowerCase() === modalSelectedSize.toLowerCase());
+    }
+    if (!matchedVariant) {
+      matchedVariant = visibleVariants[0];
     }
 
     if (!matchedVariant) {
@@ -576,47 +612,46 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     }
     const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
 
-    const availableColors = usesAttr1
-      ? Array.from(new Set(visibleVariants.map((v) => (v.color || '').trim()).filter((c) => isAttrValueMeaningful(c))))
-      : [];
+    const attr1Map = new Map<string, string>();
+    const attr2Map = new Map<string, string>();
+    visibleVariants.forEach((v) => {
+      const v1 = getVariantAttr1(v, attribute1).label;
+      if (v1 && !attr1Map.has(v1.toLowerCase())) attr1Map.set(v1.toLowerCase(), v1);
+      const v2 = getVariantAttr2(v, attribute2).label;
+      if (v2 && !attr2Map.has(v2.toLowerCase())) attr2Map.set(v2.toLowerCase(), v2);
+    });
+
+    const availableAttr1 = Array.from(attr1Map.values());
+    const availableAttr2 = Array.from(attr2Map.values());
+
     const color = usesAttr1
-      ? (cardSelectedColor[product.id] && availableColors.includes(cardSelectedColor[product.id])
+      ? (cardSelectedColor[product.id] && availableAttr1.some((l) => l.toLowerCase() === cardSelectedColor[product.id].toLowerCase())
           ? cardSelectedColor[product.id]
-          : availableColors[0] || '')
+          : availableAttr1[0] || '')
       : '';
 
-    const currentColorVariants = usesAttr1 && color
-      ? visibleVariants.filter((v) => (v.color || '').toLowerCase() === color.toLowerCase())
-      : visibleVariants;
-
-    const availableSizes = usesAttr2
-      ? Array.from(new Set(currentColorVariants.map((v) => (v.size || '').trim()).filter((s) => isAttrValueMeaningful(s))))
-      : [];
     const size = usesAttr2
-      ? (cardSelectedSize[product.id] && availableSizes.includes(cardSelectedSize[product.id])
+      ? (cardSelectedSize[product.id] && availableAttr2.some((l) => l.toLowerCase() === cardSelectedSize[product.id].toLowerCase())
           ? cardSelectedSize[product.id]
-          : availableSizes[0] || '')
+          : availableAttr2[0] || '')
       : '';
 
-    let matchedVariant = visibleVariants[0];
-    if (usesAttr1 && usesAttr2) {
-      matchedVariant =
-        visibleVariants.find(
-          (v) =>
-            (v.color || '').toLowerCase() === color.toLowerCase() &&
-            (v.size || '').toLowerCase() === size.toLowerCase()
-        ) ||
-        currentColorVariants.find((v) => (v.size || '').toLowerCase() === size.toLowerCase()) ||
-        currentColorVariants[0] ||
-        visibleVariants[0];
-    } else if (usesAttr1) {
-      matchedVariant =
-        visibleVariants.find((v) => (v.color || '').toLowerCase() === color.toLowerCase()) ||
-        visibleVariants[0];
-    } else if (usesAttr2) {
-      matchedVariant =
-        visibleVariants.find((v) => (v.size || '').toLowerCase() === size.toLowerCase()) ||
-        visibleVariants[0];
+    let matchedVariant = visibleVariants.find((v) => {
+      const v1 = getVariantAttr1(v, attribute1).label.toLowerCase();
+      const v2 = getVariantAttr2(v, attribute2).label.toLowerCase();
+      const m1 = !usesAttr1 || !color || v1 === color.toLowerCase();
+      const m2 = !usesAttr2 || !size || v2 === size.toLowerCase();
+      return m1 && m2;
+    });
+
+    if (!matchedVariant && usesAttr1 && color) {
+      matchedVariant = visibleVariants.find((v) => getVariantAttr1(v, attribute1).label.toLowerCase() === color.toLowerCase());
+    }
+    if (!matchedVariant && usesAttr2 && size) {
+      matchedVariant = visibleVariants.find((v) => getVariantAttr2(v, attribute2).label.toLowerCase() === size.toLowerCase());
+    }
+    if (!matchedVariant) {
+      matchedVariant = visibleVariants[0];
     }
 
     if (!matchedVariant) {
@@ -1007,7 +1042,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     />
                   </div>
                   <span className="text-xs font-semibold text-neutral-800">
-                    Solo en stock
+                    Solo disponibles
                   </span>
                 </label>
               </div>
@@ -1100,7 +1135,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
               {!onlyInStock && (
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-neutral-200 text-neutral-800 text-[11px] font-medium">
-                  <span>Incluye sin stock</span>
+                  <span>Incluye no disponibles</span>
                   <button
                     type="button"
                     onClick={() => setOnlyInStock(true)}
@@ -1113,7 +1148,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
               {hasSpecificFilters && onlyInStock && (
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 text-[11px] font-medium">
-                  <span>Solo con stock</span>
+                  <span>Solo disponibles</span>
                   <button
                     type="button"
                     onClick={() => setOnlyInStock(false)}
@@ -1204,75 +1239,60 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                   const visibleVariants = product.variants.filter(isVariantVisible);
                   const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
 
-                  // Available colors if attribute 1 is active for this product
-                  const availableColors = usesAttr1
-                    ? Array.from(new Set(visibleVariants.map((v) => (v.color || '').trim()).filter((c) => isAttrValueMeaningful(c))))
-                    : [];
+                  const cardImageSize = settings.cardImageSize || 'large';
 
-                  const preferredFilterColor = selectedAttr1.find((sc) => {
-                    const opt = attribute1.options.find((o) => o.id === sc);
-                    const val = opt?.label || sc;
-                    return availableColors.some((c) => c.toLowerCase() === val.toLowerCase());
+                  // Available options for Attr1 & Attr2 for this product
+                  const attr1Map = new Map<string, { label: string; hex?: string; optionId?: string }>();
+                  const attr2Map = new Map<string, { label: string; hex?: string; optionId?: string }>();
+
+                  visibleVariants.forEach((v) => {
+                    if (usesAttr1) {
+                      const o1 = getVariantAttr1(v, attribute1);
+                      if (o1.label && !attr1Map.has(o1.label.toLowerCase())) {
+                        attr1Map.set(o1.label.toLowerCase(), o1);
+                      }
+                    }
+                    if (usesAttr2) {
+                      const o2 = getVariantAttr2(v, attribute2);
+                      if (o2.label && !attr2Map.has(o2.label.toLowerCase())) {
+                        attr2Map.set(o2.label.toLowerCase(), o2);
+                      }
+                    }
                   });
 
-                  const currentColorName = usesAttr1
-                    ? (cardSelectedColor[product.id] && availableColors.includes(cardSelectedColor[product.id])
+                  const prodAttr1Options = Array.from(attr1Map.values());
+                  const prodAttr2Options = Array.from(attr2Map.values());
+
+                  const preferredFilter1 = selectedAttr1.find((s) => prodAttr1Options.some((o) => o.optionId === s || o.label.toLowerCase() === s.toLowerCase()));
+                  const preferredFilter2 = selectedAttr2.find((s) => prodAttr2Options.some((o) => o.optionId === s || o.label.toLowerCase() === s.toLowerCase()));
+
+                  const currentAttr1Label = usesAttr1
+                    ? (cardSelectedColor[product.id] && prodAttr1Options.some((o) => o.label.toLowerCase() === cardSelectedColor[product.id].toLowerCase())
                         ? cardSelectedColor[product.id]
-                        : (preferredFilterColor
-                            ? (availableColors.find((c) => {
-                                const opt = attribute1.options.find((o) => o.id === preferredFilterColor);
-                                const val = opt?.label || preferredFilterColor;
-                                return c.toLowerCase() === val.toLowerCase();
-                              }) || availableColors[0] || '')
-                            : availableColors[0] || ''))
+                        : (preferredFilter1 ? (prodAttr1Options.find((o) => o.optionId === preferredFilter1 || o.label.toLowerCase() === preferredFilter1.toLowerCase())?.label || prodAttr1Options[0]?.label || '') : prodAttr1Options[0]?.label || ''))
                     : '';
 
-                  const currentColorVariants = usesAttr1 && currentColorName
-                    ? visibleVariants.filter((v) => (v.color || '').toLowerCase() === currentColorName.toLowerCase())
-                    : visibleVariants;
-
-                  // Available sizes if attribute 2 is active for this product
-                  const availableSizes = usesAttr2
-                    ? Array.from(new Set(currentColorVariants.map((v) => (v.size || '').trim()).filter((s) => isAttrValueMeaningful(s))))
-                    : [];
-
-                  const preferredFilterSize = selectedAttr2.find((sz) => {
-                    const opt = attribute2.options.find((o) => o.id === sz);
-                    const val = opt?.label || sz;
-                    return availableSizes.some((s) => s.toLowerCase() === val.toLowerCase());
-                  });
-
-                  const currentSizeName = usesAttr2
-                    ? (cardSelectedSize[product.id] && availableSizes.includes(cardSelectedSize[product.id])
+                  const currentAttr2Label = usesAttr2
+                    ? (cardSelectedSize[product.id] && prodAttr2Options.some((o) => o.label.toLowerCase() === cardSelectedSize[product.id].toLowerCase())
                         ? cardSelectedSize[product.id]
-                        : (preferredFilterSize
-                            ? (availableSizes.find((s) => {
-                                const opt = attribute2.options.find((o) => o.id === preferredFilterSize);
-                                const val = opt?.label || preferredFilterSize;
-                                return s.toLowerCase() === val.toLowerCase();
-                              }) || availableSizes[0] || '')
-                            : availableSizes[0] || ''))
+                        : (preferredFilter2 ? (prodAttr2Options.find((o) => o.optionId === preferredFilter2 || o.label.toLowerCase() === preferredFilter2.toLowerCase())?.label || prodAttr2Options[0]?.label || '') : prodAttr2Options[0]?.label || ''))
                     : '';
 
-                  let selectedVariant = visibleVariants[0];
-                  if (usesAttr1 && usesAttr2) {
-                    selectedVariant =
-                      visibleVariants.find(
-                        (v) =>
-                          (v.color || '').toLowerCase() === currentColorName.toLowerCase() &&
-                          (v.size || '').toLowerCase() === currentSizeName.toLowerCase()
-                      ) ||
-                      currentColorVariants.find((v) => (v.size || '').toLowerCase() === currentSizeName.toLowerCase()) ||
-                      currentColorVariants[0] ||
-                      visibleVariants[0];
-                  } else if (usesAttr1) {
-                    selectedVariant =
-                      visibleVariants.find((v) => (v.color || '').toLowerCase() === currentColorName.toLowerCase()) ||
-                      visibleVariants[0];
-                  } else if (usesAttr2) {
-                    selectedVariant =
-                      visibleVariants.find((v) => (v.size || '').toLowerCase() === currentSizeName.toLowerCase()) ||
-                      visibleVariants[0];
+                  let selectedVariant = visibleVariants.find((v) => {
+                    const v1 = getVariantAttr1(v, attribute1).label.toLowerCase();
+                    const v2 = getVariantAttr2(v, attribute2).label.toLowerCase();
+                    const m1 = !usesAttr1 || !currentAttr1Label || v1 === currentAttr1Label.toLowerCase();
+                    const m2 = !usesAttr2 || !currentAttr2Label || v2 === currentAttr2Label.toLowerCase();
+                    return m1 && m2;
+                  });
+                  if (!selectedVariant && usesAttr1 && currentAttr1Label) {
+                    selectedVariant = visibleVariants.find((v) => getVariantAttr1(v, attribute1).label.toLowerCase() === currentAttr1Label.toLowerCase());
+                  }
+                  if (!selectedVariant && usesAttr2 && currentAttr2Label) {
+                    selectedVariant = visibleVariants.find((v) => getVariantAttr2(v, attribute2).label.toLowerCase() === currentAttr2Label.toLowerCase());
+                  }
+                  if (!selectedVariant) {
+                    selectedVariant = visibleVariants[0];
                   }
 
                   const inCartCount = selectedVariant
@@ -1301,7 +1321,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                       badgeTextColor = '#166534';
                       isUrgent = true;
                     } else if (isVariantOutOfStock) {
-                      badgeText = 'Agotado';
+                      badgeText = 'No disponible';
                       badgeBg = '#262626';
                       badgeTextColor = '#ffffff';
                     }
@@ -1327,78 +1347,125 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                           className="cursor-pointer group/clickable flex flex-col flex-1"
                           title="Click para ver fotos más grandes, detalles y variantes"
                         >
-                          {/* Visual container (3:4 portrait aspect) */}
-                          <div 
-                            className="relative w-full aspect-[3/4] bg-[#f5f5f5] rounded-lg sm:rounded-xl overflow-hidden mb-2 sm:mb-3 group/photo"
-                          >
-                            {hasPhoto ? (
-                              <img
-                                src={coverPhoto}
-                                alt={product.name}
-                                className="w-full h-full object-cover transition-transform duration-500 group-hover/clickable:scale-105"
-                              />
-                            ) : (
-                              /* Fallback Silhouette: Solo el icono genérico sin texto sobre la imagen */
-                              <div className="relative w-full h-full flex items-center justify-center p-3 text-center">
-                                <span className="material-symbols-outlined text-[36px] sm:text-[44px] text-neutral-300">
-                                  checkroom
-                                </span>
-                              </div>
-                            )}
+                          {/* Visual container based on store cardImageSize setting */}
+                          {cardImageSize !== 'none' && (
+                            <div 
+                              className={`relative w-full bg-[#f5f5f5] rounded-lg sm:rounded-xl overflow-hidden mb-2 sm:mb-3 group/photo ${
+                                cardImageSize === 'small'
+                                  ? 'h-28 sm:h-32 flex items-center justify-center p-2'
+                                  : cardImageSize === 'medium'
+                                  ? 'aspect-square'
+                                  : 'aspect-[3/4]'
+                              }`}
+                            >
+                              {hasPhoto ? (
+                                <img
+                                  src={coverPhoto}
+                                  alt={product.name}
+                                  className={`transition-transform duration-500 group-hover/clickable:scale-105 ${
+                                    cardImageSize === 'small'
+                                      ? 'w-20 h-24 sm:w-24 sm:h-28 object-cover rounded-lg border border-neutral-200 shadow-2xs'
+                                      : 'w-full h-full object-cover'
+                                  }`}
+                                />
+                              ) : (
+                                /* Fallback Silhouette: Solo el icono genérico sin texto sobre la imagen */
+                                <div className="relative w-full h-full flex items-center justify-center p-3 text-center">
+                                  <span className="material-symbols-outlined text-[36px] sm:text-[44px] text-neutral-300">
+                                    checkroom
+                                  </span>
+                                </div>
+                              )}
 
-                            {/* Stock Scarcity Badge (Top-Left) */}
-                            {badgeText && (
-                              <div className="absolute top-2 left-2 flex flex-col gap-1 z-10">
+                              {/* Stock Scarcity Badge (Top-Left) */}
+                              {badgeText && (
+                                <div className="absolute top-2 left-2 flex flex-col gap-1 z-10">
+                                  <span 
+                                    className={`px-2 py-0.5 rounded-md text-[10px] sm:text-xs font-semibold shadow-xs ${isUrgent ? 'tracking-tight' : ''}`}
+                                    style={{ backgroundColor: badgeBg, color: badgeTextColor }}
+                                  >
+                                    {badgeText}
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Share Deep Link Button (Top-Right) */}
+                              <button
+                                type="button"
+                                onClick={(e) => handleShareProduct(product, e)}
+                                title="Compartir enlace de este producto"
+                                className="absolute top-2 right-2 z-10 w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-white/90 hover:bg-white text-neutral-700 hover:text-black shadow-xs flex items-center justify-center transition-all hover:scale-105 active:scale-95 cursor-pointer backdrop-blur-xs"
+                              >
+                                <span className="material-symbols-outlined text-[14px] sm:text-[16px]">share</span>
+                              </button>
+
+                              {/* Photo Counter Badge (Bottom-Right) */}
+                              {product.images && product.images.length > 1 && (
+                                <div className="absolute bottom-2 right-2 z-10 bg-black/60 backdrop-blur-xs text-white text-[10px] sm:text-xs font-medium px-1.5 py-0.5 rounded-md flex items-center gap-1 shadow-xs pointer-events-none">
+                                  <span className="material-symbols-outlined text-[12px] sm:text-[14px]">photo_camera</span>
+                                  <span>{product.images.length}</span>
+                                </div>
+                              )}
+
+                              {/* Floating Product Tags (Wrapping to full width of image) */}
+                              {product.tags && product.tags.length > 0 && (
+                                <div className="absolute bottom-2 left-2 right-2 z-10 flex flex-wrap items-center gap-1 pointer-events-none">
+                                  {product.tags.map((tag) => {
+                                    const tagColor = product.tagColors?.[tag] || '#1f2937';
+                                    return (
+                                      <span
+                                        key={tag}
+                                        className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded-md text-white shadow-xs backdrop-blur-xs max-w-full whitespace-normal break-words"
+                                        style={{ backgroundColor: tagColor }}
+                                      >
+                                        {tag}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Top row when cardImageSize === 'none' */}
+                          {cardImageSize === 'none' && (
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              {badgeText ? (
                                 <span 
-                                  className={`px-2 py-0.5 rounded-md text-[10px] sm:text-xs font-semibold shadow-xs ${isUrgent ? 'tracking-tight' : ''}`}
+                                  className={`px-2 py-0.5 rounded-md text-[10px] font-semibold shadow-xs ${isUrgent ? 'tracking-tight' : ''}`}
                                   style={{ backgroundColor: badgeBg, color: badgeTextColor }}
                                 >
                                   {badgeText}
                                 </span>
-                              </div>
-                            )}
+                              ) : <span />}
+                              <button
+                                type="button"
+                                onClick={(e) => handleShareProduct(product, e)}
+                                title="Compartir enlace de este producto"
+                                className="w-7 h-7 rounded-full bg-[#f5f3f3] hover:bg-neutral-200 text-neutral-700 hover:text-black flex items-center justify-center transition-colors cursor-pointer"
+                              >
+                                <span className="material-symbols-outlined text-[14px]">share</span>
+                              </button>
+                            </div>
+                          )}
 
-                            {/* Share Deep Link Button (Top-Right) */}
-                            <button
-                              type="button"
-                              onClick={(e) => handleShareProduct(product, e)}
-                              title="Compartir enlace de este producto"
-                              className="absolute top-2 right-2 z-10 w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-white/90 hover:bg-white text-neutral-700 hover:text-black shadow-xs flex items-center justify-center transition-all hover:scale-105 active:scale-95 cursor-pointer backdrop-blur-xs"
-                            >
-                              <span className="material-symbols-outlined text-[14px] sm:text-[16px]">share</span>
-                            </button>
-
-                            {/* Photo Counter Badge (Bottom-Right) - matching the reference image camera icon */}
-                            {product.images && product.images.length > 1 && (
-                              <div className="absolute bottom-2 right-2 z-10 bg-black/60 backdrop-blur-xs text-white text-[10px] sm:text-xs font-medium px-1.5 py-0.5 rounded-md flex items-center gap-1 shadow-xs pointer-events-none">
-                                <span className="material-symbols-outlined text-[12px] sm:text-[14px]">photo_camera</span>
-                                <span>{product.images.length}</span>
-                              </div>
-                            )}
-
-                            {/* Floating Product Tags (Bottom-Left) */}
-                            {product.tags && product.tags.length > 0 && (
-                              <div className="absolute bottom-2 left-2 right-14 z-10 flex flex-wrap items-center gap-1 pointer-events-none">
-                                {product.tags.slice(0, 3).map((tag) => {
-                                  const tagColor = product.tagColors?.[tag] || '#1f2937';
-                                  return (
-                                    <span
-                                      key={tag}
-                                      className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded-md text-white shadow-xs backdrop-blur-xs max-w-[100px] truncate"
-                                      style={{ backgroundColor: tagColor }}
-                                    >
-                                      {tag}
-                                    </span>
-                                  );
-                                })}
-                                {product.tags.length > 3 && (
-                                  <span className="text-[9px] font-bold px-1 py-0.5 rounded-md bg-black/75 text-white shadow-xs">
-                                    +{product.tags.length - 3}
+                          {/* Tags inline when cardImageSize === 'none' */}
+                          {cardImageSize === 'none' && product.tags && product.tags.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1 mb-2">
+                              {product.tags.map((tag) => {
+                                const tagColor = product.tagColors?.[tag] || '#1f2937';
+                                return (
+                                  <span
+                                    key={tag}
+                                    className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded-md text-white shadow-xs max-w-full whitespace-normal break-words"
+                                    style={{ backgroundColor: tagColor }}
+                                  >
+                                    {tag}
                                   </span>
-                                )}
-                              </div>
-                            )}
-                          </div>
+                                );
+                              })}
+                            </div>
+                          )}
 
                           {/* Content details */}
                           <div className="flex flex-col flex-1">
@@ -1409,28 +1476,33 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                               {product.name}
                             </h3>
 
-                            {/* Color / Variant Subtitle */}
-                            {usesAttr1 && currentColorName && (
+                            {/* Attr 1 Subtitle */}
+                            {usesAttr1 && currentAttr1Label && (
                               <p className="text-[11px] sm:text-xs text-neutral-500 font-normal truncate mt-0.5">
-                                {currentColorName}
+                                {currentAttr1Label}
                               </p>
                             )}
 
-                            {/* Size Badges / Selector - only shown when attribute 2 is active */}
-                            {usesAttr2 && availableSizes.length > 0 && (
+                            {/* Attr 2 Badges / Selector - visible even if single option (many-to-one) */}
+                            {usesAttr2 && prodAttr2Options.length > 0 && (
                               <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                                {availableSizes.map((sName) => {
-                                  const match = currentColorVariants.find((v) => (v.size || '').toLowerCase() === sName.toLowerCase());
-                                  const isSelected = currentSizeName.toLowerCase() === sName.toLowerCase();
-                                  const isOutOfStock = !match?.unlimited && !product.isUnlimited && (!match || match.stock <= 0);
+                                {prodAttr2Options.map((opt) => {
+                                  const isSelected = currentAttr2Label.toLowerCase() === opt.label.toLowerCase();
+                                  const matchVar = visibleVariants.find((v) => {
+                                    const v2 = getVariantAttr2(v, attribute2).label.toLowerCase();
+                                    const v1 = getVariantAttr1(v, attribute1).label.toLowerCase();
+                                    return v2 === opt.label.toLowerCase() && (!usesAttr1 || !currentAttr1Label || v1 === currentAttr1Label.toLowerCase());
+                                  });
+                                  const isOutOfStock = !matchVar?.unlimited && !product.isUnlimited && (!matchVar || matchVar.stock <= 0);
+
                                   return (
                                     <button
-                                      key={sName}
+                                      key={opt.label}
                                       type="button"
                                       disabled={isOutOfStock}
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setCardSelectedSize((prev) => ({ ...prev, [product.id]: sName }));
+                                        setCardSelectedSize((prev) => ({ ...prev, [product.id]: opt.label }));
                                       }}
                                       className={`px-1.5 py-0.5 rounded text-[10px] sm:text-xs font-semibold border transition-all ${
                                         isOutOfStock
@@ -1439,9 +1511,9 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                           ? 'bg-neutral-900 text-white border-neutral-900 shadow-2xs'
                                           : 'bg-[#f5f5f5] text-neutral-700 border-neutral-200 hover:border-black cursor-pointer'
                                       }`}
-                                      title={isOutOfStock ? `${sName} sin stock` : `Elegir ${sName}`}
+                                      title={isOutOfStock ? `${opt.label} sin stock` : `Elegir ${opt.label}`}
                                     >
-                                      {sName}
+                                      {opt.label}
                                     </button>
                                   );
                                 })}
@@ -1470,23 +1542,22 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                               </div>
                             )}
 
-                            {/* Color swatch dots if multiple colors available and attribute 1 is active */}
-                            {usesAttr1 && availableColors.length > 1 && (
+                            {/* Attr 1 swatch dots or badges - visible even if single option (many-to-one) */}
+                            {usesAttr1 && prodAttr1Options.length > 0 && (
                               <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                                {availableColors.map((cName) => {
-                                  const matchVar = visibleVariants.find((v) => (v.color || '').toLowerCase() === cName.toLowerCase());
-                                  const isSelected = currentColorName.toLowerCase() === cName.toLowerCase();
+                                {prodAttr1Options.map((opt) => {
+                                  const isSelected = currentAttr1Label.toLowerCase() === opt.label.toLowerCase();
                                   if (attribute1.type === 'color') {
                                     return (
                                       <button
-                                        key={cName}
+                                        key={opt.label}
                                         type="button"
-                                        title={cName}
+                                        title={opt.label}
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          setCardSelectedColor((prev) => ({ ...prev, [product.id]: cName }));
+                                          setCardSelectedColor((prev) => ({ ...prev, [product.id]: opt.label }));
                                         }}
-                                        style={{ backgroundColor: matchVar?.colorHex || '#000000' }}
+                                        style={{ backgroundColor: opt.hex || '#000000' }}
                                         className={`w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full border border-black/15 transition-all cursor-pointer ${
                                           isSelected
                                             ? 'ring-2 ring-black ring-offset-1 scale-110'
@@ -1497,11 +1568,11 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                   }
                                   return (
                                     <button
-                                      key={cName}
+                                      key={opt.label}
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setCardSelectedColor((prev) => ({ ...prev, [product.id]: cName }));
+                                        setCardSelectedColor((prev) => ({ ...prev, [product.id]: opt.label }));
                                       }}
                                       className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all ${
                                         isSelected
@@ -1509,7 +1580,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                           : 'bg-[#f5f5f5] text-neutral-700 border-neutral-200 hover:border-black cursor-pointer'
                                       }`}
                                     >
-                                      {cName}
+                                      {opt.label}
                                     </button>
                                   );
                                 })}
@@ -1542,7 +1613,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                       >
                         {isVariantOutOfStock ? (
                           <span className="text-[11px] sm:text-xs">
-                            {variantStock <= 0 ? 'Agotado' : 'En tu carrito'}
+                            {variantStock <= 0 ? 'No disponible' : 'En tu carrito'}
                           </span>
                         ) : (
                           <>
@@ -1587,34 +1658,43 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
         const visibleVariants = product.variants.filter(isVariantVisible);
         const { usesAttr1, usesAttr2 } = getProductAttributeUsage(product, attribute1, attribute2);
 
-        const availableColors = usesAttr1
-          ? Array.from(new Set(visibleVariants.map((v) => (v.color || '').trim()).filter((c) => isAttrValueMeaningful(c))))
-          : [];
-        const currentColorVariants = usesAttr1 && modalSelectedColor
-          ? visibleVariants.filter((v) => (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase())
-          : visibleVariants;
-        const availableSizes = usesAttr2
-          ? Array.from(new Set(currentColorVariants.map((v) => (v.size || '').trim()).filter((s) => isAttrValueMeaningful(s))))
-          : [];
+        const attr1Map = new Map<string, { label: string; hex?: string; optionId?: string }>();
+        const attr2Map = new Map<string, { label: string; hex?: string; optionId?: string }>();
 
-        let activeVariant = visibleVariants[0];
-        if (usesAttr1 && usesAttr2) {
-          activeVariant =
-            visibleVariants.find(
-              (v) =>
-                (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase() &&
-                (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()
-            ) ||
-            currentColorVariants[0] ||
-            visibleVariants[0];
-        } else if (usesAttr1) {
-          activeVariant =
-            visibleVariants.find((v) => (v.color || '').toLowerCase() === modalSelectedColor.toLowerCase()) ||
-            visibleVariants[0];
-        } else if (usesAttr2) {
-          activeVariant =
-            visibleVariants.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase()) ||
-            visibleVariants[0];
+        visibleVariants.forEach((v) => {
+          if (usesAttr1) {
+            const o1 = getVariantAttr1(v, attribute1);
+            if (o1.label && !attr1Map.has(o1.label.toLowerCase())) {
+              attr1Map.set(o1.label.toLowerCase(), o1);
+            }
+          }
+          if (usesAttr2) {
+            const o2 = getVariantAttr2(v, attribute2);
+            if (o2.label && !attr2Map.has(o2.label.toLowerCase())) {
+              attr2Map.set(o2.label.toLowerCase(), o2);
+            }
+          }
+        });
+
+        const availableAttr1Options = Array.from(attr1Map.values());
+        const availableAttr2Options = Array.from(attr2Map.values());
+
+        let activeVariant = visibleVariants.find((v) => {
+          const v1 = getVariantAttr1(v, attribute1).label.toLowerCase();
+          const v2 = getVariantAttr2(v, attribute2).label.toLowerCase();
+          const m1 = !usesAttr1 || !modalSelectedColor || v1 === modalSelectedColor.toLowerCase();
+          const m2 = !usesAttr2 || !modalSelectedSize || v2 === modalSelectedSize.toLowerCase();
+          return m1 && m2;
+        });
+
+        if (!activeVariant && usesAttr1 && modalSelectedColor) {
+          activeVariant = visibleVariants.find((v) => getVariantAttr1(v, attribute1).label.toLowerCase() === modalSelectedColor.toLowerCase());
+        }
+        if (!activeVariant && usesAttr2 && modalSelectedSize) {
+          activeVariant = visibleVariants.find((v) => getVariantAttr2(v, attribute2).label.toLowerCase() === modalSelectedSize.toLowerCase());
+        }
+        if (!activeVariant) {
+          activeVariant = visibleVariants[0];
         }
 
         const inCartModal = activeVariant
@@ -1757,7 +1837,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     {isOutOfStock && !isModalVariantUnlimited && (
                       <span className="px-2.5 py-0.5 rounded-full bg-neutral-800 text-white text-xs font-bold">
                         {rawVariantStock <= 0
-                          ? (usesAttr2 ? `Agotado en este ${attribute2.name.toLowerCase()}` : usesAttr1 ? `Agotado en este ${attribute1.name.toLowerCase()}` : 'Agotado')
+                          ? 'No disponible'
                           : 'Todo el stock disponible en tu carrito'}
                       </span>
                     )}
@@ -1790,9 +1870,9 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     )}
                   </div>
 
-                  {/* Description */}
-                  <p className="text-xs sm:text-sm text-neutral-600 leading-relaxed">
-                    {product.description}
+                  {/* Description respecting newlines and literal <br> tags */}
+                  <p className="text-xs sm:text-sm text-neutral-600 leading-relaxed whitespace-pre-line">
+                    {(product.description || '').replace(/<\s*br\s*\/?>/gi, '\n')}
                   </p>
 
                   {/* Tags */}
@@ -1813,34 +1893,26 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     </div>
                   )}
 
-                  {/* Color Selector - only if product actively uses attribute 1 */}
-                  {usesAttr1 && availableColors.length > 0 && (
+                  {/* Attr 1 Selector - visible even if single option (many-to-one) */}
+                  {usesAttr1 && availableAttr1Options.length > 0 && (
                     <div className="pt-2 border-t border-neutral-100">
                       <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
                         <span>{attribute1.name || 'Color'}: <strong className="text-black font-semibold">{modalSelectedColor}</strong></span>
-                        <span className="text-[11px] text-neutral-400">{availableColors.length} disponibles</span>
+                        <span className="text-[11px] text-neutral-400">{availableAttr1Options.length} disponible{availableAttr1Options.length > 1 ? 's' : ''}</span>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap">
-                        {availableColors.map((cName) => {
-                          const matchVar = visibleVariants.find((v) => (v.color || '').toLowerCase() === cName.toLowerCase());
-                          const isSelected = modalSelectedColor.toLowerCase() === cName.toLowerCase();
+                        {availableAttr1Options.map((opt) => {
+                          const isSelected = modalSelectedColor.toLowerCase() === opt.label.toLowerCase();
                           if (attribute1.type === 'color') {
                             return (
                               <button
-                                key={cName}
+                                key={opt.label}
                                 type="button"
-                                title={cName}
+                                title={opt.label}
                                 onClick={() => {
-                                  setModalSelectedColor(cName);
-                                  if (usesAttr2) {
-                                    const newColorVars = visibleVariants.filter((v) => (v.color || '').toLowerCase() === cName.toLowerCase());
-                                    const matchingSize = newColorVars.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase() && (v.unlimited || product.isUnlimited || v.stock > 0));
-                                    if (!matchingSize && newColorVars[0]) {
-                                      setModalSelectedSize(newColorVars[0].size);
-                                    }
-                                  }
+                                  setModalSelectedColor(opt.label);
                                 }}
-                                style={{ backgroundColor: matchVar?.colorHex || '#000000' }}
+                                style={{ backgroundColor: opt.hex || '#000000' }}
                                 className={`w-7 h-7 rounded-full border border-black/20 transition-all cursor-pointer ${
                                   isSelected
                                     ? 'ring-2 ring-black ring-offset-2 scale-110 shadow-xs'
@@ -1851,17 +1923,10 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                           }
                           return (
                             <button
-                              key={cName}
+                              key={opt.label}
                               type="button"
                               onClick={() => {
-                                setModalSelectedColor(cName);
-                                if (usesAttr2) {
-                                  const newColorVars = visibleVariants.filter((v) => (v.color || '').toLowerCase() === cName.toLowerCase());
-                                  const matchingSize = newColorVars.find((v) => (v.size || '').toLowerCase() === modalSelectedSize.toLowerCase() && (v.unlimited || product.isUnlimited || v.stock > 0));
-                                  if (!matchingSize && newColorVars[0]) {
-                                    setModalSelectedSize(newColorVars[0].size);
-                                  }
-                                }
+                                setModalSelectedColor(opt.label);
                               }}
                               className={`py-1.5 px-3.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                                 isSelected
@@ -1869,7 +1934,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                   : 'bg-[#f5f3f3] text-black hover:bg-[#efeded] border border-transparent'
                               }`}
                             >
-                              {cName}
+                              {opt.label}
                             </button>
                           );
                         })}
@@ -1877,8 +1942,8 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     </div>
                   )}
 
-                  {/* Size Selector - only if product actively uses attribute 2 */}
-                  {usesAttr2 && availableSizes.length > 0 && (
+                  {/* Attr 2 Selector - visible even if single option (many-to-one) */}
+                  {usesAttr2 && availableAttr2Options.length > 0 && (
                     <div className="pt-1">
                       <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
                         <span>{attribute2.name || 'Talle'} disponible:</span>
@@ -1887,18 +1952,22 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                         </span>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        {availableSizes.map((sName) => {
-                          const match = currentColorVariants.find((v) => (v.size || '').toLowerCase() === sName.toLowerCase());
-                          const isSelected = modalSelectedSize.toLowerCase() === sName.toLowerCase();
-                          const isNoStock = !match?.unlimited && !product.isUnlimited && (!match || match.stock <= 0);
+                        {availableAttr2Options.map((opt) => {
+                          const isSelected = modalSelectedSize.toLowerCase() === opt.label.toLowerCase();
+                          const matchVar = visibleVariants.find((v) => {
+                            const v2 = getVariantAttr2(v, attribute2).label.toLowerCase();
+                            const v1 = getVariantAttr1(v, attribute1).label.toLowerCase();
+                            return v2 === opt.label.toLowerCase() && (!usesAttr1 || !modalSelectedColor || v1 === modalSelectedColor.toLowerCase());
+                          });
+                          const isNoStock = !matchVar?.unlimited && !product.isUnlimited && (!matchVar || matchVar.stock <= 0);
 
                           return (
                             <button
-                              key={sName}
+                              key={opt.label}
                               type="button"
                               disabled={isNoStock}
                               onClick={() => {
-                                setModalSelectedSize(sName);
+                                setModalSelectedSize(opt.label);
                                 setModalQuantity(1);
                               }}
                               style={isSelected ? { backgroundColor: settings.primaryColor || '#1A1A1A' } : undefined}
@@ -1910,7 +1979,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                   : 'bg-[#f5f3f3] text-black hover:bg-[#efeded] border border-transparent'
                               }`}
                             >
-                              {sName}
+                              {opt.label}
                             </button>
                           );
                         })}
@@ -1976,7 +2045,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                         <span className="material-symbols-outlined text-[18px]">block</span>
                         <span>
                           {rawVariantStock <= 0
-                            ? 'Agotado en esta combinación'
+                            ? 'No disponible'
                             : 'Todo el stock disponible ya en tu carrito'}
                         </span>
                       </>

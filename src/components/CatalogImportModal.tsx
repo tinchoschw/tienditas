@@ -124,6 +124,13 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
 
   const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
 
+  const enabledAttrs = useMemo(() => {
+    return [
+      attribute1.enabled ? attribute1.name : null,
+      attribute2.enabled ? attribute2.name : null
+    ].filter(Boolean) as string[];
+  }, [attribute1, attribute2]);
+
   const [step, setStep] = useState<'upload' | 'preview' | 'processing' | 'success' | 'error'>('upload');
   const [fileName, setFileName] = useState<string>('');
   const [fileSize, setFileSize] = useState<string>('');
@@ -163,6 +170,22 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       'SKU_Variante'
     ].join(',');
 
+    const explanationRow = [
+      '"(Opcional) ID interno de la plataforma si actualizas una prenda existente"',
+      '"(Opcional) Tu codigo o SKU para agrupar variantes de un mismo producto"',
+      '"(Obligatorio) Nombre de la prenda o producto"',
+      '"(Opcional) Descripcion o detalle del producto"',
+      '"(Opcional) Categoria o rubro (ej: Remeras, Pantalones)"',
+      `"(Opcional) ${attribute1.enabled ? attribute1.name : 'Atributo 1'} si tiene variantes"`,
+      `"(Opcional) ${attribute2.enabled ? attribute2.name : 'Atributo 2'} si tiene variantes"`,
+      '"(Obligatorio) Cantidad numerica disponible o la palabra ILIMITADO"',
+      '"(Opcional) Precio de costo interno para control"',
+      '"(Obligatorio) Precio de venta al publico"',
+      '"(Opcional) Precio con descuento/oferta"',
+      '"(Opcional) Nombre del proveedor para control y compras"',
+      '"(Opcional) Codigo unico de esta variante puntual"'
+    ].join(',');
+
     const sampleCat = settings.categories.find((c) => c !== 'Todas') || 'General';
     const sampleOpt1A = attribute1.options[0]?.label || 'Negro';
     const sampleOpt1B = attribute1.options[1]?.label || 'Blanco';
@@ -175,8 +198,8 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       '"Remera Lisa Algodon"',
       '"Remera 100% algodon peinado"',
       `"${sampleCat}"`,
-      `"${sampleOpt1A}"`,
-      `"${sampleOpt2A}"`,
+      `"${attribute1.enabled ? sampleOpt1A : ''}"`,
+      `"${attribute2.enabled ? sampleOpt2A : ''}"`,
       '20',
       '4500',
       '9900',
@@ -191,8 +214,8 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       '"Remera Lisa Algodon"',
       '"Remera 100% algodon peinado"',
       `"${sampleCat}"`,
-      `"${sampleOpt1B}"`,
-      `"${sampleOpt2B}"`,
+      `"${attribute1.enabled ? sampleOpt1B : ''}"`,
+      `"${attribute2.enabled ? sampleOpt2B : ''}"`,
       '15',
       '4500',
       '9900',
@@ -201,7 +224,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       '"REM-001-BLA-L"'
     ].join(',');
 
-    const sampleContent = `${header}\n${row1}\n${row2}\n`;
+    const sampleContent = `${header}\n${explanationRow}\n${row1}\n${row2}\n`;
     const blob = new Blob([sampleContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -273,6 +296,19 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       const rowNum = i + 1;
 
       if (row.every((f) => !f.trim())) continue;
+
+      // Skip explanation / instructional row if left in the CSV by the user
+      const isExplanationRow = row.some((f) => {
+        const lower = f.toLowerCase();
+        return (
+          lower.includes('(obligatorio)') ||
+          lower.includes('(opcional)') ||
+          lower.includes('cantidad numerica') ||
+          lower.includes('precio de venta al publico') ||
+          lower.includes('id interno')
+        );
+      });
+      if (isExplanationRow) continue;
 
       const name = (colName !== -1 ? row[colName] : '')?.trim() || '';
       if (!name) {
@@ -346,8 +382,8 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
     // Hierarchy:
     // 1. By ID_Sistema if matches an existing product
     // 2. By Codigo_Producto if matches an existing product's customSku
-    // 3. By exact Nombre (case-insensitive) if matches an existing product
-    // 4. Otherwise -> New product (grouped by customSku if provided, else by Nombre)
+    // 3. If no ID_Sistema and no Codigo_Producto: match and group by key:
+    //    nombre de producto - categoria - proveedor(si existe)
     const groupsMap = new Map<string, GroupedProductPlan>();
 
     parsedRows.forEach((row) => {
@@ -361,17 +397,38 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
           (p) => p.customSku && p.customSku.toLowerCase() === row.customSku.toLowerCase()
         );
       }
-      if (!matchedProd && row.name) {
-        matchedProd = products.find(
-          (p) => p.name.trim().toLowerCase() === row.name.trim().toLowerCase()
-        );
+
+      // Si no tienen identificador de producto, usa la clave: nombre de producto-categoria-proveedor(si existe)
+      if (!matchedProd && !row.idSistema && !row.customSku) {
+        const normName = row.name.trim().toLowerCase();
+        const normCat = (row.category || 'General').trim().toLowerCase();
+        const normSupp = (row.supplierName || '').trim().toLowerCase();
+
+        matchedProd = products.find((p) => {
+          const pName = p.name.trim().toLowerCase();
+          const pCat = (p.category || 'General').trim().toLowerCase();
+          const pSupp = (p.supplierName || '').trim().toLowerCase();
+
+          if (pName !== normName) return false;
+          if (pCat !== normCat) return false;
+          if (normSupp) {
+            return pSupp === normSupp;
+          }
+          return !pSupp;
+        });
       }
 
-      const key = matchedProd
-        ? `existing:${matchedProd.id}`
-        : row.customSku
-        ? `new_sku:${row.customSku.toLowerCase()}`
-        : `new_name:${row.name.trim().toLowerCase()}`;
+      let key = '';
+      if (matchedProd) {
+        key = `existing:${matchedProd.id}`;
+      } else if (row.customSku) {
+        key = `new_sku:${row.customSku.toLowerCase()}`;
+      } else {
+        const normName = row.name.trim().toLowerCase();
+        const normCat = (row.category || 'General').trim().toLowerCase();
+        const normSupp = (row.supplierName || '').trim().toLowerCase();
+        key = `new_composite:${normName}___${normCat}___${normSupp || 'sin_proveedor'}`;
+      }
 
       if (!groupsMap.has(key)) {
         groupsMap.set(key, {
@@ -557,6 +614,12 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
             0
           );
 
+          const hasAnyAttr1 = newVariants.some((v) => v.color && v.color.trim() !== '');
+          const hasAnyAttr2 = newVariants.some((v) => v.size && v.size.trim() !== '');
+          const activeAttrsUsed: ('attr1' | 'attr2')[] = [];
+          if (hasAnyAttr1) activeAttrsUsed.push('attr1');
+          if (hasAnyAttr2) activeAttrsUsed.push('attr2');
+
           const newProduct: Product = {
             id: `prod-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
             name: plan.targetName,
@@ -573,7 +636,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
             coverIndex: 0,
             totalStock,
             isUnlimited: newVariants.length > 0 && newVariants.every((v) => v.unlimited),
-            attributesUsed: ['attr1', 'attr2'],
+            attributesUsed: activeAttrsUsed,
             variants: newVariants,
             supplierId: supplierId || undefined,
             supplierName: plan.targetSupplierName || undefined,
@@ -669,14 +732,20 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                   <span>Instrucciones para la carga:</span>
                 </div>
                 <ul className="space-y-1.5 text-neutral-600 leading-relaxed list-disc list-inside">
+                  {enabledAttrs.length > 0 ? (
+                    <li>
+                      <strong className="text-black">1 fila por cada variante:</strong> Cada combinación de {enabledAttrs.join(' o ')} (datos opcionales si cargás prendas o productos sin variantes) debe figurar en un renglón separado.
+                    </li>
+                  ) : (
+                    <li>
+                      <strong className="text-black">1 fila por producto:</strong> Cada prenda o producto debe figurar en un renglón separado del archivo.
+                    </li>
+                  )}
                   <li>
-                    <strong className="text-black">1 fila por cada variante:</strong> Cada combinación de talle o color debe figurar en un renglón.
+                    <strong className="text-black">Mismo producto:</strong> Las filas con el mismo Código de Producto, o bien con el mismo Nombre, Categoría y Proveedor, se agruparán en un mismo producto con sus distintas variantes.
                   </li>
                   <li>
-                    <strong className="text-black">Mismo producto:</strong> Las filas con el mismo Código o Nombre se agruparán en una sola prenda con sus distintas presentaciones.
-                  </li>
-                  <li>
-                    <strong className="text-black">Stock y precios:</strong> Cada variante tomará el stock indicado en su fila.
+                    <strong className="text-black">Stock y precios:</strong> Cada variante tomará el stock numérico indicado en su fila (o la palabra ILIMITADO).
                   </li>
                 </ul>
 

@@ -750,6 +750,62 @@ export const BrandCustomizerView: React.FC<BrandCustomizerViewProps> = ({
               </div>
             </div>
           </section>
+
+          {/* SECCIÓN 3: DISEÑO DE PRODUCTOS & IMÁGENES */}
+          <section className="bg-white rounded-xl p-6 shadow-xs border border-[#efeded] space-y-5">
+            <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
+              <div>
+                <span className="text-[11px] font-bold uppercase tracking-widest text-neutral-400">
+                  Sección 03
+                </span>
+                <h2 className="text-base font-bold text-black">Tamaño de Imágenes en Catálogo Público</h2>
+              </div>
+              <span className="material-symbols-outlined text-neutral-400">photo_size_select_actual</span>
+            </div>
+
+            <p className="text-xs text-neutral-500 leading-relaxed">
+              Definí cómo se muestran las fotos en las tarjetas de la vitrina online. Al hacer clic en un producto para ver su detalle, la galería se mantiene en alta definición completa.
+            </p>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { id: 'none', label: 'Sin imagen', desc: 'Solo texto y datos', icon: 'hide_image' },
+                { id: 'small', label: 'Chico', desc: 'Miniatura compacta', icon: 'photo' },
+                { id: 'medium', label: 'Mediano', desc: 'Formato balanceado', icon: 'image' },
+                { id: 'large', label: 'Grande', desc: 'Actual (retrato 3:4)', icon: 'crop_portrait' }
+              ].map((opt) => {
+                const currentSize = formSettings.cardImageSize || 'large';
+                const isSelected = currentSize === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={async () => {
+                      const updated: StoreSettings = {
+                        ...formSettings,
+                        cardImageSize: opt.id as any
+                      };
+                      setFormSettings(updated);
+                      await onSaveSettings(updated);
+                    }}
+                    className={`flex flex-col items-center justify-center p-3.5 rounded-xl border text-center transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-black text-white border-black shadow-xs ring-2 ring-black/20'
+                        : 'bg-[#f5f3f3] hover:bg-neutral-100 text-neutral-800 border-neutral-200'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[24px] mb-1.5 opacity-90">
+                      {opt.icon}
+                    </span>
+                    <span className="text-xs font-bold">{opt.label}</span>
+                    <span className={`text-[10px] mt-0.5 ${isSelected ? 'text-white/70' : 'text-neutral-500'}`}>
+                      {opt.desc}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
         </div>
 
         {/* RIGHT LIVE PREVIEW COLUMN (5 Cols, Sticky) */}
@@ -825,20 +881,28 @@ export const BrandCustomizerView: React.FC<BrandCustomizerViewProps> = ({
               {/* Preview Product Showcase Tile */}
               <div className="bg-white rounded-xl p-3 shadow-2xs border border-neutral-100 space-y-3">
                 {/* Visual Mock of Fashion Garment */}
-                <div className="relative w-full aspect-[3/4] rounded-lg bg-[#f5f3f3] overflow-hidden group">
-                  <img
-                    src="https://lh3.googleusercontent.com/aida-public/AB6AXuCVqKdXpqGJf51ctX6KxgPxa6TTRMES7CS53LEg2a2LgrU_e-2AcQQgP27YxuWzFv11r62dd5YA7XGN_znsY0jfKGrbw64fdb3bL1D1NmMDi8L5T13Zhe18WLOGVccvfUzhMI3-RUwXuUHsKnZ-lPkV8MLv1_HNmaWQySe_k_sWfRo3zbP3WJoki16I7x9GC55xD5eq-1N1uJxP0wVCje1xi-jq8Ilm46bm5nORboL6ALlgukBlgaQ"
-                    alt="Vestido Wrap Lino Puro"
-                    className="w-full h-full object-cover"
-                  />
-                  {/* Secondary Color Badge (Offers / Limited) */}
-                  <div
-                    className="absolute top-2 left-2 px-2 py-0.5 rounded text-white text-[10px] font-bold uppercase tracking-wider shadow-xs"
-                    style={{ backgroundColor: formSettings.secondaryColor }}
-                  >
-                    Últimas 2 unidades
+                {formSettings.cardImageSize !== 'none' && (
+                  <div className={`relative w-full rounded-lg bg-[#f5f3f3] overflow-hidden group ${
+                    formSettings.cardImageSize === 'small'
+                      ? 'h-28 flex items-center justify-center'
+                      : formSettings.cardImageSize === 'medium'
+                      ? 'aspect-square'
+                      : 'aspect-[3/4]'
+                  }`}>
+                    <img
+                      src="https://lh3.googleusercontent.com/aida-public/AB6AXuCVqKdXpqGJf51ctX6KxgPxa6TTRMES7CS53LEg2a2LgrU_e-2AcQQgP27YxuWzFv11r62dd5YA7XGN_znsY0jfKGrbw64fdb3bL1D1NmMDi8L5T13Zhe18WLOGVccvfUzhMI3-RUwXuUHsKnZ-lPkV8MLv1_HNmaWQySe_k_sWfRo3zbP3WJoki16I7x9GC55xD5eq-1N1uJxP0wVCje1xi-jq8Ilm46bm5nORboL6ALlgukBlgaQ"
+                      alt="Vestido Wrap Lino Puro"
+                      className={`object-cover ${formSettings.cardImageSize === 'small' ? 'w-20 h-24 rounded-md shadow-2xs' : 'w-full h-full'}`}
+                    />
+                    {/* Secondary Color Badge (Offers / Limited) */}
+                    <div
+                      className="absolute top-2 left-2 px-2 py-0.5 rounded text-white text-[10px] font-bold uppercase tracking-wider shadow-xs"
+                      style={{ backgroundColor: formSettings.secondaryColor }}
+                    >
+                      Últimas 2 unidades
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Product Details */}
                 <div className="space-y-1">

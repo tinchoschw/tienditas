@@ -156,7 +156,8 @@ export const INITIAL_SETTINGS: StoreSettings = {
     accountNickname: '',
     accountEmail: '',
     sandboxMode: false
-  }
+  },
+  cardImageSize: 'large'
 };
 
 export const INITIAL_PRODUCTS: Product[] = [];

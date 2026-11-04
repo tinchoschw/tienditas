@@ -60,10 +60,10 @@ const ai = new GoogleGenAI({
 // Endpoint to analyze product images and extract info using Gemini Flash
 app.post('/api/ai/analyze-product', async (req, res) => {
   try {
-    const { images, category, includeColors = true } = req.body;
+    const { images, category, includeColors = true, rubro, storeName } = req.body;
 
     if (!images || !Array.isArray(images) || images.length === 0) {
-      return res.status(400).json({ error: 'Debes enviar al menos una imagen de la prenda.' });
+      return res.status(400).json({ error: 'Debes enviar al menos una imagen del producto.' });
     }
 
     // Convert each image into an inlineData part for Gemini
@@ -119,17 +119,24 @@ app.post('/api/ai/analyze-product', async (req, res) => {
       return res.status(400).json({ error: 'No se pudieron procesar las imágenes proporcionadas.' });
     }
 
-    const systemInstruction = `Sos un experto en tiendas de indumentaria y con tan solo recibir una o varias fotos de un producto podes definir los siguientes valores:
-- Nombre del producto. Si hay varias fotos de productos aparentemente distintos, pone un titulo sin entrar en cada particularidad, que pueda englobar todo. Ejemplo: si hay varias remeras oversize diferentes con un estampado podes ponerles "Remera oversize estampadas".
-- Descripcion del producto. Datos como por ejemplo texturas y generos, para que se puede usar, cortes y tipologias, estampas, etc. Tiene que ser un texto armonioso de no mas de 1 o 2 parrafos, que conecte las distintas caracteristicas. 
-- Colores. En caso que sean varias fotos del mismo producto, es posible que venga en distintos colores. Unicamente especificar el color mas determinante por mas que hayan varios en una misma prenda. Si hay 2 fotos de 2 remeras, una es blanca con mangas negras y un estampado, la otra es negra con mangas blancas y un estampado que puede ser diferente, los colores serán de la primera blanco y de la segunda negro.
-RESPONDER SOLO ESTOS ITEMS, SIN TEXTO ADICIONAL.`;
+    const businessNiche = rubro && rubro.trim() ? rubro.trim() : 'Comercio General';
+    const storeBrand = storeName && storeName.trim() ? storeName.trim() : 'nuestra tienda';
+    const productCategory = category && category.trim() ? category.trim() : 'General';
 
-    const userPrompt = `Categoría del producto: "${category || 'General'}".
+    const systemInstruction = `Sos un experto consultor de e-commerce y especialista en catalogación y descripción comercial de productos para el rubro "${businessNiche}".
+Con tan solo recibir una o varias fotos de un producto de "${storeBrand}" dentro de la categoría "${productCategory}", debes analizar visualmente, investigar y sugerir:
+- Nombre del producto: Título comercial atractivo, claro y conciso adaptado a "${businessNiche}". Si hay varias fotos que engloban variantes o ángulos del mismo producto, pon un título unificado que englobe el artículo sin entrar en particularidades de una sola variante.
+- Descripción del producto: Redacción persuasiva, armónica y profesional de 1 o 2 párrafos. Destacar materiales, utilidades, texturas, características clave y ocasión de uso propias del rubro "${businessNiche}" y la categoría "${productCategory}".
+- Colores / Variantes: En caso de ser varias fotos o un producto con variantes, especificar el color o tono predominante comercial de cada fotografía (ej. Negro, Blanco, Marfil, Grafito, Roble, etc.) junto con su código hexadecimal aproximado (#RRGGBB).
+RESPONDER EXCLUSIVAMENTE ESTOS DATOS EN FORMATO JSON SEGÚN EL SCHEMA.`;
+
+    const userPrompt = `Rubro del negocio: "${businessNiche}".
+Tienda: "${storeBrand}".
+Categoría seleccionada: "${productCategory}".
 Cantidad de fotos adjuntas: ${imageParts.length}.
 ${includeColors 
-  ? 'Analizá las imágenes y devolvé el nombre del producto, la descripción armoniosa y la lista de colores determinantes con su nombre comercial en español (ej. Negro, Blanco, Beige, Terracota, Verde Oliva) y código hexadecimal (#RRGGBB).'
-  : 'Analizá las imágenes y devolvé el nombre del producto y la descripción armoniosa. NO identifiques colores (devolvé el array colors vacío []).'}`;
+  ? `Analizá las imágenes considerando que el producto pertenece al rubro "${businessNiche}" y a la categoría "${productCategory}". Devolvé el nombre comercial sugerido, la descripción armoniosa de 1 a 2 párrafos y la lista de colores o tonos predominantes en español con su código hexadecimal (#RRGGBB).`
+  : `Analizá las imágenes considerando que el producto pertenece al rubro "${businessNiche}" y a la categoría "${productCategory}". Devolvé el nombre comercial sugerido y la descripción armoniosa de 1 a 2 párrafos. Devolvé la lista de colores vacía [].`}`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',

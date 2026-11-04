@@ -50,6 +50,7 @@ interface ProductEditModalProps {
   onClose: () => void;
   onSave: (product: Product) => Promise<any>;
   settings: StoreSettings;
+  onUpdateSettings?: (settings: Partial<StoreSettings>) => Promise<any>;
   allowDevicePhotos?: boolean;
   existingTags?: { name: string; color?: string }[];
   suppliers?: Supplier[];
@@ -62,6 +63,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
   onClose,
   onSave,
   settings,
+  onUpdateSettings,
   allowDevicePhotos = true,
   existingTags = [],
   suppliers = [],
@@ -215,6 +217,73 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
     if (fromVariants.length > 0) return fromVariants;
     return attribute2.options.map((o) => o.id);
   });
+
+  // Quick inline creation of attribute options
+  const [isAddingOpt1, setIsAddingOpt1] = useState(false);
+  const [newOpt1Label, setNewOpt1Label] = useState('');
+  const [newOpt1Hex, setNewOpt1Hex] = useState('#111827');
+  const [isSubmittingOpt1, setIsSubmittingOpt1] = useState(false);
+
+  const [isAddingOpt2, setIsAddingOpt2] = useState(false);
+  const [newOpt2Label, setNewOpt2Label] = useState('');
+  const [newOpt2Hex, setNewOpt2Hex] = useState('#111827');
+  const [isSubmittingOpt2, setIsSubmittingOpt2] = useState(false);
+
+  const handleCreateQuickOpt1 = async () => {
+    const label = newOpt1Label.trim();
+    if (!label) return;
+    setIsSubmittingOpt1(true);
+    try {
+      const newId = `opt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const newOpt: StoreAttributeOption = {
+        id: newId,
+        label,
+        ...(attribute1.type === 'color' ? { hex: newOpt1Hex } : {})
+      };
+      const updatedAttr1: StoreAttribute = {
+        ...attribute1,
+        options: [...attribute1.options, newOpt]
+      };
+      if (onUpdateSettings) {
+        await onUpdateSettings({ attribute1: updatedAttr1 });
+      }
+      setSelectedOptIds1((prev) => Array.from(new Set([...prev, newId])));
+      setNewOpt1Label('');
+      setIsAddingOpt1(false);
+    } catch (err) {
+      console.error('Error creating option for attribute 1:', err);
+    } finally {
+      setIsSubmittingOpt1(false);
+    }
+  };
+
+  const handleCreateQuickOpt2 = async () => {
+    const label = newOpt2Label.trim();
+    if (!label) return;
+    setIsSubmittingOpt2(true);
+    try {
+      const newId = `opt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const newOpt: StoreAttributeOption = {
+        id: newId,
+        label,
+        ...(attribute2.type === 'color' ? { hex: newOpt2Hex } : {})
+      };
+      const updatedAttr2: StoreAttribute = {
+        ...attribute2,
+        options: [...attribute2.options, newOpt]
+      };
+      if (onUpdateSettings) {
+        await onUpdateSettings({ attribute2: updatedAttr2 });
+      }
+      setSelectedOptIds2((prev) => Array.from(new Set([...prev, newId])));
+      setNewOpt2Label('');
+      setIsAddingOpt2(false);
+    } catch (err) {
+      console.error('Error creating option for attribute 2:', err);
+    } finally {
+      setIsSubmittingOpt2(false);
+    }
+  };
 
   useEffect(() => {
     setProduct({ ...initialProduct });
@@ -1116,7 +1185,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {attribute1.options.map((opt) => {
                       const isSelected = selectedOptIds1.includes(opt.id);
                       return (
@@ -1144,6 +1213,67 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                         </button>
                       );
                     })}
+
+                    {/* Inline Quick Add Option for Attr 1 */}
+                    {!isAddingOpt1 ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsAddingOpt1(true);
+                          setNewOpt1Label('');
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-neutral-600 hover:text-black bg-neutral-100 hover:bg-neutral-200 border border-dashed border-neutral-300 transition-colors cursor-pointer"
+                        title={`Crear nueva opción para ${attribute1.name}`}
+                      >
+                        <span className="material-symbols-outlined text-[15px]">add</span>
+                        <span>Nuevo</span>
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1.5 p-1 bg-white rounded-xl border border-neutral-300 shadow-xs">
+                        {attribute1.type === 'color' && (
+                          <input
+                            type="color"
+                            value={newOpt1Hex}
+                            onChange={(e) => setNewOpt1Hex(e.target.value)}
+                            className="w-6 h-6 rounded border-0 cursor-pointer p-0 bg-transparent"
+                            title="Elegir color"
+                          />
+                        )}
+                        <input
+                          type="text"
+                          placeholder={attribute1.type === 'color' ? 'Color (ej. Verde militar)' : `Nuevo ${attribute1.name}`}
+                          value={newOpt1Label}
+                          onChange={(e) => setNewOpt1Label(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleCreateQuickOpt1();
+                            } else if (e.key === 'Escape') {
+                              setIsAddingOpt1(false);
+                            }
+                          }}
+                          autoFocus
+                          className="text-xs px-2 py-0.5 border-0 focus:outline-none w-36 font-medium"
+                        />
+                        <button
+                          type="button"
+                          disabled={!newOpt1Label.trim() || isSubmittingOpt1}
+                          onClick={handleCreateQuickOpt1}
+                          className="w-6 h-6 flex items-center justify-center rounded-lg bg-black text-white hover:bg-neutral-800 disabled:opacity-40 cursor-pointer transition-colors"
+                          title="Guardar opción"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">check</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsAddingOpt1(false)}
+                          className="w-6 h-6 flex items-center justify-center rounded-lg text-neutral-400 hover:text-neutral-700 cursor-pointer transition-colors"
+                          title="Cancelar"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">close</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1174,7 +1304,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {attribute2.options.map((opt) => {
                       const isSelected = selectedOptIds2.includes(opt.id);
                       return (
@@ -1202,6 +1332,67 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                         </button>
                       );
                     })}
+
+                    {/* Inline Quick Add Option for Attr 2 */}
+                    {!isAddingOpt2 ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsAddingOpt2(true);
+                          setNewOpt2Label('');
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-neutral-600 hover:text-black bg-neutral-100 hover:bg-neutral-200 border border-dashed border-neutral-300 transition-colors cursor-pointer"
+                        title={`Crear nueva opción para ${attribute2.name}`}
+                      >
+                        <span className="material-symbols-outlined text-[15px]">add</span>
+                        <span>Nuevo</span>
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1.5 p-1 bg-white rounded-xl border border-neutral-300 shadow-xs">
+                        {attribute2.type === 'color' && (
+                          <input
+                            type="color"
+                            value={newOpt2Hex}
+                            onChange={(e) => setNewOpt2Hex(e.target.value)}
+                            className="w-6 h-6 rounded border-0 cursor-pointer p-0 bg-transparent"
+                            title="Elegir color"
+                          />
+                        )}
+                        <input
+                          type="text"
+                          placeholder={attribute2.type === 'color' ? 'Color (ej. Verde militar)' : `Nuevo ${attribute2.name}`}
+                          value={newOpt2Label}
+                          onChange={(e) => setNewOpt2Label(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleCreateQuickOpt2();
+                            } else if (e.key === 'Escape') {
+                              setIsAddingOpt2(false);
+                            }
+                          }}
+                          autoFocus
+                          className="text-xs px-2 py-0.5 border-0 focus:outline-none w-36 font-medium"
+                        />
+                        <button
+                          type="button"
+                          disabled={!newOpt2Label.trim() || isSubmittingOpt2}
+                          onClick={handleCreateQuickOpt2}
+                          className="w-6 h-6 flex items-center justify-center rounded-lg bg-black text-white hover:bg-neutral-800 disabled:opacity-40 cursor-pointer transition-colors"
+                          title="Guardar opción"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">check</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsAddingOpt2(false)}
+                          className="w-6 h-6 flex items-center justify-center rounded-lg text-neutral-400 hover:text-neutral-700 cursor-pointer transition-colors"
+                          title="Cancelar"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">close</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1581,18 +1772,37 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                   </div>
                 </div>
 
-                {product.supplierName && (
-                  <div className="flex items-center justify-between text-[11px] text-neutral-500 bg-neutral-50 px-3 py-1.5 rounded-lg border border-neutral-100">
-                    <span>Proveedor seleccionado: <strong className="text-black">{product.supplierName}</strong></span>
-                    <button
-                      type="button"
-                      onClick={() => setProduct({ ...product, supplierId: undefined, supplierName: undefined })}
-                      className="text-red-500 hover:text-red-700 font-medium hover:underline cursor-pointer"
-                    >
-                      Quitar proveedor
-                    </button>
-                  </div>
-                )}
+                {(() => {
+                  const selectedSupplierObj = localSuppliers.find(
+                    (s) => s.id === product.supplierId || (product.supplierName && s.name.toLowerCase() === product.supplierName.toLowerCase())
+                  );
+                  if (!selectedSupplierObj) return null;
+                  const hasContactInfo = selectedSupplierObj.phone || selectedSupplierObj.instagram || selectedSupplierObj.website;
+                  if (!hasContactInfo) return null;
+
+                  return (
+                    <div className="flex items-center gap-3 text-[11px] text-neutral-600 bg-neutral-50 px-3 py-1.5 rounded-xl border border-neutral-100 flex-wrap">
+                      {selectedSupplierObj.phone && (
+                        <span className="inline-flex items-center gap-1 font-medium text-neutral-700">
+                          <span className="material-symbols-outlined text-[14px] text-emerald-600">call</span>
+                          <span>{selectedSupplierObj.phone}</span>
+                        </span>
+                      )}
+                      {selectedSupplierObj.instagram && (
+                        <span className="inline-flex items-center gap-1 font-medium text-neutral-700">
+                          <span className="material-symbols-outlined text-[14px] text-pink-600">photo_camera</span>
+                          <span>@{selectedSupplierObj.instagram.replace(/^@/, '')}</span>
+                        </span>
+                      )}
+                      {selectedSupplierObj.website && (
+                        <span className="inline-flex items-center gap-1 font-medium text-neutral-700">
+                          <span className="material-symbols-outlined text-[14px] text-blue-600">language</span>
+                          <span>{selectedSupplierObj.website}</span>
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* LÍNEA DIVISORIA */}

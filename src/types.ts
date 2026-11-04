@@ -309,6 +309,7 @@ export interface StoreSettings {
   secondaryPresets?: ColorPreset[];
   backgroundPresets?: ColorPreset[];
   mercadoPago?: MercadoPagoConfig;
+  cardImageSize?: 'none' | 'small' | 'medium' | 'large';
   storeSlug?: string;
   slug?: string;
   updatedAt?: string;

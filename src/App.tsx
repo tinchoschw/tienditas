@@ -857,6 +857,7 @@ function MainContent() {
                 settings={settings}
                 storeSlug={currentStoreSlug}
                 featureFlags={activeStore?.featureFlags}
+                storeRubro={activeStore?.rubro}
                 onSaveProduct={(p) => saveProduct(currentStoreSlug, p)}
                 onDeleteProduct={(id) => deleteProduct(currentStoreSlug, id)}
                 onUpdateSettings={async (newSettings) => {

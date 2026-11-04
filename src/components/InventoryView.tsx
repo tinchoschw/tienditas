@@ -21,6 +21,7 @@ interface InventoryViewProps {
   onUpdateSettings?: (settings: Partial<StoreSettings>) => Promise<any>;
   featureFlags?: StoreFeatureFlags;
   storeSlug?: string;
+  storeRubro?: string;
 }
 
 export const InventoryView: React.FC<InventoryViewProps> = ({
@@ -30,7 +31,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   onDeleteProduct,
   onUpdateSettings,
   featureFlags,
-  storeSlug: propStoreSlug = ''
+  storeSlug: propStoreSlug = '',
+  storeRubro
 }) => {
   const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
   const storeSlug = propStoreSlug || settings.storeSlug || (settings as any).slug || '';
@@ -42,6 +44,23 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+
+  // Floating Action Button observer for Nuevo Producto
+  const newProductBtnRef = useRef<HTMLButtonElement>(null);
+  const [isNewProductBtnVisible, setIsNewProductBtnVisible] = useState(true);
+
+  useEffect(() => {
+    const el = newProductBtnRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsNewProductBtnVisible(entry.isIntersecting);
+      },
+      { threshold: 0.1 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // Suppliers & multiselect filter state
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -1120,6 +1139,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           )}
 
           <button
+            ref={newProductBtnRef}
             onClick={handleCreateNewProduct}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs sm:text-sm font-semibold transition-all shadow-xs hover:shadow active:scale-[0.98] cursor-pointer"
           >
@@ -1384,12 +1404,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   )}
                 </div>
 
-                {/* Category Filter */}
-                <div className="relative">
+                {/* Category Filter - Fixed stable width */}
+                <div className="relative w-full sm:w-44 shrink-0">
                   <select
                     value={categoryFilter}
                     onChange={(e) => setCategoryFilter(e.target.value)}
-                    className="w-full sm:w-auto appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none cursor-pointer border border-transparent focus:border-neutral-300 font-medium"
+                    className="w-full appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none cursor-pointer border border-transparent focus:border-neutral-300 font-medium truncate"
                   >
                     <option value="Todas">Todas las Categorías</option>
                     {settings.categories
@@ -1405,12 +1425,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   </span>
                 </div>
 
-                {/* Status Filter */}
-                <div className="relative">
+                {/* Status Filter - Fixed stable width */}
+                <div className="relative w-full sm:w-40 shrink-0">
                   <select
                     value={statusFilter}
                     onChange={(e) => setStatusFilter(e.target.value)}
-                    className="w-full sm:w-auto appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none cursor-pointer border border-transparent focus:border-neutral-300 font-medium"
+                    className="w-full appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none cursor-pointer border border-transparent focus:border-neutral-300 font-medium truncate"
                   >
                     <option value="all">Todos los Estados</option>
                     <option value="active">Solo Activos (con stock)</option>
@@ -1422,15 +1442,15 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   </span>
                 </div>
 
-                {/* Supplier Multiselect Combobox Filter */}
-                <div className="relative" ref={supplierFilterRef}>
+                {/* Supplier Multiselect Combobox Filter - Fixed stable width */}
+                <div className="relative w-full sm:w-52 shrink-0" ref={supplierFilterRef}>
                   <button
                     type="button"
                     onClick={() => setIsSupplierFilterOpen(!isSupplierFilterOpen)}
-                    className="w-full sm:w-auto flex items-center justify-between gap-2 px-3 py-2 bg-[#f5f3f3] hover:bg-[#eae8e8] rounded-xl text-xs text-black border border-transparent focus:border-neutral-300 font-medium cursor-pointer transition-colors"
+                    className="w-full flex items-center justify-between gap-1.5 px-3 py-2 bg-[#f5f3f3] hover:bg-[#eae8e8] rounded-xl text-xs text-black border border-transparent focus:border-neutral-300 font-medium cursor-pointer transition-colors"
                   >
-                    <div className="flex items-center gap-1.5 truncate max-w-[170px]">
-                      <span className="material-symbols-outlined text-[16px] text-neutral-500">local_shipping</span>
+                    <div className="flex items-center gap-1.5 truncate">
+                      <span className="material-symbols-outlined text-[16px] text-neutral-500 shrink-0">local_shipping</span>
                       <span className="truncate">
                         {selectedSuppliers.length === suppliers.length + 1
                           ? 'Todos los Proveedores'
@@ -1439,7 +1459,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           : `${selectedSuppliers.length} proveedores`}
                       </span>
                     </div>
-                    <span className="material-symbols-outlined text-[18px] text-neutral-400">
+                    <span className="material-symbols-outlined text-[18px] text-neutral-400 shrink-0">
                       {isSupplierFilterOpen ? 'expand_less' : 'expand_more'}
                     </span>
                   </button>
@@ -1554,12 +1574,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   <thead>
                     <tr className="bg-[#f5f3f3] border-b border-[#efeded] text-[#444748] font-bold uppercase tracking-wider text-[11px] h-11">
                       <th className="py-3 px-4">Prenda / Modelo</th>
-                      <th className="py-3 px-4">Categoría</th>
+                      <th className="py-3 px-4 min-w-[200px]">Categoría</th>
                       <th className="py-3 px-4">Proveedor</th>
                       <th className="py-3 px-4">Precio Venta</th>
                       <th className="py-3 px-4">Precio Promoción</th>
                       <th className="py-3 px-4">Variantes & Stock</th>
-                      <th className="py-3 px-4">Disponibilidad Online</th>
+                      <th className="py-3 px-3 text-center w-20">Visible</th>
                       <th className="py-3 px-4 text-right">Acciones</th>
                     </tr>
                   </thead>
@@ -1619,8 +1639,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                             </td>
 
                             {/* Category */}
-                            <td className="py-3.5 px-4 font-semibold text-neutral-700">
-                              <span className="px-2.5 py-1 rounded-lg bg-[#f5f3f3] text-[11px] font-medium text-black">
+                            <td className="py-3.5 px-4 font-semibold text-neutral-700 min-w-[200px] max-w-[280px]">
+                              <span
+                                className="inline-block px-2.5 py-1 rounded-lg bg-[#f5f3f3] text-[11px] font-medium text-black truncate max-w-full"
+                                title={prod.category}
+                              >
                                 {prod.category}
                               </span>
                             </td>
@@ -1691,27 +1714,21 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                               )}
                             </td>
 
-                            {/* Status */}
-                            <td className="py-3.5 px-4">
-                              {hasNoVariants ? (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-neutral-100 text-neutral-500 border border-neutral-200">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-neutral-400"></span>
-                                  Oculto (requiere variantes)
+                            {/* Status / Visible */}
+                            <td className="py-3.5 px-3 text-center w-20">
+                              {prod.enabledOnline && prod.variants.length > 0 ? (
+                                <span
+                                  className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-emerald-50 text-emerald-600 font-bold text-sm border border-emerald-200 mx-auto"
+                                  title="Visible en tienda online"
+                                >
+                                  ✓
                                 </span>
                               ) : (
                                 <span
-                                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold ${
-                                    prod.enabledOnline
-                                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                      : 'bg-neutral-100 text-neutral-600 border border-neutral-200'
-                                  }`}
+                                  className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-neutral-100 text-neutral-400 font-bold text-sm border border-neutral-200 mx-auto"
+                                  title={prod.variants.length === 0 ? "Oculto (sin variantes)" : "Oculto en tienda online"}
                                 >
-                                  <span
-                                    className={`w-1.5 h-1.5 rounded-full ${
-                                      prod.enabledOnline ? 'bg-emerald-600' : 'bg-neutral-400'
-                                    }`}
-                                  ></span>
-                                  {prod.enabledOnline ? 'Visible en Tienda' : 'Oculto / Borrador'}
+                                  ✕
                                 </span>
                               )}
                             </td>
@@ -1946,6 +1963,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             showNotification('success', `Producto "${saved.name}" guardado exitosamente.`);
           }}
           settings={settings}
+          onUpdateSettings={onUpdateSettings}
           allowDevicePhotos={featureFlags?.uploadDevicePhotos !== false}
           existingTags={allExistingTags}
           suppliers={suppliers}
@@ -2080,9 +2098,30 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         isOpen={isAiModalOpen}
         onClose={() => setIsAiModalOpen(false)}
         settings={settings}
+        storeRubro={storeRubro}
         allowDevicePhotos={featureFlags?.uploadDevicePhotos !== false}
         onContinueToForm={handleAiProductCompleted}
       />
+
+      {/* Botón flotante para Nuevo Producto cuando el botón principal no está visible */}
+      {!isNewProductBtnVisible && !editingProduct && selectedSubTab === 'products' && (
+        <button
+          type="button"
+          onClick={() => {
+            handleCreateNewProduct();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          title="Nuevo producto"
+          aria-label="Nuevo producto"
+          className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-40 w-14 h-14 rounded-full bg-black text-white shadow-2xl hover:bg-neutral-800 active:scale-95 transition-all flex items-center justify-center cursor-pointer group hover:ring-4 hover:ring-black/20"
+        >
+          <span className="material-symbols-outlined text-3xl font-light leading-none group-hover:rotate-90 transition-transform">add</span>
+          {/* Tooltip */}
+          <span className="absolute right-full mr-3 top-1/2 -translate-y-1/2 px-2.5 py-1 bg-neutral-900 text-white text-xs font-semibold rounded-lg shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none hidden sm:block">
+            Nuevo producto
+          </span>
+        </button>
+      )}
     </div>
   );
 };

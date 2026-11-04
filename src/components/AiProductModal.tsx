@@ -22,6 +22,7 @@ interface AiProductModalProps {
   onClose: () => void;
   settings: StoreSettings;
   allowDevicePhotos?: boolean;
+  storeRubro?: string;
   onContinueToForm: (data: {
     name: string;
     description: string;
@@ -38,6 +39,7 @@ export const AiProductModal: React.FC<AiProductModalProps> = ({
   onClose,
   settings,
   allowDevicePhotos = true,
+  storeRubro,
   onContinueToForm,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<string>(() => {
@@ -131,6 +133,8 @@ export const AiProductModal: React.FC<AiProductModalProps> = ({
           images,
           category: selectedCategory,
           includeColors: hasEnabledColorAttr,
+          rubro: storeRubro || (settings as any).rubro || '',
+          storeName: settings.storeName || '',
         }),
       });
 
