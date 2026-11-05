@@ -1476,16 +1476,62 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                               {product.name}
                             </h3>
 
-                            {/* Attr 1 Subtitle */}
-                            {usesAttr1 && currentAttr1Label && (
+                            {/* 1. Valores posibles del Atributo 1 (color o texto) */}
+                            {usesAttr1 && prodAttr1Options.length > 0 && (
+                              <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                                {prodAttr1Options.map((opt) => {
+                                  const isSelected = currentAttr1Label.toLowerCase() === opt.label.toLowerCase();
+                                  if (attribute1.type === 'color') {
+                                    return (
+                                      <button
+                                        key={opt.label}
+                                        type="button"
+                                        title={opt.label}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setCardSelectedColor((prev) => ({ ...prev, [product.id]: opt.label }));
+                                        }}
+                                        style={{ backgroundColor: opt.hex || '#000000' }}
+                                        className={`w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full border border-black/15 transition-all cursor-pointer ${
+                                          isSelected
+                                            ? 'ring-2 ring-black ring-offset-1 scale-110 shadow-2xs'
+                                            : 'hover:scale-110 opacity-80 hover:opacity-100'
+                                        }`}
+                                      />
+                                    );
+                                  }
+                                  return (
+                                    <button
+                                      key={opt.label}
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setCardSelectedColor((prev) => ({ ...prev, [product.id]: opt.label }));
+                                      }}
+                                      className={`px-1.5 py-0.5 rounded text-[10px] sm:text-xs font-semibold border transition-all ${
+                                        isSelected
+                                          ? 'bg-neutral-900 text-white border-neutral-900 shadow-2xs'
+                                          : 'bg-[#f5f5f5] text-neutral-700 border-neutral-200 hover:border-black cursor-pointer'
+                                      }`}
+                                      title={`Elegir ${opt.label}`}
+                                    >
+                                      {opt.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {/* 2. Mostrar texto del valor del atributo 1 seleccionado, SOLO en caso de ser de tipo color */}
+                            {attribute1.type === 'color' && usesAttr1 && currentAttr1Label && (
                               <p className="text-[11px] sm:text-xs text-neutral-500 font-normal truncate mt-0.5">
                                 {currentAttr1Label}
                               </p>
                             )}
 
-                            {/* Attr 2 Badges / Selector - visible even if single option (many-to-one) */}
+                            {/* 3. Valores posibles del Atributo 2 (color o texto) */}
                             {usesAttr2 && prodAttr2Options.length > 0 && (
-                              <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                              <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                                 {prodAttr2Options.map((opt) => {
                                   const isSelected = currentAttr2Label.toLowerCase() === opt.label.toLowerCase();
                                   const matchVar = visibleVariants.find((v) => {
@@ -1494,6 +1540,29 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                     return v2 === opt.label.toLowerCase() && (!usesAttr1 || !currentAttr1Label || v1 === currentAttr1Label.toLowerCase());
                                   });
                                   const isOutOfStock = !matchVar?.unlimited && !product.isUnlimited && (!matchVar || matchVar.stock <= 0);
+
+                                  if (attribute2.type === 'color') {
+                                    return (
+                                      <button
+                                        key={opt.label}
+                                        type="button"
+                                        disabled={isOutOfStock}
+                                        title={isOutOfStock ? `${opt.label} sin stock` : opt.label}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setCardSelectedSize((prev) => ({ ...prev, [product.id]: opt.label }));
+                                        }}
+                                        style={{ backgroundColor: opt.hex || '#000000' }}
+                                        className={`w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full border border-black/15 transition-all ${
+                                          isOutOfStock
+                                            ? 'opacity-30 cursor-not-allowed line-through'
+                                            : isSelected
+                                            ? 'ring-2 ring-black ring-offset-1 scale-110 shadow-2xs cursor-pointer'
+                                            : 'hover:scale-110 opacity-80 hover:opacity-100 cursor-pointer'
+                                        }`}
+                                      />
+                                    );
+                                  }
 
                                   return (
                                     <button
@@ -1520,9 +1589,16 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                               </div>
                             )}
 
-                            {/* Price */}
+                            {/* 4. Mostrar texto del valor del atributo 2 seleccionado, SOLO en caso de ser de tipo color */}
+                            {attribute2.type === 'color' && usesAttr2 && currentAttr2Label && (
+                              <p className="text-[11px] sm:text-xs text-neutral-500 font-normal truncate mt-0.5">
+                                {currentAttr2Label}
+                              </p>
+                            )}
+
+                            {/* 5. Precio */}
                             {product.discountPrice && product.discountPrice > 0 && product.discountPrice < product.price ? (
-                              <div className="flex items-baseline flex-wrap gap-x-1.5 gap-y-0.5 mt-1.5">
+                              <div className="flex items-baseline flex-wrap gap-x-1.5 gap-y-0.5 mt-2">
                                 <span className="text-sm sm:text-base font-extrabold text-emerald-700">
                                   ${product.discountPrice.toLocaleString('es-AR')}
                                 </span>
@@ -1535,55 +1611,10 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                               </div>
                             ) : (
                               <div 
-                                className="text-sm sm:text-base font-bold mt-1.5"
+                                className="text-sm sm:text-base font-bold mt-2"
                                 style={{ color: settings.primaryColor || '#1A1A1A' }}
                               >
                                 ${product.price.toLocaleString('es-AR')}
-                              </div>
-                            )}
-
-                            {/* Attr 1 swatch dots or badges - visible even if single option (many-to-one) */}
-                            {usesAttr1 && prodAttr1Options.length > 0 && (
-                              <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                                {prodAttr1Options.map((opt) => {
-                                  const isSelected = currentAttr1Label.toLowerCase() === opt.label.toLowerCase();
-                                  if (attribute1.type === 'color') {
-                                    return (
-                                      <button
-                                        key={opt.label}
-                                        type="button"
-                                        title={opt.label}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setCardSelectedColor((prev) => ({ ...prev, [product.id]: opt.label }));
-                                        }}
-                                        style={{ backgroundColor: opt.hex || '#000000' }}
-                                        className={`w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full border border-black/15 transition-all cursor-pointer ${
-                                          isSelected
-                                            ? 'ring-2 ring-black ring-offset-1 scale-110'
-                                            : 'hover:scale-110 opacity-80 hover:opacity-100'
-                                        }`}
-                                      />
-                                    );
-                                  }
-                                  return (
-                                    <button
-                                      key={opt.label}
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setCardSelectedColor((prev) => ({ ...prev, [product.id]: opt.label }));
-                                      }}
-                                      className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all ${
-                                        isSelected
-                                          ? 'bg-neutral-900 text-white border-neutral-900 shadow-2xs'
-                                          : 'bg-[#f5f5f5] text-neutral-700 border-neutral-200 hover:border-black cursor-pointer'
-                                      }`}
-                                    >
-                                      {opt.label}
-                                    </button>
-                                  );
-                                })}
                               </div>
                             )}
                           </div>
@@ -1897,26 +1928,40 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                   {usesAttr1 && availableAttr1Options.length > 0 && (
                     <div className="pt-2 border-t border-neutral-100">
                       <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
-                        <span>{attribute1.name || 'Color'}: <strong className="text-black font-semibold">{modalSelectedColor}</strong></span>
-                        <span className="text-[11px] text-neutral-400">{availableAttr1Options.length} disponible{availableAttr1Options.length > 1 ? 's' : ''}</span>
+                        <span>
+                          {attribute1.name || 'Atributo 1'}: <strong className="text-black font-semibold">{modalSelectedColor}</strong>
+                        </span>
+                        <span className="text-[11px] text-neutral-400">
+                          {availableAttr1Options.length} disponible{availableAttr1Options.length > 1 ? 's' : ''}
+                        </span>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap">
                         {availableAttr1Options.map((opt) => {
                           const isSelected = modalSelectedColor.toLowerCase() === opt.label.toLowerCase();
+                          const matchVar = visibleVariants.find((v) => {
+                            const v1 = getVariantAttr1(v, attribute1).label.toLowerCase();
+                            const v2 = getVariantAttr2(v, attribute2).label.toLowerCase();
+                            return v1 === opt.label.toLowerCase() && (!usesAttr2 || !modalSelectedSize || v2 === modalSelectedSize.toLowerCase());
+                          });
+                          const isNoStock = !matchVar?.unlimited && !product.isUnlimited && (!matchVar || matchVar.stock <= 0);
+
                           if (attribute1.type === 'color') {
                             return (
                               <button
                                 key={opt.label}
                                 type="button"
-                                title={opt.label}
+                                disabled={isNoStock}
+                                title={isNoStock ? `${opt.label} sin stock` : opt.label}
                                 onClick={() => {
                                   setModalSelectedColor(opt.label);
                                 }}
                                 style={{ backgroundColor: opt.hex || '#000000' }}
-                                className={`w-7 h-7 rounded-full border border-black/20 transition-all cursor-pointer ${
-                                  isSelected
-                                    ? 'ring-2 ring-black ring-offset-2 scale-110 shadow-xs'
-                                    : 'hover:scale-105'
+                                className={`w-7 h-7 rounded-full border border-black/20 transition-all ${
+                                  isNoStock
+                                    ? 'opacity-30 cursor-not-allowed line-through'
+                                    : isSelected
+                                    ? 'ring-2 ring-black ring-offset-2 scale-110 shadow-xs cursor-pointer'
+                                    : 'hover:scale-105 cursor-pointer'
                                 }`}
                               />
                             );
@@ -1925,12 +1970,16 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                             <button
                               key={opt.label}
                               type="button"
+                              disabled={isNoStock}
                               onClick={() => {
                                 setModalSelectedColor(opt.label);
                               }}
+                              style={isSelected ? { backgroundColor: settings.primaryColor || '#1A1A1A' } : undefined}
                               className={`py-1.5 px-3.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                                isSelected
-                                  ? 'bg-neutral-900 text-white shadow-xs'
+                                isNoStock
+                                  ? 'bg-neutral-100 text-neutral-400 line-through cursor-not-allowed border border-neutral-200'
+                                  : isSelected
+                                  ? 'text-white shadow-xs'
                                   : 'bg-[#f5f3f3] text-black hover:bg-[#efeded] border border-transparent'
                               }`}
                             >
@@ -1944,14 +1993,20 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
                   {/* Attr 2 Selector - visible even if single option (many-to-one) */}
                   {usesAttr2 && availableAttr2Options.length > 0 && (
-                    <div className="pt-1">
+                    <div className="pt-2 border-t border-neutral-100">
                       <div className="flex items-center justify-between text-xs text-neutral-500 mb-1.5">
-                        <span>{attribute2.name || 'Talle'} disponible:</span>
+                        <span>
+                          {attribute2.name || 'Atributo 2'}: {attribute2.type === 'color' ? (
+                            <strong className="text-black font-semibold">{modalSelectedSize}</strong>
+                          ) : (
+                            <strong className="text-black font-semibold">{modalSelectedSize}</strong>
+                          )}
+                        </span>
                         <span className="text-[11px] text-neutral-400">
                           {activeVariant ? (isModalVariantUnlimited ? 'Stock: Ilimitado' : `Stock: ${activeVariant.stock} u.`) : 'Sin stock'}
                         </span>
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         {availableAttr2Options.map((opt) => {
                           const isSelected = modalSelectedSize.toLowerCase() === opt.label.toLowerCase();
                           const matchVar = visibleVariants.find((v) => {
@@ -1960,6 +2015,29 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                             return v2 === opt.label.toLowerCase() && (!usesAttr1 || !modalSelectedColor || v1 === modalSelectedColor.toLowerCase());
                           });
                           const isNoStock = !matchVar?.unlimited && !product.isUnlimited && (!matchVar || matchVar.stock <= 0);
+
+                          if (attribute2.type === 'color') {
+                            return (
+                              <button
+                                key={opt.label}
+                                type="button"
+                                disabled={isNoStock}
+                                title={isNoStock ? `${opt.label} sin stock` : opt.label}
+                                onClick={() => {
+                                  setModalSelectedSize(opt.label);
+                                  setModalQuantity(1);
+                                }}
+                                style={{ backgroundColor: opt.hex || '#000000' }}
+                                className={`w-7 h-7 rounded-full border border-black/20 transition-all ${
+                                  isNoStock
+                                    ? 'opacity-30 cursor-not-allowed line-through'
+                                    : isSelected
+                                    ? 'ring-2 ring-black ring-offset-2 scale-110 shadow-xs cursor-pointer'
+                                    : 'hover:scale-105 cursor-pointer'
+                                }`}
+                              />
+                            );
+                          }
 
                           return (
                             <button
