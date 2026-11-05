@@ -1,7 +1,12 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Product, CartItem, StoreSettings, StoreFeatureFlags, StoreAttribute } from '../types';
+import { Product, CartItem, StoreSettings, StoreFeatureFlags, StoreAttribute, StoreCategory } from '../types';
 import { useModalHistory } from '../hooks/useModalHistory';
 import { ensureStoreAttributes, formatVariantSummary } from '../utils/attributeUtils';
+import {
+  ensureStoreCategoryTree,
+  isProductInSelectedCategoryFilters,
+  countProductsInCategory
+} from '../utils/categoryUtils';
 
 interface StorefrontViewProps {
   products: Product[];
@@ -77,17 +82,47 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
   featureFlags
 }) => {
   const { attribute1, attribute2 } = useMemo(() => ensureStoreAttributes(settings), [settings]);
+  const categoryTree = useMemo(() => ensureStoreCategoryTree(settings), [settings]);
+
+  // Sort categories and subcategories by product count descending, with alphabetical tie-breaker
+  const sortedCategoryTree = useMemo(() => {
+    return [...categoryTree]
+      .map((parent) => {
+        const sortedSubs = [...(parent.subcategories || [])].sort((a, b) => {
+          const countA = countProductsInCategory(products, a.id, categoryTree);
+          const countB = countProductsInCategory(products, b.id, categoryTree);
+          if (countB !== countA) return countB - countA;
+          return a.name.localeCompare(b.name, 'es', { sensitivity: 'base' });
+        });
+        return {
+          ...parent,
+          subcategories: sortedSubs
+        };
+      })
+      .sort((a, b) => {
+        const countA = countProductsInCategory(products, a.id, categoryTree);
+        const countB = countProductsInCategory(products, b.id, categoryTree);
+        if (countB !== countA) return countB - countA;
+        return a.name.localeCompare(b.name, 'es', { sensitivity: 'base' });
+      });
+  }, [categoryTree, products]);
 
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedAttr1, setSelectedAttr1] = useState<string[]>([]);
   const [selectedAttr2, setSelectedAttr2] = useState<string[]>([]);
   const [onlyInStock, setOnlyInStock] = useState<boolean>(true);
   const [sortBy, setSortBy] = useState<string>('recent');
-  const [isFiltersOpen, setIsFiltersOpen] = useState<boolean>(() => 
-    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
-  );
+  const [catalogSearchQuery, setCatalogSearchQuery] = useState<string>('');
+  const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState<boolean>(false);
+  const [expandedCategoryIds, setExpandedCategoryIds] = useState<Record<string, boolean>>({});
   const [lastAddedProduct, setLastAddedProduct] = useState<string | null>(null);
   const [stockNotice, setStockNotice] = useState<string | null>(null);
+
+  useModalHistory({
+    isOpen: isFilterDrawerOpen,
+    onClose: () => setIsFilterDrawerOpen(false),
+    modalKey: 'catalog-filter-drawer'
+  });
 
   const showStockNotice = (msg: string) => {
     setStockNotice(msg);
@@ -97,9 +132,6 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
   // Deep link share feedback
   const [shareToast, setShareToast] = useState<string | null>(null);
   const [isLinkCopied, setIsLinkCopied] = useState<boolean>(false);
-
-  // Popover menus state
-  const [activeDropdown, setActiveDropdown] = useState<'cat' | 'attr1' | 'attr2' | null>(null);
 
   // Product Detail Modal state
   const [selectedProductModal, setSelectedProductModal] = useState<Product | null>(null);
@@ -232,11 +264,50 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
     );
   }, [attribute2, products]);
 
-  // Toggle filter helper functions
-  const toggleCategory = (cat: string) => {
-    setSelectedCategories((prev) =>
-      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
-    );
+  // Toggle filter helper functions for 2-Level Category Tree
+  const toggleParentCategory = (parent: StoreCategory) => {
+    const parentId = parent.id;
+    const subIds = (parent.subcategories || []).map((s) => s.id);
+    const allIds = [parentId, ...subIds];
+    const isParentSelected = selectedCategories.includes(parentId);
+
+    if (isParentSelected) {
+      setSelectedCategories((prev) => prev.filter((id) => !allIds.includes(id)));
+    } else {
+      setSelectedCategories((prev) => {
+        const without = prev.filter((id) => !allIds.includes(id));
+        return [...without, ...allIds];
+      });
+    }
+  };
+
+  const toggleSubcategory = (parent: StoreCategory, subId: string) => {
+    const parentId = parent.id;
+    const subcategories = parent.subcategories || [];
+    const allSubIds = subcategories.map((s) => s.id);
+    const isSubSelected = selectedCategories.includes(subId);
+
+    if (isSubSelected) {
+      // Uncheck subcategory and remove parent umbrella
+      setSelectedCategories((prev) => prev.filter((id) => id !== subId && id !== parentId));
+    } else {
+      // Check subcategory
+      setSelectedCategories((prev) => {
+        const next = [...prev, subId];
+        const allSubsNowSelected = allSubIds.every((id) => id === subId || prev.includes(id));
+        if (allSubsNowSelected && !next.includes(parentId)) {
+          return [...next, parentId];
+        }
+        return next;
+      });
+    }
+  };
+
+  const toggleCategoryExpand = (catId: string) => {
+    setExpandedCategoryIds((prev) => ({
+      ...prev,
+      [catId]: prev[catId] === undefined ? false : !prev[catId]
+    }));
   };
 
   const toggleAttr1 = (id: string) => {
@@ -252,6 +323,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
   };
 
   const clearAllFilters = () => {
+    setCatalogSearchQuery('');
     setSelectedCategories([]);
     setSelectedAttr1([]);
     setSelectedAttr2([]);
@@ -261,24 +333,39 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
   const hasSpecificFilters =
     selectedCategories.length > 0 ||
     selectedAttr1.length > 0 ||
-    selectedAttr2.length > 0;
+    selectedAttr2.length > 0 ||
+    Boolean(catalogSearchQuery.trim());
+
   const activeFiltersCount =
     selectedCategories.length +
     selectedAttr1.length +
     selectedAttr2.length +
-    (!onlyInStock ? 1 : 0);
+    (!onlyInStock ? 1 : 0) +
+    (catalogSearchQuery.trim() ? 1 : 0);
 
-  // Filtered & Sorted products (Supporting multi-select, dynamic attributes, stock boolean, hiding 0 variants)
+  // Filtered & Sorted products (Supporting 2-level categories, free search, dynamic attributes, stock boolean, hiding 0 variants)
   const filteredProducts = useMemo(() => {
     return products
       .filter((p) => p.variants && p.variants.length > 0 && p.enabledOnline && p.variants.some(isVariantVisible))
       .filter((p) => {
-        // Multi Category filter
+        // Free-text Search filter
+        if (catalogSearchQuery.trim()) {
+          const q = catalogSearchQuery.trim().toLowerCase();
+          const matchesName = p.name.toLowerCase().includes(q);
+          const matchesSku = Boolean(p.customSku && p.customSku.toLowerCase().includes(q));
+          const matchesDesc = Boolean(p.description && p.description.toLowerCase().includes(q));
+          const matchesVariantSku = p.variants.some((v) => v.sku && v.sku.toLowerCase().includes(q));
+          const matchesTag = (p.tags || []).some((t) => t.toLowerCase().includes(q));
+          if (!matchesName && !matchesSku && !matchesDesc && !matchesVariantSku && !matchesTag) {
+            return false;
+          }
+        }
+
+        // 2-Level Multi-Category filter
         if (selectedCategories.length > 0) {
-          const matchCat = selectedCategories.some(
-            (c) => p.category.toLowerCase() === c.toLowerCase()
-          );
-          if (!matchCat) return false;
+          if (!isProductInSelectedCategoryFilters(p, selectedCategories, categoryTree)) {
+            return false;
+          }
         }
 
         // Helper to check if a variant matches active attr1 and attr2 filters
@@ -344,7 +431,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
         if (sortBy === 'popular') return b.totalStock - a.totalStock;
         return 0;
       });
-  }, [products, selectedCategories, selectedAttr1, selectedAttr2, onlyInStock, sortBy, attribute1, attribute2]);
+  }, [products, catalogSearchQuery, selectedCategories, selectedAttr1, selectedAttr2, onlyInStock, sortBy, attribute1, attribute2, categoryTree]);
 
   // Helper to generate the exact deep link URL for a product
   const getProductShareUrl = (productId: string): string => {
@@ -752,278 +839,390 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
         </div>
       )}
 
-      {/* Filtros Multiselección: Categoría, Talle, Color, Stock y Ordenar con Botón Flotante */}
-      <section className="w-full px-2.5 sm:px-8 mt-3 sm:mt-5 mb-5 sm:mb-6 max-w-[1600px] mx-auto">
-        <div className="relative bg-white p-3 sm:p-3.5 rounded-2xl shadow-xs border border-[#efeded]">
-          {/* Deck de Controles de Filtros y Ordenar en una sola fila fluida */}
-          {isFiltersOpen && (
-            <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-              {/* Categorías Dropdown */}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setActiveDropdown(activeDropdown === 'cat' ? null : 'cat')}
-                  className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
-                    selectedCategories.length > 0
-                      ? 'bg-black text-white border-black shadow-xs'
-                      : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[17px]">category</span>
-                  <span>
-                    {selectedCategories.length === 0
-                      ? 'Categorías'
-                      : `Categorías (${selectedCategories.length})`}
-                  </span>
-                  <span className="material-symbols-outlined text-[16px] opacity-70">
-                    {activeDropdown === 'cat' ? 'expand_less' : 'expand_more'}
-                  </span>
-                </button>
+      {/* Indicador sutil de resultados cuando hay filtros activos (Sin ocupar espacio en el catálogo) */}
+      {(activeFiltersCount > 0 || catalogSearchQuery.trim()) && (
+        <div className="w-full px-2.5 sm:px-8 mt-3 mb-2 max-w-[1600px] mx-auto flex items-center justify-between text-xs text-neutral-500 animate-in fade-in">
+          <span>
+            Mostrando <strong className="text-black font-semibold">{filteredProducts.length}</strong> {filteredProducts.length === 1 ? 'prenda' : 'prendas'} con filtros aplicados
+          </span>
+          <button
+            type="button"
+            onClick={clearAllFilters}
+            className="text-[11px] font-semibold text-rose-600 hover:text-rose-700 underline cursor-pointer"
+          >
+            Limpiar filtros
+          </button>
+        </div>
+      )}
 
-                {activeDropdown === 'cat' && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-20"
-                      onClick={() => setActiveDropdown(null)}
-                    />
-                    <div className="absolute left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-neutral-200 p-3 z-30 flex flex-col gap-2 max-h-72 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
-                      <div className="flex items-center justify-between pb-2 border-b border-neutral-100 text-[11px] font-bold text-neutral-500 uppercase tracking-wider">
-                        <span>Filtrar Categorías</span>
-                        {selectedCategories.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setSelectedCategories([])}
-                            className="text-neutral-500 hover:text-black underline cursor-pointer"
-                          >
-                            Limpiar
-                          </button>
-                        )}
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        {categoryOptions.map((cat) => {
-                          const isChecked = selectedCategories.includes(cat);
-                          const count = products.filter(
-                            (p) => p.enabledOnline && p.category.toLowerCase() === cat.toLowerCase()
-                          ).length;
-                          return (
-                            <label
-                              key={cat}
-                              className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors"
-                            >
-                              <div className="flex items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={() => toggleCategory(cat)}
-                                  className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
-                                />
-                                <span className={isChecked ? 'font-bold text-black' : 'text-neutral-700'}>
-                                  {cat}
-                                </span>
-                              </div>
-                              <span className="text-[11px] text-neutral-400 font-medium">({count})</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </>
-                )}
+      {/* Botón Flotante para Categorías y Filtros (No ocupa renglones ni espacio en la pantalla) */}
+      <button
+        type="button"
+        onClick={() => setIsFilterDrawerOpen(true)}
+        className="fixed bottom-6 right-6 sm:bottom-8 sm:right-8 z-40 flex items-center gap-2.5 px-4 sm:px-5 py-3 rounded-full bg-black text-white shadow-2xl hover:bg-neutral-800 active:scale-95 transition-all cursor-pointer border border-white/20 group hover:ring-4 hover:ring-black/20"
+        title="Categorías y Filtros"
+        aria-label="Abrir menú de categorías y filtros"
+      >
+        <span className="material-symbols-outlined text-[20px] transition-transform group-hover:scale-110">
+          tune
+        </span>
+        <span className="text-xs sm:text-sm font-bold tracking-tight">
+          Categorías y Filtros
+        </span>
+        {activeFiltersCount > 0 && (
+          <span className="w-5 h-5 rounded-full bg-white text-black text-[11px] font-extrabold flex items-center justify-center shrink-0 shadow-xs">
+            {activeFiltersCount}
+          </span>
+        )}
+      </button>
+
+      {/* Drawer Desplegable de Categorías y Filtros */}
+      {isFilterDrawerOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          {/* Backdrop con desenfoque suave */}
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
+            onClick={() => setIsFilterDrawerOpen(false)}
+          />
+
+          {/* Slide-over Panel */}
+          <div className="relative w-full max-w-md bg-white h-full shadow-2xl z-10 flex flex-col animate-in slide-in-from-right duration-200 border-l border-neutral-200">
+            {/* Header del Drawer */}
+            <div className="p-4 sm:p-5 border-b border-neutral-100 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-black text-white flex items-center justify-center">
+                  <span className="material-symbols-outlined text-[20px]">tune</span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-black">Categorías y Filtros</h3>
+                  <p className="text-[11px] text-neutral-500">
+                    {filteredProducts.length} {filteredProducts.length === 1 ? 'prenda encontrada' : 'prendas encontradas'}
+                  </p>
+                </div>
               </div>
 
-              {/* Atributo 1 Dropdown (si está habilitado) */}
+              <button
+                type="button"
+                onClick={() => setIsFilterDrawerOpen(false)}
+                className="w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-700 flex items-center justify-center transition-colors cursor-pointer"
+                title="Cerrar panel"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            {/* Cuerpo con Scroll */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-6">
+              {/* 1. Búsqueda por texto libre al inicio del menú de filtros */}
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-neutral-600 uppercase tracking-wider block">
+                  Búsqueda rápida
+                </label>
+                <div className="relative">
+                  <span className="material-symbols-outlined text-[18px] text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2">
+                    search
+                  </span>
+                  <input
+                    type="text"
+                    value={catalogSearchQuery}
+                    onChange={(e) => setCatalogSearchQuery(e.target.value)}
+                    placeholder="Buscar prenda, estilo o palabra clave..."
+                    className="w-full pl-9 pr-8 py-2.5 bg-[#f5f3f3] focus:bg-white rounded-xl text-xs text-black placeholder:text-neutral-400 focus:outline-none border border-transparent focus:border-neutral-300 transition-all font-medium"
+                  />
+                  {catalogSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setCatalogSearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-black cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">close</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* 2. Árbol de Categorías (Jerarquía 2 niveles) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-neutral-600 uppercase tracking-wider">
+                    Categorías
+                  </label>
+                  {selectedCategories.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCategories([])}
+                      className="text-[11px] text-neutral-500 hover:text-black underline cursor-pointer"
+                    >
+                      Todas ({products.filter((p) => p.enabledOnline).length})
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-1.5 bg-[#f9f8f8] p-2.5 rounded-2xl border border-neutral-200/80">
+                  {/* Opción Nivel 0: Todas */}
+                  <label
+                    className={`flex items-center justify-between p-2 rounded-xl text-xs cursor-pointer select-none transition-colors ${
+                      selectedCategories.length === 0
+                        ? 'bg-black text-white font-bold shadow-xs'
+                        : 'hover:bg-white text-neutral-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedCategories.length === 0}
+                        onChange={() => setSelectedCategories([])}
+                        className="sr-only"
+                      />
+                      <span className="material-symbols-outlined text-[18px]">
+                        {selectedCategories.length === 0 ? 'check_circle' : 'radio_button_unchecked'}
+                      </span>
+                      <span>Todas las categorías</span>
+                    </div>
+                    <span className={`text-[11px] ${selectedCategories.length === 0 ? 'text-neutral-300' : 'text-neutral-400'}`}>
+                      {products.filter((p) => p.enabledOnline).length}
+                    </span>
+                  </label>
+
+                  {/* Level 1 Parents & Level 2 Subcategories (Sorted by product count descending) */}
+                  {sortedCategoryTree.map((parent) => {
+                    const isParentChecked = selectedCategories.includes(parent.id);
+                    const subcategories = parent.subcategories || [];
+                    const hasSubs = subcategories.length > 0;
+                    const isExpanded = expandedCategoryIds[parent.id] ?? true;
+                    const parentCount = countProductsInCategory(products, parent.id, categoryTree);
+
+                    const checkedSubsCount = subcategories.filter((s) => selectedCategories.includes(s.id)).length;
+                    const isPartiallyChecked = checkedSubsCount > 0 && checkedSubsCount < subcategories.length && !isParentChecked;
+
+                    return (
+                      <div key={parent.id} className="rounded-xl overflow-hidden bg-white border border-neutral-200/60">
+                        {/* Parent Row */}
+                        <div className="flex items-center justify-between p-2 hover:bg-neutral-50 transition-colors">
+                          <label className="flex items-center gap-2.5 flex-1 cursor-pointer select-none text-xs">
+                            <input
+                              type="checkbox"
+                              checked={isParentChecked}
+                              ref={(el) => {
+                                if (el) el.indeterminate = isPartiallyChecked;
+                              }}
+                              onChange={() => toggleParentCategory(parent)}
+                              className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
+                            />
+                            <span className="font-semibold text-neutral-900">{parent.name}</span>
+                          </label>
+
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-neutral-400 font-medium px-1.5 py-0.5 rounded-full bg-neutral-100">
+                              {parentCount}
+                            </span>
+                            {hasSubs && (
+                              <button
+                                type="button"
+                                onClick={() => toggleCategoryExpand(parent.id)}
+                                className="p-1 text-neutral-400 hover:text-black rounded-lg transition-colors cursor-pointer"
+                                title={isExpanded ? 'Colapsar subcategorías' : 'Expandir subcategorías'}
+                              >
+                                <span className="material-symbols-outlined text-[16px]">
+                                  {isExpanded ? 'expand_less' : 'expand_more'}
+                                </span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Subcategories (Level 2) */}
+                        {hasSubs && isExpanded && (
+                          <div className="pl-6 pr-2 py-1 bg-neutral-50/70 border-t border-neutral-100 space-y-1">
+                            {subcategories.map((sub) => {
+                              const isSubChecked = selectedCategories.includes(sub.id);
+                              const subCount = countProductsInCategory(products, sub.id, categoryTree);
+
+                              return (
+                                <label
+                                  key={sub.id}
+                                  className="flex items-center justify-between py-1 px-2 rounded-lg hover:bg-white text-xs cursor-pointer select-none transition-colors"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSubChecked}
+                                      onChange={() => toggleSubcategory(parent, sub.id)}
+                                      className="w-3.5 h-3.5 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
+                                    />
+                                    <span className={isSubChecked ? 'font-semibold text-black' : 'text-neutral-700'}>
+                                      {sub.name}
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-neutral-400">
+                                    {subCount}
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 3. Atributo 1 (Dinámico) */}
               {attribute1.enabled && (
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setActiveDropdown(activeDropdown === 'attr1' ? null : 'attr1')}
-                    className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
-                      selectedAttr1.length > 0
-                        ? 'bg-black text-white border-black shadow-xs'
-                        : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[17px]">
-                      {attribute1.type === 'color' ? 'palette' : 'tune'}
-                    </span>
-                    <span>
-                      {selectedAttr1.length === 0
-                        ? attribute1.name
-                        : `${attribute1.name} (${selectedAttr1.length})`}
-                    </span>
-                    <span className="material-symbols-outlined text-[16px] opacity-70">
-                      {activeDropdown === 'attr1' ? 'expand_less' : 'expand_more'}
-                    </span>
-                  </button>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-neutral-600 uppercase tracking-wider">
+                      {attribute1.name}
+                    </label>
+                    {selectedAttr1.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAttr1([])}
+                        className="text-[11px] text-neutral-500 hover:text-black underline cursor-pointer"
+                      >
+                        Limpiar
+                      </button>
+                    )}
+                  </div>
 
-                  {activeDropdown === 'attr1' && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-20"
-                        onClick={() => setActiveDropdown(null)}
-                      />
-                      <div className="absolute left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-neutral-200 p-3 z-30 flex flex-col gap-2 max-h-72 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
-                        <div className="flex items-center justify-between pb-2 border-b border-neutral-100 text-[11px] font-bold text-neutral-500 uppercase tracking-wider">
-                          <span>Filtrar {attribute1.name}</span>
-                          {selectedAttr1.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => setSelectedAttr1([])}
-                              className="text-neutral-500 hover:text-black underline cursor-pointer"
-                            >
-                              Limpiar
-                            </button>
-                          )}
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          {attr1Options.map((opt) => {
-                            const isChecked = selectedAttr1.includes(opt.id);
-                            return (
-                              <label
-                                key={opt.id}
-                                className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors"
-                              >
-                                <div className="flex items-center gap-2.5">
-                                  <input
-                                    type="checkbox"
-                                    checked={isChecked}
-                                    onChange={() => toggleAttr1(opt.id)}
-                                    className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
-                                  />
-                                  {attribute1.type === 'color' && (
-                                    <span
-                                      className="w-3.5 h-3.5 rounded-full border border-black/15 shrink-0"
-                                      style={{ backgroundColor: opt.hex || '#000000' }}
-                                    />
-                                  )}
-                                  <span className={isChecked ? 'font-bold text-black' : 'text-neutral-700'}>
-                                    {opt.label}
-                                  </span>
-                                </div>
-                              </label>
-                            );
-                          })}
-                          {hasProductsWithoutAttr1 && (
-                            <label className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors border-t border-neutral-100 pt-2 mt-1">
-                              <div className="flex items-center gap-2.5">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedAttr1.includes('__other__')}
-                                  onChange={() => toggleAttr1('__other__')}
-                                  className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
-                                />
-                                <span className="material-symbols-outlined text-[15px] text-neutral-400">help_outline</span>
-                                <span className={selectedAttr1.includes('__other__') ? 'font-bold text-black' : 'text-neutral-700'}>
-                                  Otros
-                                </span>
-                              </div>
-                            </label>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  )}
+                  <div className="flex flex-wrap gap-1.5">
+                    {attr1Options.map((opt) => {
+                      const isChecked = selectedAttr1.includes(opt.id);
+                      if (attribute1.type === 'color') {
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => toggleAttr1(opt.id)}
+                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                              isChecked
+                                ? 'bg-black text-white border-black shadow-xs'
+                                : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
+                            }`}
+                          >
+                            <span
+                              className="w-3.5 h-3.5 rounded-full border border-black/15 shrink-0"
+                              style={{ backgroundColor: opt.hex || '#000000' }}
+                            />
+                            <span>{opt.label}</span>
+                          </button>
+                        );
+                      }
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => toggleAttr1(opt.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                            isChecked
+                              ? 'bg-black text-white border-black shadow-xs'
+                              : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+
+                    {hasProductsWithoutAttr1 && (
+                      <button
+                        type="button"
+                        onClick={() => toggleAttr1('__other__')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                          selectedAttr1.includes('__other__')
+                            ? 'bg-black text-white border-black shadow-xs'
+                            : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-600 border-transparent'
+                        }`}
+                      >
+                        Otros
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
-              {/* Atributo 2 Dropdown (si está habilitado) */}
+              {/* 4. Atributo 2 (Dinámico) */}
               {attribute2.enabled && (
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setActiveDropdown(activeDropdown === 'attr2' ? null : 'attr2')}
-                    className={`h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
-                      selectedAttr2.length > 0
-                        ? 'bg-black text-white border-black shadow-xs'
-                        : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[17px]">
-                      {attribute2.type === 'color' ? 'palette' : 'straighten'}
-                    </span>
-                    <span>
-                      {selectedAttr2.length === 0
-                        ? attribute2.name
-                        : `${attribute2.name} (${selectedAttr2.length})`}
-                    </span>
-                    <span className="material-symbols-outlined text-[16px] opacity-70">
-                      {activeDropdown === 'attr2' ? 'expand_less' : 'expand_more'}
-                    </span>
-                  </button>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-neutral-600 uppercase tracking-wider">
+                      {attribute2.name}
+                    </label>
+                    {selectedAttr2.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAttr2([])}
+                        className="text-[11px] text-neutral-500 hover:text-black underline cursor-pointer"
+                      >
+                        Limpiar
+                      </button>
+                    )}
+                  </div>
 
-                  {activeDropdown === 'attr2' && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-20"
-                        onClick={() => setActiveDropdown(null)}
-                      />
-                      <div className="absolute left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-neutral-200 p-3 z-30 flex flex-col gap-2 max-h-72 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
-                        <div className="flex items-center justify-between pb-2 border-b border-neutral-100 text-[11px] font-bold text-neutral-500 uppercase tracking-wider">
-                          <span>Filtrar {attribute2.name}</span>
-                          {selectedAttr2.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => setSelectedAttr2([])}
-                              className="text-neutral-500 hover:text-black underline cursor-pointer"
-                            >
-                              Limpiar
-                            </button>
-                          )}
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          {attr2Options.map((opt) => {
-                            const isChecked = selectedAttr2.includes(opt.id);
-                            return (
-                              <label
-                                key={opt.id}
-                                className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors"
-                              >
-                                <div className="flex items-center gap-2.5">
-                                  <input
-                                    type="checkbox"
-                                    checked={isChecked}
-                                    onChange={() => toggleAttr2(opt.id)}
-                                    className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
-                                  />
-                                  {attribute2.type === 'color' && (
-                                    <span
-                                      className="w-3.5 h-3.5 rounded-full border border-black/15 shrink-0"
-                                      style={{ backgroundColor: opt.hex || '#000000' }}
-                                    />
-                                  )}
-                                  <span className={isChecked ? 'font-bold text-black' : 'text-neutral-700'}>
-                                    {opt.label}
-                                  </span>
-                                </div>
-                              </label>
-                            );
-                          })}
-                          {hasProductsWithoutAttr2 && (
-                            <label className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-[#f5f3f3] text-xs cursor-pointer select-none transition-colors border-t border-neutral-100 pt-2 mt-1">
-                              <div className="flex items-center gap-2.5">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedAttr2.includes('__other__')}
-                                  onChange={() => toggleAttr2('__other__')}
-                                  className="w-4 h-4 rounded text-black focus:ring-0 border-neutral-300 cursor-pointer"
-                                />
-                                <span className="material-symbols-outlined text-[15px] text-neutral-400">help_outline</span>
-                                <span className={selectedAttr2.includes('__other__') ? 'font-bold text-black' : 'text-neutral-700'}>
-                                  Otros
-                                </span>
-                              </div>
-                            </label>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  )}
+                  <div className="flex flex-wrap gap-1.5">
+                    {attr2Options.map((opt) => {
+                      const isChecked = selectedAttr2.includes(opt.id);
+                      if (attribute2.type === 'color') {
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => toggleAttr2(opt.id)}
+                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                              isChecked
+                                ? 'bg-black text-white border-black shadow-xs'
+                                : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
+                            }`}
+                          >
+                            <span
+                              className="w-3.5 h-3.5 rounded-full border border-black/15 shrink-0"
+                              style={{ backgroundColor: opt.hex || '#000000' }}
+                            />
+                            <span>{opt.label}</span>
+                          </button>
+                        );
+                      }
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => toggleAttr2(opt.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                            isChecked
+                              ? 'bg-black text-white border-black shadow-xs'
+                              : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-800 border-transparent'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+
+                    {hasProductsWithoutAttr2 && (
+                      <button
+                        type="button"
+                        onClick={() => toggleAttr2('__other__')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                          selectedAttr2.includes('__other__')
+                            ? 'bg-black text-white border-black shadow-xs'
+                            : 'bg-[#f5f3f3] hover:bg-[#efeded] text-neutral-600 border-transparent'
+                        }`}
+                      >
+                        Otros
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
-              {/* Interruptor Booleano: Solo en Stock */}
-              <div className="h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl bg-[#f5f3f3] border border-transparent hover:border-neutral-200 flex items-center gap-2.5 transition-colors">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
+              {/* 5. Solo disponibles Switch */}
+              <div className="p-3 bg-[#f5f3f3] rounded-xl flex items-center justify-between">
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-neutral-900">Solo disponibles</span>
+                  <span className="text-[11px] text-neutral-500">Ocultar prendas agotadas</span>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
                   <input
                     type="checkbox"
                     checked={onlyInStock}
@@ -1031,171 +1230,62 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                     className="sr-only"
                   />
                   <div
-                    className={`w-8 h-4.5 rounded-full transition-colors relative flex items-center p-0.5 ${
-                      onlyInStock ? 'bg-emerald-600' : 'bg-neutral-300'
+                    className={`w-9 h-5 rounded-full transition-colors relative p-0.5 ${
+                      onlyInStock ? 'bg-black' : 'bg-neutral-300'
                     }`}
                   >
                     <div
-                      className={`w-3.5 h-3.5 rounded-full bg-white transition-transform shadow-xs ${
-                        onlyInStock ? 'translate-x-3.5' : 'translate-x-0'
+                      className={`w-4 h-4 rounded-full bg-white transition-transform shadow-xs ${
+                        onlyInStock ? 'translate-x-4' : 'translate-x-0'
                       }`}
                     />
                   </div>
-                  <span className="text-xs font-semibold text-neutral-800">
-                    Solo disponibles
-                  </span>
                 </label>
               </div>
 
-              {/* Selector de Ordenar: en el MISMO renglón de los filtros */}
-              <div className="h-9 sm:h-10 px-2.5 sm:px-3 rounded-xl bg-[#f5f3f3] hover:bg-[#efeded] border border-transparent hover:border-neutral-200 flex items-center gap-1.5 transition-colors">
-                <span className="material-symbols-outlined text-[17px] text-neutral-500">
-                  swap_vert
-                </span>
-                <span className="text-xs text-neutral-600 font-semibold hidden xs:inline">
-                  Ordenar:
-                </span>
+              {/* 6. Ordenar por */}
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-neutral-600 uppercase tracking-wider block">
+                  Ordenar catálogo
+                </label>
                 <div className="relative">
                   <select
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value)}
-                    className="appearance-none pl-1 pr-6 py-1 bg-transparent text-black text-xs font-semibold outline-none cursor-pointer"
+                    className="w-full appearance-none pl-3.5 pr-8 py-2.5 bg-[#f5f3f3] rounded-xl text-xs font-semibold text-neutral-900 focus:outline-none border border-transparent focus:border-neutral-300 cursor-pointer"
                   >
                     <option value="recent">Más recientes</option>
                     <option value="price-low">Menor precio</option>
                     <option value="price-high">Mayor precio</option>
-                    <option value="popular">Más stock / unidades</option>
+                    <option value="popular">Más unidades disponibles</option>
                   </select>
-                  <span className="material-symbols-outlined text-[16px] text-neutral-500 pointer-events-none absolute right-0 top-1/2 -translate-y-1/2">
+                  <span className="material-symbols-outlined text-[18px] text-neutral-500 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2">
                     expand_more
                   </span>
                 </div>
               </div>
             </div>
-          )}
 
-          {/* Cuadrito de Filtros aplicados: siempre visible cuando hay filtros activos (incluso si los controles están ocultos) */}
-          {activeFiltersCount > 0 && (
-            <div className={`flex items-center gap-1.5 flex-wrap text-xs ${isFiltersOpen ? 'pt-2.5 mt-2.5 border-t border-neutral-100' : ''}`}>
-              <span className="text-[11px] font-semibold text-neutral-400 mr-1">Filtros aplicados:</span>
-
-              {selectedCategories.map((cat) => (
-                <span
-                  key={cat}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#efeded] text-black text-[11px] font-medium"
-                >
-                  <span>Cat: {cat}</span>
-                  <button
-                    type="button"
-                    onClick={() => toggleCategory(cat)}
-                    className="hover:text-red-600 cursor-pointer"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-
-              {selectedAttr1.map((id) => {
-                const opt = attribute1.options.find((o) => o.id === id);
-                return (
-                  <span
-                    key={id}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#efeded] text-black text-[11px] font-medium"
-                  >
-                    <span>{attribute1.name}: {id === '__other__' ? 'Otros' : (opt?.label || id)}</span>
-                    <button
-                      type="button"
-                      onClick={() => toggleAttr1(id)}
-                      className="hover:text-red-600 cursor-pointer"
-                    >
-                      ×
-                    </button>
-                  </span>
-                );
-              })}
-
-              {selectedAttr2.map((id) => {
-                const opt = attribute2.options.find((o) => o.id === id);
-                return (
-                  <span
-                    key={id}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#efeded] text-black text-[11px] font-medium"
-                  >
-                    <span>{attribute2.name}: {id === '__other__' ? 'Otros' : (opt?.label || id)}</span>
-                    <button
-                      type="button"
-                      onClick={() => toggleAttr2(id)}
-                      className="hover:text-red-600 cursor-pointer"
-                    >
-                      ×
-                    </button>
-                  </span>
-                );
-              })}
-
-              {!onlyInStock && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-neutral-200 text-neutral-800 text-[11px] font-medium">
-                  <span>Incluye no disponibles</span>
-                  <button
-                    type="button"
-                    onClick={() => setOnlyInStock(true)}
-                    className="hover:text-red-600 cursor-pointer"
-                  >
-                    ×
-                  </button>
-                </span>
-              )}
-
-              {hasSpecificFilters && onlyInStock && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 text-[11px] font-medium">
-                  <span>Solo disponibles</span>
-                  <button
-                    type="button"
-                    onClick={() => setOnlyInStock(false)}
-                    className="hover:text-red-600 cursor-pointer"
-                  >
-                    ×
-                  </button>
-                </span>
-              )}
-
-              {/* Botón 'Limpiar' integrado como un ítem más del listado en rojo y chiquito */}
+            {/* Footer con Acciones */}
+            <div className="p-4 sm:p-5 border-t border-neutral-100 bg-white flex items-center gap-3">
               <button
                 type="button"
                 onClick={clearAllFilters}
-                className="text-[11px] font-semibold text-rose-600 hover:text-rose-700 hover:underline px-2 py-0.5 cursor-pointer flex items-center gap-0.5 transition-colors"
-                title="Limpiar todos los filtros aplicados"
+                className="flex-1 py-3 px-4 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 transition-colors cursor-pointer text-center"
               >
-                <span>Limpiar</span>
+                Limpiar filtros
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsFilterDrawerOpen(false)}
+                className="flex-1 py-3 px-4 rounded-xl bg-black hover:bg-neutral-800 text-white text-xs font-bold transition-all shadow-md active:scale-98 cursor-pointer text-center"
+              >
+                Ver ({filteredProducts.length})
               </button>
             </div>
-          )}
-
-          {/* Estado colapsado sin filtros activos: indicación mínima discreta */}
-          {!isFiltersOpen && activeFiltersCount === 0 && (
-            <div
-              onClick={() => setIsFiltersOpen(true)}
-              className="py-0.5 text-center text-xs text-neutral-400 font-medium cursor-pointer hover:text-neutral-700 transition-colors flex items-center justify-center gap-1.5"
-            >
-              <span className="material-symbols-outlined text-[16px]">tune</span>
-              <span>Filtros y ordenación</span>
-            </div>
-          )}
-
-          {/* Botón FLOTANTE debajo de los filtros aplicados, justo en el límite del área blanca */}
-          <button
-            type="button"
-            onClick={() => setIsFiltersOpen((prev) => !prev)}
-            className="absolute -bottom-3.5 left-1/2 -translate-x-1/2 w-7 h-7 rounded-full bg-white hover:bg-neutral-50 text-neutral-600 hover:text-neutral-900 border border-neutral-300 shadow-xs flex items-center justify-center transition-all cursor-pointer z-10 hover:scale-105 active:scale-95"
-            title={isFiltersOpen ? "Ocultar filtros" : "Mostrar filtros"}
-            aria-label={isFiltersOpen ? "Ocultar filtros" : "Mostrar filtros"}
-          >
-            <span className="material-symbols-outlined text-[18px]">
-              {isFiltersOpen ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}
-            </span>
-          </button>
+          </div>
         </div>
-      </section>
+      )}
 
       {/* Main Product Showcase - Full Width */}
       <div className="w-full px-2.5 sm:px-8 pb-16 max-w-[1600px] mx-auto">

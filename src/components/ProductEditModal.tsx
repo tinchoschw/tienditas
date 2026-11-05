@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Product, ProductVariant, StoreSettings, StoreAttribute, StoreAttributeOption, Supplier } from '../types';
 import { compressImageFile, optimizeProductImages } from '../utils/imageOptimizer';
 import { ensureStoreAttributes, getOptionLabel, getOptionHex, fuseProductVariants } from '../utils/attributeUtils';
+import { ensureStoreCategoryTree, getProductCategoryKeys, formatProductCategoryLabels } from '../utils/categoryUtils';
 import { AttributeConfirmationModal } from './AttributeConfirmationModal';
 import { createSupplier } from '../services/db';
 
@@ -78,6 +79,11 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
     if (attribute2.enabled) list.push('attr2');
     return list;
   }, [attribute1, attribute2]);
+
+  const categoryTree = useMemo(() => ensureStoreCategoryTree(settings), [settings]);
+  const [selectedCatKeys, setSelectedCatKeys] = useState<string[]>(() => {
+    return getProductCategoryKeys(initialProduct);
+  });
 
   const [product, setProduct] = useState<Product>({ ...initialProduct });
   const [draggedImgIndex, setDraggedImgIndex] = useState<number | null>(null);
@@ -287,6 +293,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
 
   useEffect(() => {
     setProduct({ ...initialProduct });
+    setSelectedCatKeys(getProductCategoryKeys(initialProduct));
     setNewTagInput('');
     setSelectedTagColor(TAG_COLOR_PALETTE[0].hex);
     setActiveColorPickerTag(null);
@@ -743,8 +750,13 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
     setSaveError(null);
     try {
       const optimizedImages = await optimizeProductImages(product.images);
+      const labels = formatProductCategoryLabels({ ...product, categories: selectedCatKeys }, categoryTree);
+      const primaryCat = labels[0] || product.category || 'General';
+
       await onSave({
         ...product,
+        category: primaryCat,
+        categories: selectedCatKeys,
         images: optimizedImages,
         attributesUsed,
         totalStock,
@@ -827,32 +839,113 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
 
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
               {/* Product Title */}
-              <div className="md:col-span-8 flex flex-col gap-1">
-                <label className="text-xs font-semibold text-neutral-700">Nombre de la Prenda</label>
+              <div className="md:col-span-12 flex flex-col gap-1">
+                <label className="text-xs font-semibold text-neutral-700">Nombre de la Prenda / Producto</label>
                 <input
                   type="text"
+                  placeholder="Ej: Remera Lisa Oversize"
                   value={product.name}
                   onChange={(e) => setProduct({ ...product, name: e.target.value })}
                   className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-sm text-black focus:outline-none focus:bg-white focus:ring-1 focus:ring-black"
                 />
               </div>
 
-              {/* Category */}
-              <div className="md:col-span-4 flex flex-col gap-1">
-                <label className="text-xs font-semibold text-neutral-700">Categoría Principal</label>
-                <select
-                  value={product.category}
-                  onChange={(e) => setProduct({ ...product, category: e.target.value })}
-                  className="w-full px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-sm text-black focus:outline-none cursor-pointer"
-                >
-                  {settings.categories
-                    .filter((c) => c !== 'Todas')
-                    .map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                </select>
+              {/* 2-Level Categories Tree Multi-Selector */}
+              <div className="md:col-span-12 flex flex-col gap-1.5 pt-1 border-t border-neutral-100">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-neutral-700 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-neutral-500">account_tree</span>
+                    <span>Categorías del Producto</span>
+                    <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-800 text-[10px] font-bold">
+                      {selectedCatKeys.length} seleccionada{selectedCatKeys.length === 1 ? '' : 's'}
+                    </span>
+                  </label>
+                  <span className="text-[11px] text-neutral-400">
+                    Podés tildar 1 o varias categorías (ej. unisex en Mujer y Hombre)
+                  </span>
+                </div>
+
+                <div className="bg-[#fbf9f8] border border-neutral-200 rounded-xl p-3 max-h-56 overflow-y-auto space-y-2">
+                  {categoryTree.map((cat) => {
+                    const isParentChecked = selectedCatKeys.includes(cat.id) || selectedCatKeys.includes(cat.name);
+                    const subKeys = (cat.subcategories || []).map((s) => s.id);
+                    const checkedSubsCount = subKeys.filter((k) => selectedCatKeys.includes(k)).length;
+                    const isPartiallyChecked = checkedSubsCount > 0 && checkedSubsCount < subKeys.length;
+
+                    return (
+                      <div key={cat.id} className="bg-white rounded-lg p-2.5 border border-neutral-200 shadow-2xs">
+                        {/* Parent Category Row (Nivel 1) */}
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={isParentChecked || (subKeys.length > 0 && checkedSubsCount === subKeys.length)}
+                              ref={(el) => {
+                                if (el) el.indeterminate = isPartiallyChecked && !isParentChecked;
+                              }}
+                              onChange={(e) => {
+                                const check = e.target.checked;
+                                setSelectedCatKeys((prev) => {
+                                  const withoutCat = prev.filter(
+                                    (k) => k !== cat.id && k !== cat.name && !subKeys.includes(k)
+                                  );
+                                  if (check) {
+                                    return [...withoutCat, cat.id, ...subKeys];
+                                  }
+                                  return withoutCat;
+                                });
+                              }}
+                              className="w-4 h-4 rounded text-black focus:ring-0 cursor-pointer"
+                            />
+                            <span className="text-xs font-bold text-black flex items-center gap-1.5">
+                              <span>{cat.name}</span>
+                              {cat.subcategories.length > 0 && (
+                                <span className="text-[10px] text-neutral-400 font-normal">
+                                  ({cat.subcategories.length} subcategorías)
+                                </span>
+                              )}
+                            </span>
+                          </label>
+                        </div>
+
+                        {/* Subcategories Row (Nivel 2) */}
+                        {cat.subcategories.length > 0 && (
+                          <div className="ml-6 mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2 pt-2 border-t border-neutral-100">
+                            {cat.subcategories.map((sub) => {
+                              const isSubChecked = selectedCatKeys.includes(sub.id) || selectedCatKeys.includes(sub.name);
+                              return (
+                                <label
+                                  key={sub.id}
+                                  className="flex items-center gap-2 py-1 px-1.5 rounded hover:bg-neutral-50 cursor-pointer select-none text-xs"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isSubChecked}
+                                    onChange={(e) => {
+                                      const check = e.target.checked;
+                                      setSelectedCatKeys((prev) => {
+                                        const withoutSub = prev.filter((k) => k !== sub.id && k !== sub.name);
+                                        if (check) {
+                                          return [...withoutSub, sub.id];
+                                        }
+                                        // If unchecking a subcategory, remove parent category key so it is partial
+                                        return withoutSub.filter((k) => k !== cat.id && k !== cat.name);
+                                      });
+                                    }}
+                                    className="w-3.5 h-3.5 rounded text-black focus:ring-0 cursor-pointer"
+                                  />
+                                  <span className={`text-xs ${isSubChecked ? 'font-semibold text-black' : 'text-neutral-600'}`}>
+                                    {sub.name}
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Description */}

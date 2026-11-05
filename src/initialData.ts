@@ -1,4 +1,5 @@
 import { Product, Sale, StoreSettings, Store, DEFAULT_FEATURE_FLAGS, StoreAttribute, Rubro } from './types';
+import { DEFAULT_CATEGORY_TREE } from './utils/categoryUtils';
 
 export const DEFAULT_ATTRIBUTE1: StoreAttribute = {
   id: 'attr1',
@@ -126,6 +127,7 @@ export const INITIAL_SETTINGS: StoreSettings = {
     'Buzos',
     'Bermudas'
   ],
+  categoryTree: DEFAULT_CATEGORY_TREE,
   primaryPresets: [
     { hex: '#1A1A1A', name: 'Negro Atelier' },
     { name: 'Verde Apolo', hex: '#314F2B' },

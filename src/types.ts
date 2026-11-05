@@ -26,10 +26,22 @@ export interface ProductVariant {
   unlimited?: boolean;
 }
 
+export interface StoreSubcategory {
+  id: string;
+  name: string;
+}
+
+export interface StoreCategory {
+  id: string;
+  name: string;
+  subcategories: StoreSubcategory[];
+}
+
 export interface Product {
   id: string;
   name: string;
   category: string;
+  categories?: string[];
   description: string;
   tags: string[];
   tagColors?: Record<string, string>;
@@ -300,6 +312,7 @@ export interface StoreSettings {
   whatsappEnabled: boolean;
   whatsappNumber: string;
   categories: string[];
+  categoryTree?: StoreCategory[];
   attribute1?: StoreAttribute;
   attribute2?: StoreAttribute;
   masterSizes?: MasterSize[];

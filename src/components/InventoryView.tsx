@@ -11,6 +11,15 @@ import {
   formatVariantLine,
   fuseProductVariants
 } from '../utils/attributeUtils';
+import {
+  ensureStoreCategoryTree,
+  isProductMatchingCategory,
+  formatProductCategoryLabels,
+  countProductsInCategory,
+  flattenCategoryTreeNames,
+  slugifyCategory
+} from '../utils/categoryUtils';
+import { StoreCategory, StoreSubcategory } from '../types';
 import { subscribeSuppliers, createSupplier } from '../services/db';
 
 interface InventoryViewProps {
@@ -113,8 +122,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     };
   }, [isSupplierFilterOpen]);
 
+  // 2-Level Hierarchical Categories
+  const categoryTree = useMemo(() => ensureStoreCategoryTree(settings), [settings]);
+
   // In-app deletion confirmation dialog states
-  const [categoryToDelete, setCategoryToDelete] = useState<string | null>(null);
+  const [categoryToDelete, setCategoryToDelete] = useState<{
+    id: string;
+    name: string;
+    isParent: boolean;
+    parentId?: string;
+  } | null>(null);
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
 
   // Generic attribute confirmation modal state
@@ -129,9 +146,28 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     onConfirm: () => Promise<void> | void;
   } | null>(null);
 
-  // Management states for categories
+  // Management states for 2-level categories
   const [newCategoryName, setNewCategoryName] = useState('');
-  const [editingCategory, setEditingCategory] = useState<{ original: string; current: string } | null>(null);
+  const [activeAddSubcatParentId, setActiveAddSubcatParentId] = useState<string | null>(null);
+  const [newSubcatName, setNewSubcatName] = useState('');
+  const [editingCategory, setEditingCategory] = useState<{
+    id: string;
+    name: string;
+    isParent: boolean;
+    parentId?: string;
+    targetParentId: string;
+  } | null>(null);
+
+  // Drag and drop states for moving categories across levels
+  const [draggedCategory, setDraggedCategory] = useState<{
+    id: string;
+    name: string;
+    isParent: boolean;
+    parentId?: string;
+    hasChildren?: boolean;
+  } | null>(null);
+  const [dragOverParentId, setDragOverParentId] = useState<string | null>(null);
+  const [isDragOverRootZone, setIsDragOverRootZone] = useState<boolean>(false);
 
   // Form states for adding options to attribute1 & attribute2
   const [newAttr1Label, setNewAttr1Label] = useState('');
@@ -197,10 +233,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const filteredProducts = useMemo(() => {
     return products.filter((prod) => {
       const q = searchQuery.toLowerCase().trim();
+      const catLabels = formatProductCategoryLabels(prod, categoryTree).join(' ').toLowerCase();
       const matchesSearch =
         !q ||
         prod.name.toLowerCase().includes(q) ||
         prod.category.toLowerCase().includes(q) ||
+        catLabels.includes(q) ||
         (prod.customSku && prod.customSku.toLowerCase().includes(q)) ||
         (prod.supplierName && prod.supplierName.toLowerCase().includes(q)) ||
         (prod.supplierSku && prod.supplierSku.toLowerCase().includes(q)) ||
@@ -208,7 +246,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         prod.variants.some((v) => v.sku.toLowerCase().includes(q));
 
       const matchesCategory =
-        categoryFilter === 'Todas' || prod.category.toLowerCase() === categoryFilter.toLowerCase();
+        categoryFilter === 'Todas' || isProductMatchingCategory(prod, categoryFilter, categoryTree);
 
       const isProdInStock = prod.isUnlimited || prod.variants.some((v) => v.unlimited) || prod.totalStock > 0;
 
@@ -224,7 +262,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
       return matchesSearch && matchesCategory && matchesStatus && matchesSupplier;
     });
-  }, [products, searchQuery, categoryFilter, statusFilter, selectedSuppliers, hasCustomizedSupplierFilter]);
+  }, [products, searchQuery, categoryFilter, statusFilter, selectedSuppliers, hasCustomizedSupplierFilter, categoryTree]);
 
   // Out of stock alert count (excluding unlimited products)
   const outOfStockCount = products.filter(
@@ -232,14 +270,19 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   ).length;
   const totalSkuCount = products.reduce((acc, p) => acc + p.variants.length, 0);
 
-  // Category usage
+  // Category usage counts
   const categoryUsage = useMemo(() => {
     const map: Record<string, number> = {};
-    products.forEach((p) => {
-      map[p.category] = (map[p.category] || 0) + 1;
+    categoryTree.forEach((cat) => {
+      map[cat.id] = countProductsInCategory(products, cat.id, categoryTree);
+      map[cat.name] = map[cat.id];
+      (cat.subcategories || []).forEach((sub) => {
+        map[sub.id] = countProductsInCategory(products, sub.id, categoryTree);
+        map[sub.name] = map[sub.id];
+      });
     });
     return map;
-  }, [products]);
+  }, [products, categoryTree]);
 
   // Check which products use attribute1 and attribute2
   const productsUsingAttr1 = useMemo(() => {
@@ -506,72 +549,294 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  // CATEGORY ACTIONS
-  const handleAddCategory = async (e: React.FormEvent) => {
+  // CATEGORY ACTIONS (2-Level Hierarchy)
+  const handleAddParentCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = newCategoryName.trim();
     if (!trimmed) return;
 
-    if (settings.categories.some((c) => c.toLowerCase() === trimmed.toLowerCase())) {
-      showNotification('error', `La categoría "${trimmed}" ya existe en el catálogo.`);
+    if (categoryTree.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) {
+      showNotification('error', `Ya existe la categoría principal "${trimmed}".`);
       return;
     }
 
     try {
-      const updatedCategories = [...settings.categories, trimmed];
+      const newParent: StoreCategory = {
+        id: `cat_${Date.now()}_${slugifyCategory(trimmed)}`,
+        name: trimmed,
+        subcategories: []
+      };
+      const updatedTree = [...categoryTree, newParent];
       if (onUpdateSettings) {
-        await onUpdateSettings({ categories: updatedCategories });
+        await onUpdateSettings({
+          categoryTree: updatedTree,
+          categories: flattenCategoryTreeNames(updatedTree)
+        });
       }
       setNewCategoryName('');
-      showNotification('success', `Categoría "${trimmed}" agregada exitosamente.`);
+      showNotification('success', `Categoría principal "${trimmed}" agregada exitosamente.`);
     } catch (err) {
       showNotification('error', 'Error al guardar la nueva categoría.');
     }
   };
 
-  const handleSaveRenameCategory = async () => {
-    if (!editingCategory || !editingCategory.current.trim()) return;
-    const { original, current } = editingCategory;
-    const trimmed = current.trim();
+  const handleAddSubcategory = async (parentId: string) => {
+    const trimmed = newSubcatName.trim();
+    if (!trimmed) return;
 
-    if (trimmed.toLowerCase() === original.toLowerCase()) {
-      setEditingCategory(null);
-      return;
-    }
+    const parent = categoryTree.find((c) => c.id === parentId);
+    if (!parent) return;
 
-    if (settings.categories.some((c) => c.toLowerCase() === trimmed.toLowerCase() && c.toLowerCase() !== original.toLowerCase())) {
-      showNotification('error', `Ya existe otra categoría con el nombre "${trimmed}".`);
+    if (parent.subcategories.some((s) => s.name.toLowerCase() === trimmed.toLowerCase())) {
+      showNotification('error', `La subcategoría "${trimmed}" ya existe en "${parent.name}".`);
       return;
     }
 
     try {
-      const updatedCategories = settings.categories.map((c) => (c === original ? trimmed : c));
+      const newSub: StoreSubcategory = {
+        id: `sub_${Date.now()}_${slugifyCategory(trimmed)}`,
+        name: trimmed
+      };
+      const updatedTree = categoryTree.map((c) => {
+        if (c.id === parentId) {
+          return {
+            ...c,
+            subcategories: [...c.subcategories, newSub]
+          };
+        }
+        return c;
+      });
+
       if (onUpdateSettings) {
-        await onUpdateSettings({ categories: updatedCategories });
+        await onUpdateSettings({
+          categoryTree: updatedTree,
+          categories: flattenCategoryTreeNames(updatedTree)
+        });
       }
-
-      const productsToUpdate = products.filter((p) => p.category === original);
-      for (const p of productsToUpdate) {
-        await onSaveProduct({ ...p, category: trimmed });
-      }
-
-      setEditingCategory(null);
-      showNotification(
-        'success',
-        `Categoría actualizada a "${trimmed}" (${productsToUpdate.length} prenda(s) actualizadas).`
-      );
+      setNewSubcatName('');
+      setActiveAddSubcatParentId(null);
+      showNotification('success', `Subcategoría "${trimmed}" agregada a "${parent.name}".`);
     } catch (err) {
-      showNotification('error', 'Error al renombrar la categoría.');
+      showNotification('error', 'Error al agregar la subcategoría.');
     }
   };
 
-  const executeDeleteCategory = async (categoryName: string) => {
+  const handleSaveRenameCategory = async () => {
+    if (!editingCategory || !editingCategory.name.trim()) return;
+    const { id, name, isParent, parentId, targetParentId } = editingCategory;
+    const trimmed = name.trim();
+
     try {
-      const updatedCategories = settings.categories.filter((c) => c !== categoryName);
-      if (onUpdateSettings) {
-        await onUpdateSettings({ categories: updatedCategories });
+      let updatedTree = [...categoryTree];
+
+      if (isParent) {
+        // Was a parent category
+        if (!targetParentId || targetParentId === '') {
+          // Stays a parent category, just rename
+          updatedTree = updatedTree.map((c) => (c.id === id ? { ...c, name: trimmed } : c));
+        } else {
+          // Attempting to convert parent to subcategory
+          const currentParent = updatedTree.find((c) => c.id === id);
+          if (currentParent && (currentParent.subcategories || []).length > 0) {
+            showNotification('error', 'No se puede convertir en subcategoría porque posee subcategorías asignadas.');
+            return;
+          }
+          // Remove from parent root
+          updatedTree = updatedTree.filter((c) => c.id !== id);
+          // Add as subcategory under targetParentId
+          updatedTree = updatedTree.map((c) => {
+            if (c.id === targetParentId) {
+              return {
+                ...c,
+                subcategories: [...(c.subcategories || []), { id, name: trimmed }]
+              };
+            }
+            return c;
+          });
+        }
+      } else if (parentId) {
+        // Was a subcategory under parentId
+        if (!targetParentId || targetParentId === '') {
+          // Promoted to Parent Category!
+          updatedTree = updatedTree.map((c) => {
+            if (c.id === parentId) {
+              return {
+                ...c,
+                subcategories: (c.subcategories || []).filter((s) => s.id !== id)
+              };
+            }
+            return c;
+          });
+          updatedTree.push({
+            id,
+            name: trimmed,
+            subcategories: []
+          });
+        } else if (targetParentId === parentId) {
+          // Stays under same parent, just rename
+          updatedTree = updatedTree.map((c) => {
+            if (c.id === parentId) {
+              return {
+                ...c,
+                subcategories: (c.subcategories || []).map((s) => (s.id === id ? { ...s, name: trimmed } : s))
+              };
+            }
+            return c;
+          });
+        } else {
+          // Moved to another parent category
+          updatedTree = updatedTree.map((c) => {
+            if (c.id === parentId) {
+              return {
+                ...c,
+                subcategories: (c.subcategories || []).filter((s) => s.id !== id)
+              };
+            }
+            return c;
+          });
+          updatedTree = updatedTree.map((c) => {
+            if (c.id === targetParentId) {
+              return {
+                ...c,
+                subcategories: [...(c.subcategories || []), { id, name: trimmed }]
+              };
+            }
+            return c;
+          });
+        }
       }
-      showNotification('success', `Categoría "${categoryName}" eliminada del catálogo.`);
+
+      if (onUpdateSettings) {
+        await onUpdateSettings({
+          categoryTree: updatedTree,
+          categories: flattenCategoryTreeNames(updatedTree)
+        });
+      }
+
+      setEditingCategory(null);
+      showNotification('success', `Categoría "${trimmed}" actualizada exitosamente.`);
+    } catch (err) {
+      showNotification('error', 'Error al guardar los cambios.');
+    }
+  };
+
+  const handleDropOnParent = async (
+    item: { id: string; name: string; isParent: boolean; parentId?: string },
+    targetParentId: string
+  ) => {
+    try {
+      let updatedTree = [...categoryTree];
+      const targetParent = updatedTree.find((c) => c.id === targetParentId);
+      if (!targetParent) return;
+
+      if (item.isParent) {
+        const currentParent = updatedTree.find((c) => c.id === item.id);
+        if (currentParent && (currentParent.subcategories || []).length > 0) {
+          showNotification('error', 'No se puede mover porque posee subcategorías asignadas.');
+          return;
+        }
+        updatedTree = updatedTree.filter((c) => c.id !== item.id);
+        updatedTree = updatedTree.map((c) => {
+          if (c.id === targetParentId) {
+            return {
+              ...c,
+              subcategories: [...(c.subcategories || []), { id: item.id, name: item.name }]
+            };
+          }
+          return c;
+        });
+      } else if (item.parentId) {
+        if (item.parentId === targetParentId) return;
+        updatedTree = updatedTree.map((c) => {
+          if (c.id === item.parentId) {
+            return {
+              ...c,
+              subcategories: (c.subcategories || []).filter((s) => s.id !== item.id)
+            };
+          }
+          return c;
+        });
+        updatedTree = updatedTree.map((c) => {
+          if (c.id === targetParentId) {
+            return {
+              ...c,
+              subcategories: [...(c.subcategories || []), { id: item.id, name: item.name }]
+            };
+          }
+          return c;
+        });
+      }
+
+      if (onUpdateSettings) {
+        await onUpdateSettings({
+          categoryTree: updatedTree,
+          categories: flattenCategoryTreeNames(updatedTree)
+        });
+      }
+
+      showNotification('success', `"${item.name}" ahora es subcategoría de "${targetParent.name}".`);
+    } catch (err) {
+      showNotification('error', 'Error al reorganizar la categoría.');
+    }
+  };
+
+  const handlePromoteToParent = async (item: { id: string; name: string; parentId?: string }) => {
+    try {
+      let updatedTree = [...categoryTree];
+      if (item.parentId) {
+        updatedTree = updatedTree.map((c) => {
+          if (c.id === item.parentId) {
+            return {
+              ...c,
+              subcategories: (c.subcategories || []).filter((s) => s.id !== item.id)
+            };
+          }
+          return c;
+        });
+      }
+      updatedTree.push({
+        id: item.id,
+        name: item.name,
+        subcategories: []
+      });
+
+      if (onUpdateSettings) {
+        await onUpdateSettings({
+          categoryTree: updatedTree,
+          categories: flattenCategoryTreeNames(updatedTree)
+        });
+      }
+
+      showNotification('success', `"${item.name}" fue promovida a Categoría Principal.`);
+    } catch (err) {
+      showNotification('error', 'Error al promover la subcategoría.');
+    }
+  };
+
+  const executeDeleteCategory = async (target: { id: string; name: string; isParent: boolean; parentId?: string }) => {
+    try {
+      let updatedTree = [...categoryTree];
+      if (target.isParent) {
+        updatedTree = updatedTree.filter((c) => c.id !== target.id);
+      } else if (target.parentId) {
+        updatedTree = updatedTree.map((c) => {
+          if (c.id === target.parentId) {
+            return {
+              ...c,
+              subcategories: c.subcategories.filter((s) => s.id !== target.id)
+            };
+          }
+          return c;
+        });
+      }
+
+      if (onUpdateSettings) {
+        await onUpdateSettings({
+          categoryTree: updatedTree,
+          categories: flattenCategoryTreeNames(updatedTree)
+        });
+      }
+      showNotification('success', `"${target.name}" eliminada del catálogo.`);
     } catch (err) {
       showNotification('error', 'Error al eliminar la categoría.');
     }
@@ -1404,21 +1669,24 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   )}
                 </div>
 
-                {/* Category Filter - Fixed stable width */}
-                <div className="relative w-full sm:w-44 shrink-0">
+                {/* Category Filter - 2-Level Category Tree */}
+                <div className="relative w-full sm:w-52 shrink-0">
                   <select
                     value={categoryFilter}
                     onChange={(e) => setCategoryFilter(e.target.value)}
                     className="w-full appearance-none pl-3 pr-8 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black focus:outline-none cursor-pointer border border-transparent focus:border-neutral-300 font-medium truncate"
                   >
                     <option value="Todas">Todas las Categorías</option>
-                    {settings.categories
-                      .filter((c) => c !== 'Todas')
-                      .map((cat) => (
-                        <option key={cat} value={cat}>
-                          {cat}
-                        </option>
-                      ))}
+                    {categoryTree.map((parent) => (
+                      <optgroup key={parent.id} label={parent.name}>
+                        <option value={parent.id}>{parent.name} (Toda la categoría)</option>
+                        {(parent.subcategories || []).map((sub) => (
+                          <option key={sub.id} value={sub.id}>
+                            &nbsp;&nbsp;↳ {sub.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
                   </select>
                   <span className="material-symbols-outlined text-[18px] text-neutral-400 pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">
                     expand_more
@@ -1640,12 +1908,30 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
                             {/* Category */}
                             <td className="py-3.5 px-4 font-semibold text-neutral-700 min-w-[200px] max-w-[280px]">
-                              <span
-                                className="inline-block px-2.5 py-1 rounded-lg bg-[#f5f3f3] text-[11px] font-medium text-black truncate max-w-full"
-                                title={prod.category}
-                              >
-                                {prod.category}
-                              </span>
+                              {(() => {
+                                const labels = formatProductCategoryLabels(prod, categoryTree);
+                                if (labels.length === 0) {
+                                  return (
+                                    <span className="text-[11px] text-neutral-400 italic">
+                                      Sin categoría
+                                    </span>
+                                  );
+                                }
+                                const primary = labels[0];
+                                const extraCount = labels.length - 1;
+                                return (
+                                  <div className="flex items-center gap-1.5 flex-wrap" title={labels.join(', ')}>
+                                    <span className="inline-block px-2.5 py-1 rounded-lg bg-[#f5f3f3] text-[11px] font-medium text-black truncate max-w-[190px]">
+                                      {primary}
+                                    </span>
+                                    {extraCount > 0 && (
+                                      <span className="px-1.5 py-0.5 rounded-md bg-neutral-200 text-neutral-700 text-[10px] font-bold shrink-0">
+                                        +{extraCount}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </td>
 
                             {/* Supplier */}
@@ -1796,42 +2082,44 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         )}
 
         {/* ========================================================================= */}
-        {/* SUBTAB 2: GESTIÓN DE CATEGORÍAS                                            */}
+        {/* SUBTAB 2: GESTIÓN DE CATEGORÍAS (JERARQUÍA 2 NIVELES)                      */}
         {/* ========================================================================= */}
         {selectedSubTab === 'categories' && (
           <div className="flex flex-col gap-6">
             <div className="bg-white rounded-2xl p-5 border border-[#efeded] shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div className="flex items-start gap-3.5">
                 <div className="w-10 h-10 rounded-xl bg-black text-white flex items-center justify-center shrink-0 mt-0.5">
-                  <span className="material-symbols-outlined text-[22px]">category</span>
+                  <span className="material-symbols-outlined text-[22px]">account_tree</span>
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-black">
-                    ¿Para qué sirven las Categorías?
+                    Estructura Jerárquica de Categorías
                   </h3>
                   <p className="text-xs text-[#5f5e5b] mt-1 max-w-3xl leading-relaxed">
-                    Las <strong className="text-black">categorías</strong> organizan tu catálogo comercial y colecciones. Permiten a los clientes filtrar prendas en la tienda online y aparecen en el desplegable al crear o editar cualquier prenda.
+                    Organiza tu tienda en <strong className="text-black">Categorías Principales</strong> y <strong className="text-black">Subcategorías</strong> (ej. <em>Mujer &gt; Remeras</em>). Los productos pueden pertenecer a una o múltiples categorías simultáneamente y los clientes podrán explorar el catálogo desde el menú de filtros. <span className="text-neutral-700 font-semibold">Nota: Si una categoría tiene asignadas subcategorías, no se puede anidar como subcategoría de otra.</span>
                   </p>
                 </div>
               </div>
 
-              <div className="px-3.5 py-1.5 rounded-xl bg-[#f5f3f3] border border-neutral-200 text-xs font-semibold text-neutral-700 whitespace-nowrap">
-                {settings.categories.filter((c) => c !== 'Todas').length} categorías configuradas
+              <div className="flex items-center gap-2">
+                <div className="px-3.5 py-1.5 rounded-xl bg-[#f5f3f3] border border-neutral-200 text-xs font-semibold text-neutral-700 whitespace-nowrap">
+                  {categoryTree.length} categorías principales
+                </div>
               </div>
             </div>
 
-            {/* Quick Add Category Bar */}
+            {/* Quick Add Parent Category Bar */}
             <form
-              onSubmit={handleAddCategory}
+              onSubmit={handleAddParentCategory}
               className="bg-white rounded-2xl p-4 shadow-xs border border-[#efeded] flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
             >
               <div className="relative flex-1">
                 <span className="material-symbols-outlined text-[18px] text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2">
-                  add_circle
+                  create_new_folder
                 </span>
                 <input
                   type="text"
-                  placeholder="Nombre de la nueva categoría (ej. Faldas, Calzado, Carteras...)"
+                  placeholder="Nombre de nueva Categoría Principal (ej. Mujer, Hombre, Niños, Calzado...)"
                   value={newCategoryName}
                   onChange={(e) => setNewCategoryName(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 bg-[#f5f3f3] rounded-xl text-xs text-black placeholder:text-neutral-400 focus:outline-none focus:bg-white border border-transparent focus:border-neutral-300 transition-all font-medium"
@@ -1844,98 +2132,498 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-neutral-900 hover:bg-black disabled:opacity-40 text-white text-xs font-semibold shadow-xs hover:shadow transition-all active:scale-[0.98] cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[18px]">add</span>
-                <span>Nueva Categoría</span>
+                <span>Nueva Categoría Principal</span>
               </button>
             </form>
 
-            {/* Categories Management Table */}
+            {/* Level 0: Inviolable System Root ("Todas" / Catálogo Completo) */}
+            <div className="bg-white rounded-2xl shadow-xs border border-neutral-200 overflow-hidden">
+              <div className="p-3.5 bg-neutral-50 border-b border-neutral-200 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span className="material-symbols-outlined text-neutral-600 text-[18px]">verified</span>
+                  <span className="text-xs font-bold text-neutral-800">
+                    Nivel 0: Raíz del Catálogo (Sistema)
+                  </span>
+                </div>
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400 bg-neutral-200/70 px-2 py-0.5 rounded-md">
+                  Protegida / Imborrable
+                </span>
+              </div>
+              <div className="p-4 flex items-center justify-between gap-3 bg-white">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-neutral-100 text-neutral-800 flex items-center justify-center shrink-0">
+                    <span className="material-symbols-outlined text-[20px]">apps</span>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-black">Todas (Catálogo Completo)</span>
+                      <span className="text-[10px] font-semibold text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
+                        Raíz global
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-neutral-500 mt-0.5">
+                      Contiene todos los productos del catálogo ({products.length} {products.length === 1 ? 'prenda' : 'prendas'}). Siempre disponible.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 2-Level Category Tree List */}
             <div className="bg-white rounded-2xl shadow-xs border border-[#efeded] overflow-hidden">
               <div className="p-3.5 bg-[#f5f3f3] border-b border-[#efeded] flex items-center justify-between">
                 <span className="text-xs font-bold text-black">
-                  Colecciones y Categorías Activas en la Tienda
+                  Árbol de Categorías y Subcategorías
                 </span>
                 <span className="text-[11px] text-neutral-500">
-                  Los cambios se sincronizan en tiempo real
+                  {categoryTree.reduce((acc, c) => acc + (c.subcategories?.length || 0), 0)} subcategorías totales
                 </span>
               </div>
 
-              <div className="divide-y divide-[#efeded]">
-                {settings.categories.map((cat) => {
-                  const isGlobalFilter = cat === 'Todas';
-                  const isEditingThis = editingCategory?.original === cat;
-                  const count = categoryUsage[cat] || 0;
+              {categoryTree.length === 0 ? (
+                <div className="p-8 text-center text-neutral-400">
+                  <p className="text-xs">No hay categorías configuradas aún. Creá la primera arriba.</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-[#efeded]">
+                  {categoryTree.map((parent) => {
+                    const isEditingThisParent = editingCategory?.id === parent.id && editingCategory.isParent;
+                    const parentCount = categoryUsage[parent.id] || 0;
+                    const isAddingSubcat = activeAddSubcatParentId === parent.id;
+                    const hasChildren = (parent.subcategories || []).length > 0;
+                    const isDragOverThisParent = dragOverParentId === parent.id;
 
-                  return (
-                    <div
-                      key={cat}
-                      className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#faf9f8] transition-colors"
-                    >
-                      <div className="flex items-center gap-3 flex-1">
-                        <div className="w-8 h-8 rounded-lg bg-[#efeded] text-neutral-700 flex items-center justify-center shrink-0">
-                          <span className="material-symbols-outlined text-[18px]">
-                            {isGlobalFilter ? 'select_all' : 'folder'}
-                          </span>
+                    return (
+                      <div
+                        key={parent.id}
+                        onDragOver={(e) => {
+                          if (draggedCategory && draggedCategory.id !== parent.id) {
+                            e.preventDefault();
+                            setDragOverParentId(parent.id);
+                          }
+                        }}
+                        onDragLeave={() => {
+                          if (dragOverParentId === parent.id) {
+                            setDragOverParentId(null);
+                          }
+                        }}
+                        onDrop={async (e) => {
+                          e.preventDefault();
+                          if (!draggedCategory || draggedCategory.id === parent.id) return;
+                          await handleDropOnParent(draggedCategory, parent.id);
+                          setDraggedCategory(null);
+                          setDragOverParentId(null);
+                        }}
+                        className={`p-4 sm:p-5 transition-all ${
+                          isDragOverThisParent
+                            ? 'bg-neutral-100 border-2 border-dashed border-black shadow-md ring-2 ring-black/10'
+                            : 'hover:bg-[#faf9f8]'
+                        }`}
+                      >
+                        {/* Drag Over Banner */}
+                        {isDragOverThisParent && draggedCategory && (
+                          <div className="mb-3 py-1.5 px-3 rounded-xl bg-black text-white text-xs font-semibold flex items-center gap-2 animate-in fade-in">
+                            <span className="material-symbols-outlined text-[16px]">subdirectory_arrow_right</span>
+                            <span>Soltar aquí para convertir "{draggedCategory.name}" en subcategoría de "{parent.name}"</span>
+                          </div>
+                        )}
+
+                        {/* Parent Row */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                            {/* Drag Handle: Disabled if category has children */}
+                            {hasChildren ? (
+                              <div
+                                className="p-1 text-neutral-300 cursor-not-allowed shrink-0 select-none"
+                                title="No se puede mover porque posee subcategorías asignadas"
+                              >
+                                <span className="material-symbols-outlined text-[18px]">drag_indicator</span>
+                              </div>
+                            ) : (
+                              <div
+                                draggable
+                                onDragStart={(e) => {
+                                  e.dataTransfer.setData('text/plain', parent.id);
+                                  setDraggedCategory({
+                                    id: parent.id,
+                                    name: parent.name,
+                                    isParent: true,
+                                    hasChildren: false
+                                  });
+                                }}
+                                onDragEnd={() => {
+                                  setDraggedCategory(null);
+                                  setDragOverParentId(null);
+                                  setIsDragOverRootZone(false);
+                                }}
+                                className="p-1 text-neutral-400 hover:text-black cursor-grab active:cursor-grabbing shrink-0 transition-colors"
+                                title="Arrastrar para mover o convertir en subcategoría de otra"
+                              >
+                                <span className="material-symbols-outlined text-[18px]">drag_indicator</span>
+                              </div>
+                            )}
+
+                            <div className="w-8 h-8 rounded-lg bg-black text-white flex items-center justify-center shrink-0">
+                              <span className="material-symbols-outlined text-[18px]">folder</span>
+                            </div>
+
+                            {isEditingThisParent ? (
+                              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 max-w-2xl">
+                                <input
+                                  type="text"
+                                  value={editingCategory.name}
+                                  onChange={(e) =>
+                                    setEditingCategory({ ...editingCategory, name: e.target.value })
+                                  }
+                                  className="flex-1 px-3 py-1.5 rounded-xl border border-neutral-300 text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-black"
+                                  placeholder="Nombre de categoría"
+                                  autoFocus
+                                />
+
+                                {/* Subcategoría de combo: Si tiene hijos no se permite */}
+                                {hasChildren ? (
+                                  <div className="text-[11px] text-neutral-500 italic bg-neutral-100 px-2.5 py-1.5 rounded-xl shrink-0 border border-neutral-200">
+                                    Categoría principal con subcategorías
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <span className="text-[11px] text-neutral-500 font-semibold">Subcategoría de:</span>
+                                    <select
+                                      value={editingCategory.targetParentId}
+                                      onChange={(e) =>
+                                        setEditingCategory({
+                                          ...editingCategory,
+                                          targetParentId: e.target.value
+                                        })
+                                      }
+                                      className="px-2.5 py-1.5 rounded-xl border border-neutral-300 text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-black bg-white"
+                                    >
+                                      <option value="">(Ninguna - Categoría Principal)</option>
+                                      {categoryTree
+                                        .filter((c) => c.id !== parent.id)
+                                        .map((c) => (
+                                          <option key={c.id} value={c.id}>
+                                            {c.name}
+                                          </option>
+                                        ))}
+                                    </select>
+                                  </div>
+                                )}
+
+                                <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={handleSaveRenameCategory}
+                                    className="px-3 py-1.5 rounded-xl bg-black text-white text-xs font-semibold cursor-pointer"
+                                  >
+                                    Guardar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingCategory(null)}
+                                    className="px-2.5 py-1.5 rounded-xl bg-neutral-200 text-neutral-700 text-xs cursor-pointer"
+                                  >
+                                    Cancelar
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-bold text-black">{parent.name}</span>
+                                <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-[10px] font-semibold text-neutral-700">
+                                  {parentCount} {parentCount === 1 ? 'prenda' : 'prendas'}
+                                </span>
+                                <span className="text-[11px] text-neutral-400">
+                                  ({(parent.subcategories || []).length} subcategorías)
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {!isEditingThisParent && (
+                            <div className="flex items-center gap-1.5 self-end sm:self-center">
+                              {/* Botón Subcategoría sin '+' redundante */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (activeAddSubcatParentId === parent.id) {
+                                    setActiveAddSubcatParentId(null);
+                                    setNewSubcatName('');
+                                  } else {
+                                    setActiveAddSubcatParentId(parent.id);
+                                    setNewSubcatName('');
+                                  }
+                                }}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                                  isAddingSubcat
+                                    ? 'bg-black text-white'
+                                    : 'bg-[#efeded] text-neutral-800 hover:bg-neutral-200'
+                                }`}
+                                title="Agregar subcategoría a esta categoría"
+                              >
+                                <span className="material-symbols-outlined text-[15px]">
+                                  {isAddingSubcat ? 'close' : 'add'}
+                                </span>
+                                <span>{isAddingSubcat ? 'Cerrar' : 'Subcategoría'}</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingCategory({
+                                    id: parent.id,
+                                    name: parent.name,
+                                    isParent: true,
+                                    targetParentId: ''
+                                  })
+                                }
+                                className="p-1.5 rounded-lg text-neutral-400 hover:text-black hover:bg-neutral-100 transition-colors cursor-pointer"
+                                title="Editar categoría principal y nivel"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">edit</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCategoryToDelete({
+                                    id: parent.id,
+                                    name: parent.name,
+                                    isParent: true
+                                  })
+                                }
+                                className="p-1.5 rounded-lg text-neutral-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                                title="Eliminar categoría principal y sus subcategorías"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">delete</span>
+                              </button>
+                            </div>
+                          )}
                         </div>
 
-                        {isEditingThis ? (
-                          <div className="flex items-center gap-2 flex-1 max-w-md">
-                            <input
-                              type="text"
-                              value={editingCategory.current}
-                              onChange={(e) =>
-                                setEditingCategory({ ...editingCategory, current: e.target.value })
-                              }
-                              className="flex-1 px-3 py-1.5 rounded-xl border border-neutral-300 text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-black"
-                            />
-                            <button
-                              type="button"
-                              onClick={handleSaveRenameCategory}
-                              className="px-3 py-1.5 rounded-xl bg-black text-white text-xs font-semibold"
+                        {/* Inline Form to Add Subcategory */}
+                        {isAddingSubcat && (
+                          <div className="mt-3 ml-4 sm:ml-8 pl-3 border-l-2 border-black/30 animate-in fade-in">
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                handleAddSubcategory(parent.id);
+                              }}
+                              className="flex items-center gap-2 max-w-md bg-neutral-50 p-2 rounded-xl border border-neutral-200"
                             >
-                              Guardar
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditingCategory(null)}
-                              className="px-2.5 py-1.5 rounded-xl bg-neutral-200 text-neutral-700 text-xs"
-                            >
-                              Cancelar
-                            </button>
+                              <span className="material-symbols-outlined text-[16px] text-neutral-400">
+                                subdirectory_arrow_right
+                              </span>
+                              <input
+                                type="text"
+                                placeholder={`Nueva subcategoría en ${parent.name}...`}
+                                value={newSubcatName}
+                                onChange={(e) => setNewSubcatName(e.target.value)}
+                                className="flex-1 bg-transparent text-xs text-black placeholder:text-neutral-400 focus:outline-none font-medium"
+                                autoFocus
+                              />
+                              <button
+                                type="submit"
+                                disabled={!newSubcatName.trim()}
+                                className="px-3 py-1 rounded-lg bg-black text-white text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                              >
+                                Agregar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveAddSubcatParentId(null);
+                                  setNewSubcatName('');
+                                }}
+                                className="px-2 py-1 rounded-lg text-neutral-500 hover:text-neutral-800 text-xs cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                            </form>
                           </div>
-                        ) : (
-                          <div>
-                            <span className="text-xs font-bold text-black">{cat}</span>
-                            <span className="text-[11px] text-neutral-400 ml-2">
-                              {count} {count === 1 ? 'prenda' : 'prendas'}
-                            </span>
+                        )}
+
+                        {/* Subcategories (Level 2) */}
+                        {(parent.subcategories || []).length > 0 && (
+                          <div className="mt-3 ml-4 sm:ml-8 pl-3 border-l-2 border-neutral-200 space-y-2">
+                            {parent.subcategories.map((sub) => {
+                              const isEditingThisSub =
+                                editingCategory?.id === sub.id && !editingCategory.isParent;
+                              const subCount = categoryUsage[sub.id] || 0;
+
+                              return (
+                                <div
+                                  key={sub.id}
+                                  className="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-lg hover:bg-neutral-100/60 transition-colors"
+                                >
+                                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                                    {/* Drag handle for subcategory */}
+                                    <div
+                                      draggable
+                                      onDragStart={(e) => {
+                                        e.dataTransfer.setData('text/plain', sub.id);
+                                        setDraggedCategory({
+                                          id: sub.id,
+                                          name: sub.name,
+                                          isParent: false,
+                                          parentId: parent.id,
+                                          hasChildren: false
+                                        });
+                                      }}
+                                      onDragEnd={() => {
+                                        setDraggedCategory(null);
+                                        setDragOverParentId(null);
+                                        setIsDragOverRootZone(false);
+                                      }}
+                                      className="p-1 text-neutral-400 hover:text-black cursor-grab active:cursor-grabbing shrink-0 transition-colors"
+                                      title="Arrastrar para mover a otra categoría o soltar abajo para convertir en principal"
+                                    >
+                                      <span className="material-symbols-outlined text-[16px]">drag_indicator</span>
+                                    </div>
+
+                                    <span className="material-symbols-outlined text-[16px] text-neutral-400 shrink-0">
+                                      subdirectory_arrow_right
+                                    </span>
+
+                                    {isEditingThisSub ? (
+                                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 max-w-xl">
+                                        <input
+                                          type="text"
+                                          value={editingCategory.name}
+                                          onChange={(e) =>
+                                            setEditingCategory({
+                                              ...editingCategory,
+                                              name: e.target.value
+                                            })
+                                          }
+                                          className="flex-1 px-2.5 py-1 rounded-lg border border-neutral-300 text-xs font-medium text-black focus:outline-none focus:ring-1 focus:ring-black"
+                                          placeholder="Nombre de subcategoría"
+                                          autoFocus
+                                        />
+
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          <span className="text-[11px] text-neutral-500 font-semibold">Subcategoría de:</span>
+                                          <select
+                                            value={editingCategory.targetParentId}
+                                            onChange={(e) =>
+                                              setEditingCategory({
+                                                ...editingCategory,
+                                                targetParentId: e.target.value
+                                              })
+                                            }
+                                            className="px-2.5 py-1 rounded-lg border border-neutral-300 text-xs font-semibold text-black focus:outline-none focus:ring-1 focus:ring-black bg-white"
+                                          >
+                                            <option value="">(Ninguna - Categoría Principal)</option>
+                                            {categoryTree.map((c) => (
+                                              <option key={c.id} value={c.id}>
+                                                {c.name}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </div>
+
+                                        <div className="flex items-center gap-1 self-end sm:self-center shrink-0">
+                                          <button
+                                            type="button"
+                                            onClick={handleSaveRenameCategory}
+                                            className="px-2.5 py-1 rounded-lg bg-black text-white text-xs font-semibold cursor-pointer"
+                                          >
+                                            Guardar
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditingCategory(null)}
+                                            className="px-2 py-1 rounded-lg bg-neutral-200 text-neutral-700 text-xs cursor-pointer"
+                                          >
+                                            ✕
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <span className="text-xs font-medium text-neutral-800 truncate">
+                                          {sub.name}
+                                        </span>
+                                        <span className="px-1.5 py-0.2 rounded-full bg-neutral-200/80 text-[10px] font-semibold text-neutral-600 shrink-0">
+                                          {subCount} {subCount === 1 ? 'prenda' : 'prendas'}
+                                        </span>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {!isEditingThisSub && (
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setEditingCategory({
+                                            id: sub.id,
+                                            name: sub.name,
+                                            isParent: false,
+                                            parentId: parent.id,
+                                            targetParentId: parent.id
+                                          })
+                                        }
+                                        className="p-1 rounded-md text-neutral-400 hover:text-black hover:bg-neutral-200/60 transition-colors cursor-pointer"
+                                        title="Editar subcategoría y categoría padre"
+                                      >
+                                        <span className="material-symbols-outlined text-[14px]">edit</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setCategoryToDelete({
+                                            id: sub.id,
+                                            name: sub.name,
+                                            isParent: false,
+                                            parentId: parent.id
+                                          })
+                                        }
+                                        className="p-1 rounded-md text-neutral-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                                        title="Eliminar subcategoría"
+                                      >
+                                        <span className="material-symbols-outlined text-[14px]">delete</span>
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
+                    );
+                  })}
+                </div>
+              )}
 
-                      {!isGlobalFilter && !isEditingThis && (
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => setEditingCategory({ original: cat, current: cat })}
-                            className="p-1.5 rounded-lg text-neutral-400 hover:text-black hover:bg-neutral-100 transition-colors"
-                            title="Renombrar categoría"
-                          >
-                            <span className="material-symbols-outlined text-[16px]">edit</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setCategoryToDelete(cat)}
-                            className="p-1.5 rounded-lg text-neutral-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                            title="Eliminar categoría"
-                          >
-                            <span className="material-symbols-outlined text-[16px]">delete</span>
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+              {/* Zona de Soltado para Promover a Categoría Principal */}
+              {draggedCategory && !draggedCategory.isParent && (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDragOverRootZone(true);
+                  }}
+                  onDragLeave={() => setIsDragOverRootZone(false)}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    if (!draggedCategory || draggedCategory.isParent) return;
+                    await handlePromoteToParent(draggedCategory);
+                    setDraggedCategory(null);
+                    setIsDragOverRootZone(false);
+                  }}
+                  className={`m-4 p-5 rounded-2xl border-2 border-dashed transition-all flex items-center justify-center gap-2.5 text-xs font-bold animate-in fade-in ${
+                    isDragOverRootZone
+                      ? 'border-black bg-neutral-100 text-black scale-[1.01] shadow-lg ring-2 ring-black/10'
+                      : 'border-neutral-300 bg-neutral-50/80 text-neutral-600 hover:border-neutral-400'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[20px]">
+                    drive_file_move
+                  </span>
+                  <span>Soltar aquí para convertir "{draggedCategory.name}" en Categoría Principal</span>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -2012,23 +2700,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         />
       )}
 
-      {/* Confirmation Modal: Eliminar Categoría */}
+      {/* Confirmation Modal: Eliminar Categoría o Subcategoría */}
       {categoryToDelete && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-neutral-200 animate-in fade-in zoom-in-95">
             <div className="w-12 h-12 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-4">
-              <span className="material-symbols-outlined text-2xl">category</span>
+              <span className="material-symbols-outlined text-2xl">
+                {categoryToDelete.isParent ? 'folder_delete' : 'delete'}
+              </span>
             </div>
             <h3 className="text-base font-bold text-neutral-900 mb-1">
-              ¿Eliminar categoría "{categoryToDelete}"?
+              ¿Eliminar {categoryToDelete.isParent ? 'categoría principal' : 'subcategoría'} "{categoryToDelete.name}"?
             </h3>
             <p className="text-xs text-neutral-500 mb-5 leading-relaxed">
-              {(categoryUsage[categoryToDelete] || 0) > 0 ? (
+              {categoryToDelete.isParent && 'Se eliminarán también todas las subcategorías asociadas a esta categoría principal. '}
+              {(categoryUsage[categoryToDelete.id] || 0) > 0 ? (
                 <>
-                  Hay <strong className="text-neutral-800 font-semibold">{categoryUsage[categoryToDelete]} prenda(s)</strong> asociadas a esta categoría. Al eliminarla, las prendas conservarán su información pero la categoría ya no figurará en los filtros de la tienda.
+                  Hay <strong className="text-neutral-800 font-semibold">{categoryUsage[categoryToDelete.id]} prenda(s)</strong> asociadas. Las prendas conservarán sus demás datos pero esta opción ya no estará disponible para filtrar en la tienda.
                 </>
               ) : (
-                'Esta categoría ya no estará disponible para catalogar prendas.'
+                'Esta opción ya no estará disponible para catalogar prendas ni en los filtros de la tienda.'
               )}
             </p>
             <div className="flex items-center justify-end gap-2.5">
@@ -2042,13 +2733,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               <button
                 type="button"
                 onClick={async () => {
-                  const cat = categoryToDelete;
+                  const target = categoryToDelete;
                   setCategoryToDelete(null);
-                  await executeDeleteCategory(cat);
+                  await executeDeleteCategory(target);
                 }}
                 className="px-4 py-2 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors shadow-xs cursor-pointer"
               >
-                Eliminar Categoría
+                Eliminar {categoryToDelete.isParent ? 'Categoría' : 'Subcategoría'}
               </button>
             </div>
           </div>
