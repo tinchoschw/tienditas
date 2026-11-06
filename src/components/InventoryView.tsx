@@ -2199,10 +2199,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         onDragOver={(e) => {
                           if (draggedCategory && draggedCategory.id !== parent.id) {
                             e.preventDefault();
-                            setDragOverParentId(parent.id);
+                            e.dataTransfer.dropEffect = 'move';
+                            if (dragOverParentId !== parent.id) {
+                              setDragOverParentId(parent.id);
+                            }
                           }
                         }}
-                        onDragLeave={() => {
+                        onDragLeave={(e) => {
+                          if (e.relatedTarget && e.currentTarget.contains(e.relatedTarget as Node)) {
+                            return;
+                          }
                           if (dragOverParentId === parent.id) {
                             setDragOverParentId(null);
                           }
@@ -2210,21 +2216,24 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         onDrop={async (e) => {
                           e.preventDefault();
                           if (!draggedCategory || draggedCategory.id === parent.id) return;
-                          await handleDropOnParent(draggedCategory, parent.id);
+                          const droppedItem = draggedCategory;
                           setDraggedCategory(null);
                           setDragOverParentId(null);
+                          await handleDropOnParent(droppedItem, parent.id);
                         }}
-                        className={`p-4 sm:p-5 transition-all ${
+                        className={`relative p-4 sm:p-5 transition-colors overflow-hidden ${
                           isDragOverThisParent
-                            ? 'bg-neutral-100 border-2 border-dashed border-black shadow-md ring-2 ring-black/10'
+                            ? 'bg-neutral-100/90 ring-2 ring-black border-transparent'
                             : 'hover:bg-[#faf9f8]'
                         }`}
                       >
-                        {/* Drag Over Banner */}
+                        {/* Drag Over Absolute Overlay: evita cualquier salto de altura o parpadeo */}
                         {isDragOverThisParent && draggedCategory && (
-                          <div className="mb-3 py-1.5 px-3 rounded-xl bg-black text-white text-xs font-semibold flex items-center gap-2 animate-in fade-in">
-                            <span className="material-symbols-outlined text-[16px]">subdirectory_arrow_right</span>
-                            <span>Soltar aquí para convertir "{draggedCategory.name}" en subcategoría de "{parent.name}"</span>
+                          <div className="absolute inset-0 bg-neutral-900/10 border-2 border-dashed border-black rounded-2xl pointer-events-none z-20 flex items-center justify-center p-3 animate-in fade-in duration-100">
+                            <div className="px-3.5 py-2 rounded-xl bg-black text-white text-xs font-semibold flex items-center gap-2 shadow-xl">
+                              <span className="material-symbols-outlined text-[16px]">subdirectory_arrow_right</span>
+                              <span>Soltar aquí para convertir "{draggedCategory.name}" en subcategoría de "{parent.name}"</span>
+                            </div>
                           </div>
                         )}
 
@@ -2445,7 +2454,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
                         {/* Subcategories (Level 2) */}
                         {(parent.subcategories || []).length > 0 && (
-                          <div className="mt-3 ml-4 sm:ml-8 pl-3 border-l-2 border-neutral-200 space-y-2">
+                          <div className={`mt-3 ml-4 sm:ml-8 pl-3 border-l-2 border-neutral-200 space-y-2 ${draggedCategory ? 'pointer-events-none' : ''}`}>
                             {parent.subcategories.map((sub) => {
                               const isEditingThisSub =
                                 editingCategory?.id === sub.id && !editingCategory.isParent;
@@ -2602,15 +2611,24 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 <div
                   onDragOver={(e) => {
                     e.preventDefault();
-                    setIsDragOverRootZone(true);
+                    e.dataTransfer.dropEffect = 'move';
+                    if (!isDragOverRootZone) {
+                      setIsDragOverRootZone(true);
+                    }
                   }}
-                  onDragLeave={() => setIsDragOverRootZone(false)}
+                  onDragLeave={(e) => {
+                    if (e.relatedTarget && e.currentTarget.contains(e.relatedTarget as Node)) {
+                      return;
+                    }
+                    setIsDragOverRootZone(false);
+                  }}
                   onDrop={async (e) => {
                     e.preventDefault();
                     if (!draggedCategory || draggedCategory.isParent) return;
-                    await handlePromoteToParent(draggedCategory);
+                    const itemToPromote = draggedCategory;
                     setDraggedCategory(null);
                     setIsDragOverRootZone(false);
+                    await handlePromoteToParent(itemToPromote);
                   }}
                   className={`m-4 p-5 rounded-2xl border-2 border-dashed transition-all flex items-center justify-center gap-2.5 text-xs font-bold animate-in fade-in ${
                     isDragOverRootZone
