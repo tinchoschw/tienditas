@@ -857,9 +857,24 @@ function MainContent() {
                 settings={settings}
                 storeSlug={currentStoreSlug}
                 featureFlags={activeStore?.featureFlags}
+                onSaveProduct={async (p) => {
+                  const saved = await saveProduct(currentStoreSlug, p);
+                  setProducts((prev) => {
+                    const idx = prev.findIndex((item) => item.id === saved.id);
+                    if (idx >= 0) {
+                      const copy = [...prev];
+                      copy[idx] = saved;
+                      return copy;
+                    }
+                    return [saved, ...prev];
+                  });
+                  return saved;
+                }}
+                onDeleteProduct={async (id) => {
+                  await deleteProduct(currentStoreSlug, id);
+                  setProducts((prev) => prev.filter((p) => p.id !== id));
+                }}
                 storeRubro={activeStore?.rubro}
-                onSaveProduct={(p) => saveProduct(currentStoreSlug, p)}
-                onDeleteProduct={(id) => deleteProduct(currentStoreSlug, id)}
                 onUpdateSettings={async (newSettings) => {
                   const updated = await updateStoreSettings(currentStoreSlug, newSettings, 'Administrador');
                   setSettings(updated);

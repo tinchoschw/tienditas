@@ -51,11 +51,8 @@ export const DEFAULT_CATEGORY_TREE: StoreCategory[] = [
  * Guarantees a valid, robust 2-level category tree from store settings
  */
 export function ensureStoreCategoryTree(settings?: Partial<StoreSettings>): StoreCategory[] {
-  if (
-    settings?.categoryTree &&
-    Array.isArray(settings.categoryTree) &&
-    settings.categoryTree.length > 0
-  ) {
+  // If settings explicitly defined categoryTree (even if empty []), respect it!
+  if (settings && 'categoryTree' in settings && Array.isArray(settings.categoryTree)) {
     return settings.categoryTree.map((cat, idx) => ({
       id: cat.id || `cat_${idx}_${slugifyCategory(cat.name || 'cat')}`,
       name: cat.name || 'Sin nombre',
@@ -67,15 +64,13 @@ export function ensureStoreCategoryTree(settings?: Partial<StoreSettings>): Stor
   }
 
   // Backwards compatibility migration from settings.categories string[]
-  if (settings?.categories && Array.isArray(settings.categories) && settings.categories.length > 0) {
+  if (settings && 'categories' in settings && Array.isArray(settings.categories)) {
     const rawCategories = settings.categories.filter((c) => c && c.trim() && c !== 'Todas');
-    if (rawCategories.length > 0) {
-      return rawCategories.map((name, idx) => ({
-        id: `cat_${idx}_${slugifyCategory(name)}`,
-        name: name.trim(),
-        subcategories: []
-      }));
-    }
+    return rawCategories.map((name, idx) => ({
+      id: `cat_${idx}_${slugifyCategory(name)}`,
+      name: name.trim(),
+      subcategories: []
+    }));
   }
 
   return DEFAULT_CATEGORY_TREE;

@@ -7,6 +7,8 @@ import {
   isProductInSelectedCategoryFilters,
   countProductsInCategory
 } from '../utils/categoryUtils';
+import { MediaViewer, MediaThumbnail } from './MediaDisplay';
+import { isVideoMedia } from '../utils/mediaStorage';
 
 interface StorefrontViewProps {
   products: Product[];
@@ -1424,6 +1426,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
                   const hasPhoto = product.images && product.images.length > 0;
                   const coverPhoto = product.images[product.coverIndex || 0] || product.images[0];
+                  const hasVideo = Boolean(product.images?.some(isVideoMedia));
 
                   return (
                     <article
@@ -1449,9 +1452,10 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                               }`}
                             >
                               {hasPhoto ? (
-                                <img
+                                <MediaThumbnail
                                   src={coverPhoto}
                                   alt={product.name}
+                                  showPlayBadge={isVideoMedia(coverPhoto)}
                                   className={`transition-transform duration-500 group-hover/clickable:scale-105 ${
                                     cardImageSize === 'small'
                                       ? 'w-20 h-24 sm:w-24 sm:h-28 object-cover rounded-lg border border-neutral-200 shadow-2xs'
@@ -1467,8 +1471,16 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                 </div>
                               )}
 
+                              {/* Video Indicator (Top-Left when cover is not the video) */}
+                              {hasVideo && !isVideoMedia(coverPhoto) && (
+                                <div className="absolute top-2 left-2 z-10 bg-black/75 backdrop-blur-xs text-white text-[10px] font-semibold px-2 py-0.5 rounded-full flex items-center gap-1 shadow-xs pointer-events-none">
+                                  <span className="material-symbols-outlined text-[13px]">play_circle</span>
+                                  <span>Video</span>
+                                </div>
+                              )}
+
                               {/* Stock Scarcity Badge (Top-Left) */}
-                              {badgeText && (
+                              {badgeText && !hasVideo && (
                                 <div className="absolute top-2 left-2 flex flex-col gap-1 z-10">
                                   <span 
                                     className={`px-2 py-0.5 rounded-md text-[10px] sm:text-xs font-semibold shadow-xs ${isUrgent ? 'tracking-tight' : ''}`}
@@ -1489,10 +1501,12 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                                 <span className="material-symbols-outlined text-[14px] sm:text-[16px]">share</span>
                               </button>
 
-                              {/* Photo Counter Badge (Bottom-Right) */}
+                              {/* Photo & Video Counter Badge (Bottom-Right) */}
                               {product.images && product.images.length > 1 && (
                                 <div className="absolute bottom-2 right-2 z-10 bg-black/60 backdrop-blur-xs text-white text-[10px] sm:text-xs font-medium px-1.5 py-0.5 rounded-md flex items-center gap-1 shadow-xs pointer-events-none">
-                                  <span className="material-symbols-outlined text-[12px] sm:text-[14px]">photo_camera</span>
+                                  <span className="material-symbols-outlined text-[12px] sm:text-[14px]">
+                                    {hasVideo ? 'perm_media' : 'photo_camera'}
+                                  </span>
                                   <span>{product.images.length}</span>
                                 </div>
                               )}
@@ -1857,16 +1871,17 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
 
               {/* Left Column: Photo Gallery */}
               <div className="w-full md:w-1/2 bg-[#f5f3f3] p-4 sm:p-6 flex flex-col justify-between overflow-hidden">
-                {/* Main Large Image Container */}
-                <div className="relative w-full aspect-[3/4] rounded-xl overflow-hidden bg-white shadow-xs group/img">
+                {/* Main Large Image / Video Container */}
+                <div className="relative w-full aspect-[3/4] rounded-xl overflow-hidden bg-neutral-900 shadow-xs group/img flex items-center justify-center">
                   {activeImg ? (
-                    <img
+                    <MediaViewer
                       src={activeImg}
                       alt={product.name}
-                      className="w-full h-full object-cover transition-transform duration-300"
+                      className="w-full h-full object-contain sm:object-cover"
+                      controls={true}
                     />
                   ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center text-neutral-400">
+                    <div className="w-full h-full flex flex-col items-center justify-center text-neutral-400 bg-white">
                       <span className="material-symbols-outlined text-[48px]">checkroom</span>
                       <span className="text-xs font-medium mt-1">Sin fotografía disponible</span>
                     </div>
@@ -1881,8 +1896,8 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                           e.stopPropagation();
                           setModalActiveImageIndex((prev) => (prev > 0 ? prev - 1 : images.length - 1));
                         }}
-                        className="absolute left-2.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/80 hover:bg-white text-black shadow-md flex items-center justify-center transition-all cursor-pointer opacity-80 hover:opacity-100"
-                        title="Foto anterior"
+                        className="absolute left-2.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/80 hover:bg-white text-black shadow-md flex items-center justify-center transition-all cursor-pointer opacity-80 hover:opacity-100 z-10"
+                        title="Elemento anterior"
                       >
                         <span className="material-symbols-outlined text-[20px]">chevron_left</span>
                       </button>
@@ -1892,17 +1907,17 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                           e.stopPropagation();
                           setModalActiveImageIndex((prev) => (prev < images.length - 1 ? prev + 1 : 0));
                         }}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/80 hover:bg-white text-black shadow-md flex items-center justify-center transition-all cursor-pointer opacity-80 hover:opacity-100"
-                        title="Siguiente foto"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/80 hover:bg-white text-black shadow-md flex items-center justify-center transition-all cursor-pointer opacity-80 hover:opacity-100 z-10"
+                        title="Siguiente elemento"
                       >
                         <span className="material-symbols-outlined text-[20px]">chevron_right</span>
                       </button>
                     </>
                   )}
 
-                  {/* Image Counter */}
+                  {/* Media Counter */}
                   {images.length > 1 && (
-                    <div className="absolute bottom-2.5 right-2.5 bg-black/70 text-white text-[10px] font-mono px-2 py-0.5 rounded-full shadow-xs">
+                    <div className="absolute bottom-2.5 right-2.5 bg-black/70 text-white text-[10px] font-mono px-2 py-0.5 rounded-full shadow-xs z-10">
                       {modalActiveImageIndex + 1} / {images.length}
                     </div>
                   )}
@@ -1922,7 +1937,7 @@ export const StorefrontView: React.FC<StorefrontViewProps> = ({
                             : 'border-transparent opacity-60 hover:opacity-100'
                         }`}
                       >
-                        <img src={imgUrl} alt={`Miniatura ${idx + 1}`} className="w-full h-full object-cover" />
+                        <MediaThumbnail src={imgUrl} alt={`Miniatura ${idx + 1}`} />
                       </button>
                     ))}
                   </div>

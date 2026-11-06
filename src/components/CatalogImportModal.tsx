@@ -1,7 +1,8 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Product, ProductVariant, StoreSettings, Supplier } from '../types';
 import { useModalHistory } from '../hooks/useModalHistory';
 import { ensureStoreAttributes } from '../utils/attributeUtils';
+import { ensureStoreCategoryTree, slugifyCategory, flattenCategoryTreeNames } from '../utils/categoryUtils';
 import { createSupplier } from '../services/db';
 
 interface CatalogImportModalProps {
@@ -32,6 +33,7 @@ interface ParsedVariantRow {
   discountPrice?: number;
   supplierName: string;
   variantSku: string;
+  images: string[];
 }
 
 interface GroupedProductPlan {
@@ -46,7 +48,34 @@ interface GroupedProductPlan {
   targetPrice: number;
   targetCost: number;
   targetDiscountPrice?: number;
+  targetImages: string[];
   variantRows: ParsedVariantRow[];
+}
+
+/**
+ * Splits category string hierarchy (e.g., "Mujer / Remeras", "Hombre > Buzos", "Calzado")
+ */
+function parseCategoryHierarchy(rawCat: string): { parentName: string; subName?: string } {
+  const trimmed = (rawCat || '').trim();
+  if (!trimmed) return { parentName: 'General' };
+
+  let parts: string[] = [];
+  if (trimmed.includes('>')) {
+    parts = trimmed.split('>');
+  } else if (trimmed.includes('/')) {
+    parts = trimmed.split('/');
+  } else if (trimmed.includes(':')) {
+    parts = trimmed.split(':');
+  } else if (trimmed.includes('|')) {
+    parts = trimmed.split('|');
+  } else {
+    parts = [trimmed];
+  }
+
+  const parentName = parts[0]?.trim() || 'General';
+  const subName = parts[1]?.trim() || undefined;
+
+  return { parentName, subName };
 }
 
 /**
@@ -150,6 +179,28 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const handleReset = () => {
+    setStep('upload');
+    setFileName('');
+    setFileSize('');
+    setParseErrors([]);
+    setGroupedPlans([]);
+    setTotalVariantCount(0);
+    setProgressPercent(0);
+    setProgressMessage('');
+    setFatalErrorMessage('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // Reset to initial step every time the modal opens
+  useEffect(() => {
+    if (isOpen) {
+      handleReset();
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   // Download sample CSV template matching store attributes
@@ -167,7 +218,8 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       'Precio',
       'Precio_Promo',
       'Proveedor',
-      'SKU_Variante'
+      'SKU_Variante',
+      'Fotos_URLs'
     ].join(',');
 
     const explanationRow = [
@@ -175,7 +227,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       '"(Opcional) Tu codigo o SKU para agrupar variantes de un mismo producto"',
       '"(Obligatorio) Nombre de la prenda o producto"',
       '"(Opcional) Descripcion o detalle del producto"',
-      '"(Opcional) Categoria o rubro (ej: Remeras, Pantalones)"',
+      '"(Opcional) Categoria y subcategoria (ej: Mujer / Remeras o Calzado)"',
       `"(Opcional) ${attribute1.enabled ? attribute1.name : 'Atributo 1'} si tiene variantes"`,
       `"(Opcional) ${attribute2.enabled ? attribute2.name : 'Atributo 2'} si tiene variantes"`,
       '"(Obligatorio) Cantidad numerica disponible o la palabra ILIMITADO"',
@@ -183,14 +235,19 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       '"(Obligatorio) Precio de venta al publico"',
       '"(Opcional) Precio con descuento/oferta"',
       '"(Opcional) Nombre del proveedor para control y compras"',
-      '"(Opcional) Codigo unico de esta variante puntual"'
+      '"(Opcional) Codigo unico de esta variante puntual"',
+      '"(Opcional) URLs de fotos separadas por coma (ej: https://.../foto1.jpg, https://.../foto2.jpg)"'
     ].join(',');
 
-    const sampleCat = settings.categories.find((c) => c !== 'Todas') || 'General';
+    const sampleTree = ensureStoreCategoryTree(settings);
+    const sampleParent = sampleTree[0]?.name || 'Mujer';
+    const sampleSub = sampleTree[0]?.subcategories?.[0]?.name || 'Remeras';
+    const sampleCat = `${sampleParent} / ${sampleSub}`;
     const sampleOpt1A = attribute1.options[0]?.label || 'Negro';
     const sampleOpt1B = attribute1.options[1]?.label || 'Blanco';
     const sampleOpt2A = attribute2.options[0]?.label || 'M';
     const sampleOpt2B = attribute2.options[1]?.label || 'L';
+    const samplePhotoUrl = 'https://raw.githubusercontent.com/tinchoschw/ApoloStore/main/videos/20250603_203900.jpg';
 
     const row1 = [
       '""',
@@ -205,7 +262,8 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       '9900',
       '8900',
       '"Textil Central"',
-      '"REM-001-NEG-M"'
+      '"REM-001-NEG-M"',
+      `"${samplePhotoUrl}"`
     ].join(',');
 
     const row2 = [
@@ -221,7 +279,8 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       '9900',
       '8900',
       '"Textil Central"',
-      '"REM-001-BLA-L"'
+      '"REM-001-BLA-L"',
+      `"${samplePhotoUrl}"`
     ].join(',');
 
     const sampleContent = `${header}\n${explanationRow}\n${row1}\n${row2}\n`;
@@ -280,6 +339,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
     const colDiscount = findCol(['preciopromo', 'precio_promo', 'oferta', 'descuento']);
     const colSupplier = findCol(['proveedor', 'distribuidor', 'fabricante']);
     const colVariantSku = findCol(['skuvariante', 'sku_variante', 'sku']);
+    const colImages = findCol(['fotos', 'imagenes', 'images', 'urls', 'foto_urls', 'fotos_urls', 'foto', 'imagen']);
 
     if (colName === -1) {
       setParseErrors(['No se encontró la columna "Nombre" o "Titulo" en la cabecera del archivo CSV.']);
@@ -359,6 +419,14 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       const supplierName = (colSupplier !== -1 ? row[colSupplier] : '')?.trim() || '';
       const variantSku = (colVariantSku !== -1 ? row[colVariantSku] : '')?.trim() || '';
 
+      const rawImages = (colImages !== -1 ? row[colImages] : '')?.trim() || '';
+      const parsedImages: string[] = rawImages
+        ? rawImages
+            .split(/[,|]/)
+            .map((u) => u.trim())
+            .filter((u) => u.length > 0 && (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('/')))
+        : [];
+
       parsedRows.push({
         rowNum,
         idSistema,
@@ -374,16 +442,12 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
         price: priceNum,
         discountPrice: discountPriceNum,
         supplierName,
-        variantSku
+        variantSku,
+        images: parsedImages
       });
     }
 
     // Group rows by target product
-    // Hierarchy:
-    // 1. By ID_Sistema if matches an existing product
-    // 2. By Codigo_Producto if matches an existing product's customSku
-    // 3. If no ID_Sistema and no Codigo_Producto: match and group by key:
-    //    nombre de producto - categoria - proveedor(si existe)
     const groupsMap = new Map<string, GroupedProductPlan>();
 
     parsedRows.forEach((row) => {
@@ -398,7 +462,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
         );
       }
 
-      // Si no tienen identificador de producto, usa la clave: nombre de producto-categoria-proveedor(si existe)
+      // Match by composite key if no ID or code
       if (!matchedProd && !row.idSistema && !row.customSku) {
         const normName = row.name.trim().toLowerCase();
         const normCat = (row.category || 'General').trim().toLowerCase();
@@ -443,8 +507,19 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
           targetPrice: row.price,
           targetCost: row.cost || matchedProd?.cost || 0,
           targetDiscountPrice: row.discountPrice ?? matchedProd?.discountPrice,
+          targetImages: row.images.length > 0 ? row.images : (matchedProd?.images || []),
           variantRows: []
         });
+      } else {
+        // Collect additional images from other rows for the same product
+        if (row.images.length > 0) {
+          const currentImgs = groupsMap.get(key)!.targetImages;
+          row.images.forEach((img) => {
+            if (!currentImgs.includes(img)) {
+              currentImgs.push(img);
+            }
+          });
+        }
       }
 
       groupsMap.get(key)!.variantRows.push(row);
@@ -473,8 +548,21 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       const knownSuppliers = new Map<string, Supplier>();
       suppliers.forEach((s) => knownSuppliers.set(s.name.trim().toLowerCase(), s));
 
-      const currentCategories = new Set(settings.categories);
-      const categoriesToAdd = new Set<string>();
+      // Dynamic attributes tracking and auto-option registration
+      const { attribute1: baseAttr1, attribute2: baseAttr2 } = ensureStoreAttributes(settings);
+      const updatedAttr1 = {
+        ...baseAttr1,
+        options: [...(baseAttr1.options || [])]
+      };
+      const updatedAttr2 = {
+        ...baseAttr2,
+        options: [...(baseAttr2.options || [])]
+      };
+      let attributesModified = false;
+
+      // Two-level category hierarchy tracking
+      let currentCategoryTree = ensureStoreCategoryTree(settings);
+      let categoryTreeModified = false;
 
       let createdCounter = 0;
       let updatedCounter = 0;
@@ -482,18 +570,81 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
 
       const totalPlans = groupedPlans.length;
 
+      // Helper to resolve or auto-create attribute options
+      const resolveVariantAttributeOption = (
+        val: string,
+        attrObj: typeof updatedAttr1,
+        optPrefix: string
+      ): { optId?: string; optLabel?: string } => {
+        const trimmed = (val || '').trim();
+        if (!trimmed) return {};
+
+        const existing = attrObj.options.find(
+          (o) => o.label.trim().toLowerCase() === trimmed.toLowerCase()
+        );
+        if (existing) {
+          return { optId: existing.id, optLabel: existing.label };
+        }
+
+        // Auto-create new option if it didn't exist
+        const newOptId = `${optPrefix}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        const newOpt = {
+          id: newOptId,
+          label: trimmed,
+          hex: attrObj.type === 'color' ? '#4A4A4A' : undefined
+        };
+        attrObj.options.push(newOpt);
+        attrObj.enabled = true;
+        attributesModified = true;
+        return { optId: newOptId, optLabel: trimmed };
+      };
+
       for (let i = 0; i < totalPlans; i++) {
         const plan = groupedPlans[i];
         const pct = Math.round(((i + 1) / totalPlans) * 90);
         setProgressPercent(Math.min(95, pct));
         setProgressMessage(`Guardando producto ${i + 1} de ${totalPlans}: "${plan.targetName}"...`);
 
-        // Check category
-        if (plan.targetCategory && !currentCategories.has(plan.targetCategory)) {
-          categoriesToAdd.add(plan.targetCategory);
+        // 1. Process 2-level category hierarchy
+        const { parentName, subName } = parseCategoryHierarchy(plan.targetCategory);
+        let parentCat = currentCategoryTree.find(
+          (c) => c.name.toLowerCase().trim() === parentName.toLowerCase().trim()
+        );
+
+        if (!parentCat) {
+          parentCat = {
+            id: `cat_${Date.now()}_${slugifyCategory(parentName)}`,
+            name: parentName,
+            subcategories: []
+          };
+          currentCategoryTree = [...currentCategoryTree, parentCat];
+          categoryTreeModified = true;
         }
 
-        // Auto-register supplier if new
+        let subCatId: string | undefined = undefined;
+        if (subName) {
+          let subCat = (parentCat.subcategories || []).find(
+            (s) => s.name.toLowerCase().trim() === subName.toLowerCase().trim()
+          );
+          if (!subCat) {
+            subCat = {
+              id: `sub_${Date.now()}_${slugifyCategory(subName)}`,
+              name: subName
+            };
+            const updatedSubs = [...(parentCat.subcategories || []), subCat];
+            parentCat = { ...parentCat, subcategories: updatedSubs };
+            currentCategoryTree = currentCategoryTree.map((c) =>
+              c.id === parentCat!.id ? parentCat! : c
+            );
+            categoryTreeModified = true;
+          }
+          subCatId = subCat.id;
+        }
+
+        const assignedCategoryKeys = subCatId ? [subCatId, parentCat.id] : [parentCat.id];
+        const legacyCategoryLabel = subName ? `${parentCat.name} > ${subName}` : parentCat.name;
+
+        // 2. Auto-register supplier if new
         let supplierId = plan.existingProduct?.supplierId;
         if (plan.targetSupplierName && storeSlug) {
           const supKey = plan.targetSupplierName.trim().toLowerCase();
@@ -515,8 +666,6 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
           const existing = plan.existingProduct;
           let baseVariants = [...existing.variants];
 
-          // REGLA CLAVE: Si el producto anterior tenía solo 1 variante simple/genérica (sin atributos reales)
-          // y el archivo ahora define variantes explícitas (con color o talle), descartar la genérica anterior
           const hadOnlySimpleVariant =
             baseVariants.length === 1 &&
             (!baseVariants[0].color || baseVariants[0].color.toLowerCase() === 'único') &&
@@ -529,34 +678,53 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
           // Merge or append variants
           plan.variantRows.forEach((vRow, vIdx) => {
             processedVariants++;
+
+            const { optId: opt1Id, optLabel: opt1Label } = resolveVariantAttributeOption(
+              vRow.attr1Val,
+              updatedAttr1,
+              'opt1'
+            );
+            const { optId: opt2Id, optLabel: opt2Label } = resolveVariantAttributeOption(
+              vRow.attr2Val,
+              updatedAttr2,
+              'opt2'
+            );
+
+            const finalAttr1 = opt1Label || vRow.attr1Val;
+            const finalAttr2 = opt2Label || vRow.attr2Val;
+
             const matchIndex = baseVariants.findIndex((ev) => {
               if (vRow.variantSku && ev.sku && ev.sku.toLowerCase() === vRow.variantSku.toLowerCase()) {
                 return true;
               }
-              const match1 = (ev.color || '').trim().toLowerCase() === vRow.attr1Val.trim().toLowerCase();
-              const match2 = (ev.size || '').trim().toLowerCase() === vRow.attr2Val.trim().toLowerCase();
+              const match1 = (ev.color || '').trim().toLowerCase() === (vRow.attr1Val || '').trim().toLowerCase();
+              const match2 = (ev.size || '').trim().toLowerCase() === (vRow.attr2Val || '').trim().toLowerCase();
               return match1 && match2;
             });
 
             if (matchIndex !== -1) {
-              // Update existing variant stock
+              // Update existing variant stock & attributes
               baseVariants[matchIndex] = {
                 ...baseVariants[matchIndex],
                 stock: vRow.stock,
                 unlimited: vRow.isUnlimited,
-                sku: vRow.variantSku || baseVariants[matchIndex].sku
+                sku: vRow.variantSku || baseVariants[matchIndex].sku,
+                attributeOptionId1: opt1Id || baseVariants[matchIndex].attributeOptionId1,
+                attributeOptionId2: opt2Id || baseVariants[matchIndex].attributeOptionId2
               };
             } else {
               // Add new variant
               const prefix = (existing.name || 'PR').trim().slice(0, 3).toUpperCase();
               const newSku =
                 vRow.variantSku ||
-                `${prefix}-${vRow.attr1Val.slice(0, 3).toUpperCase() || 'V'}-${vRow.attr2Val.slice(0, 3).toUpperCase() || vIdx}`;
+                `${prefix}-${finalAttr1.slice(0, 3).toUpperCase() || 'V'}-${finalAttr2.slice(0, 3).toUpperCase() || vIdx}`;
 
               baseVariants.push({
                 id: `var-${Date.now()}-${vIdx}-${Math.random().toString(36).substring(2, 6)}`,
-                color: vRow.attr1Val,
-                size: vRow.attr2Val,
+                color: finalAttr1 || '',
+                size: finalAttr2 || '',
+                attributeOptionId1: opt1Id,
+                attributeOptionId2: opt2Id,
                 sku: newSku,
                 stock: vRow.stock,
                 enabled: true,
@@ -570,15 +738,22 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
             0
           );
 
+          // Merge images if provided in CSV
+          const mergedImages = plan.targetImages.length > 0
+            ? Array.from(new Set([...(existing.images || []), ...plan.targetImages]))
+            : (existing.images || []);
+
           const updatedProduct: Product = {
             ...existing,
             name: plan.targetName || existing.name,
-            category: plan.targetCategory || existing.category,
+            category: legacyCategoryLabel,
+            categories: assignedCategoryKeys,
             description: plan.targetDescription || existing.description,
             customSku: plan.targetCustomSku || existing.customSku,
             price: plan.targetPrice > 0 ? plan.targetPrice : existing.price,
             cost: plan.targetCost > 0 ? plan.targetCost : existing.cost,
             discountPrice: plan.targetDiscountPrice ?? existing.discountPrice,
+            images: mergedImages,
             supplierId: supplierId || existing.supplierId,
             supplierName: plan.targetSupplierName || existing.supplierName,
             variants: baseVariants,
@@ -594,14 +769,31 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
           const prefix = (plan.targetName || 'PR').trim().slice(0, 3).toUpperCase();
           const newVariants: ProductVariant[] = plan.variantRows.map((vRow, vIdx) => {
             processedVariants++;
+
+            const { optId: opt1Id, optLabel: opt1Label } = resolveVariantAttributeOption(
+              vRow.attr1Val,
+              updatedAttr1,
+              'opt1'
+            );
+            const { optId: opt2Id, optLabel: opt2Label } = resolveVariantAttributeOption(
+              vRow.attr2Val,
+              updatedAttr2,
+              'opt2'
+            );
+
+            const finalAttr1 = opt1Label || vRow.attr1Val;
+            const finalAttr2 = opt2Label || vRow.attr2Val;
+
             const varSku =
               vRow.variantSku ||
-              `${prefix}-${vRow.attr1Val.slice(0, 3).toUpperCase() || 'V'}-${vRow.attr2Val.slice(0, 3).toUpperCase() || vIdx}`;
+              `${prefix}-${finalAttr1.slice(0, 3).toUpperCase() || 'V'}-${finalAttr2.slice(0, 3).toUpperCase() || vIdx}`;
 
             return {
               id: `var-${Date.now()}-${vIdx}-${Math.random().toString(36).substring(2, 6)}`,
-              color: vRow.attr1Val,
-              size: vRow.attr2Val,
+              color: finalAttr1 || '',
+              size: finalAttr2 || '',
+              attributeOptionId1: opt1Id,
+              attributeOptionId2: opt2Id,
               sku: varSku,
               stock: vRow.stock,
               enabled: true,
@@ -623,7 +815,8 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
           const newProduct: Product = {
             id: `prod-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
             name: plan.targetName,
-            category: plan.targetCategory || 'General',
+            category: legacyCategoryLabel,
+            categories: assignedCategoryKeys,
             description: plan.targetDescription || '',
             customSku: plan.targetCustomSku || undefined,
             tags: [],
@@ -632,7 +825,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
             discountPrice: plan.targetDiscountPrice,
             cost: plan.targetCost || 0,
             enabledOnline: true,
-            images: [],
+            images: plan.targetImages || [],
             coverIndex: 0,
             totalStock,
             isUnlimited: newVariants.length > 0 && newVariants.every((v) => v.unlimited),
@@ -651,10 +844,20 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
         await new Promise((r) => setTimeout(r, 10));
       }
 
-      // Add new categories if any
-      if (categoriesToAdd.size > 0 && onUpdateSettings) {
-        const mergedCategories = [...settings.categories, ...Array.from(categoriesToAdd)];
-        await onUpdateSettings({ categories: mergedCategories });
+      // Persist updated category tree and attribute options if any were added
+      if (onUpdateSettings) {
+        const settingsUpdates: Partial<StoreSettings> = {};
+        if (categoryTreeModified) {
+          settingsUpdates.categoryTree = currentCategoryTree;
+          settingsUpdates.categories = flattenCategoryTreeNames(currentCategoryTree);
+        }
+        if (attributesModified) {
+          settingsUpdates.attribute1 = updatedAttr1;
+          settingsUpdates.attribute2 = updatedAttr2;
+        }
+        if (Object.keys(settingsUpdates).length > 0) {
+          await onUpdateSettings(settingsUpdates);
+        }
       }
 
       setProgressPercent(100);
@@ -675,21 +878,6 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
       console.error('Error durante la importación:', err);
       setFatalErrorMessage(err?.message || 'Error al guardar los productos en la base de datos.');
       setStep('error');
-    }
-  };
-
-  const handleReset = () => {
-    setStep('upload');
-    setFileName('');
-    setFileSize('');
-    setParseErrors([]);
-    setGroupedPlans([]);
-    setTotalVariantCount(0);
-    setProgressPercent(0);
-    setProgressMessage('');
-    setFatalErrorMessage('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
     }
   };
 
@@ -743,6 +931,15 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                   )}
                   <li>
                     <strong className="text-black">Mismo producto:</strong> Las filas con el mismo Código de Producto, o bien con el mismo Nombre, Categoría y Proveedor, se agruparán en un mismo producto con sus distintas variantes.
+                  </li>
+                  <li>
+                    <strong className="text-black">Categorías y Subcategorías:</strong> Podés ingresar categorías simples (ej: <span className="font-mono">Calzado</span>) o subcategorías separadas por barra (ej: <span className="font-mono">Mujer / Remeras</span> o <span className="font-mono">Hombre &gt; Buzos</span>). Se crearán y organizarán solas en el árbol.
+                  </li>
+                  <li>
+                    <strong className="text-black">Atributos dinámicos:</strong> Si cargás colores o talles que no existían, se darán de alta automáticamente en las opciones del comercio.
+                  </li>
+                  <li>
+                    <strong className="text-black">Fotos de productos:</strong> En la columna <span className="font-mono">Fotos_URLs</span> podés colocar URLs públicas de fotos separadas por coma.
                   </li>
                   <li>
                     <strong className="text-black">Stock y precios:</strong> Cada variante tomará el stock numérico indicado en su fila (o la palabra ILIMITADO).
@@ -858,6 +1055,7 @@ export const CatalogImportModal: React.FC<CatalogImportModalProps> = ({
                             <span className="font-bold text-neutral-900 truncate">{plan.targetName}</span>
                             <span className="text-[10px] text-neutral-500">
                               {plan.targetCategory} • {plan.variantRows.length} variante(s)
+                              {plan.targetImages.length > 0 ? ` • ${plan.targetImages.length} foto(s)` : ''}
                               {plan.targetSupplierName ? ` • Prov: ${plan.targetSupplierName}` : ''}
                             </span>
                           </div>

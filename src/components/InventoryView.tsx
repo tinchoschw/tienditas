@@ -4,6 +4,7 @@ import { ProductEditModal } from './ProductEditModal';
 import { AiProductModal } from './AiProductModal';
 import { CatalogImportModal } from './CatalogImportModal';
 import { AttributeConfirmationModal } from './AttributeConfirmationModal';
+import { MediaThumbnail } from './MediaDisplay';
 import { useModalHistory } from '../hooks/useModalHistory';
 import {
   ensureStoreAttributes,
@@ -1877,7 +1878,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                               <div className="flex items-center gap-3">
                                 <div className="w-12 h-14 rounded-lg bg-[#efeded] overflow-hidden shrink-0 border border-neutral-200">
                                   {coverImg ? (
-                                    <img
+                                    <MediaThumbnail
                                       src={coverImg}
                                       alt={prod.name}
                                       className="w-full h-full object-cover"

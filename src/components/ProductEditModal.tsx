@@ -3,6 +3,8 @@ import { Product, ProductVariant, StoreSettings, StoreAttribute, StoreAttributeO
 import { compressImageFile, optimizeProductImages } from '../utils/imageOptimizer';
 import { ensureStoreAttributes, getOptionLabel, getOptionHex, fuseProductVariants } from '../utils/attributeUtils';
 import { ensureStoreCategoryTree, getProductCategoryKeys, formatProductCategoryLabels } from '../utils/categoryUtils';
+import { saveMediaBlob } from '../utils/mediaStorage';
+import { MediaThumbnail } from './MediaDisplay';
 import { AttributeConfirmationModal } from './AttributeConfirmationModal';
 import { createSupplier } from '../services/db';
 
@@ -94,6 +96,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [driveNotice, setDriveNotice] = useState<string | null>(null);
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
+  const [isUploadingVideo, setIsUploadingVideo] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showUnlimitedTooltip, setShowUnlimitedTooltip] = useState(false);
 
@@ -461,6 +464,37 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
       setSaveError('No se pudieron procesar algunas de las fotos seleccionadas.');
     } finally {
       setIsUploadingFiles(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleDirectVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const MAX_VIDEO_BYTES = 40 * 1024 * 1024; // 40 MB
+    if (file.size > MAX_VIDEO_BYTES) {
+      setSaveError(
+        'El video seleccionado supera el límite de 40 MB. Podés ingresarlo directamente mediante su enlace web (URL) para que cargue sin restricciones.'
+      );
+      e.target.value = '';
+      return;
+    }
+
+    setIsUploadingVideo(true);
+    setSaveError(null);
+
+    try {
+      const uri = await saveMediaBlob(file, 'media_video');
+      setProduct((prev) => ({
+        ...prev,
+        images: [...prev.images, uri]
+      }));
+    } catch (err) {
+      console.error('Error al guardar video:', err);
+      setSaveError('No se pudo procesar el video seleccionado.');
+    } finally {
+      setIsUploadingVideo(false);
       e.target.value = '';
     }
   };
@@ -1081,41 +1115,63 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
             </div>
           </section>
 
-          {/* ================= SECCIÓN 2: FOTOS DEL PRODUCTO ================= */}
+          {/* ================= SECCIÓN 2: FOTOS Y VIDEOS DEL PRODUCTO ================= */}
           <section className="bg-white p-5 rounded-2xl border border-[#efeded] space-y-4 shadow-xs">
             <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
               <div className="flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-[#efeded] flex items-center justify-center text-xs font-bold text-black">
                   2
                 </span>
-                <h3 className="text-sm font-semibold text-black">Fotografía de la Prenda</h3>
+                <h3 className="text-sm font-semibold text-black">Fotografías y Videos del Producto</h3>
               </div>
               <span className="px-2.5 py-1 rounded-xl bg-[#f5f3f3] text-xs font-medium text-black">
-                {product.images.length} fotos cargadas
+                {product.images.length} fotos y videos cargados
               </span>
+            </div>
+
+            {/* Tip Video Banner */}
+            <div className="p-3.5 bg-neutral-50 border border-neutral-200 rounded-xl flex items-start gap-2.5 text-xs text-neutral-700">
+              <span className="material-symbols-outlined text-[18px] text-neutral-800 shrink-0 mt-0.5">lightbulb</span>
+              <p className="leading-relaxed">
+                <strong className="font-semibold text-black">Tip:</strong> Podés subir videos de hasta 40 MB. Si tu video es más pesado, podés ingresarlo directamente mediante su enlace web (URL) para que cargue sin restricciones.
+              </p>
             </div>
 
             {/* Upload Toolbar */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
               {allowDevicePhotos && (
-                <label className="flex items-center justify-center gap-2 px-4 py-2 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold cursor-pointer transition-all shadow-xs shrink-0">
-                  <span className="material-symbols-outlined text-[18px]">add_photo_alternate</span>
-                  <span>{isUploadingFiles ? 'Procesando...' : 'Subir Fotos'}</span>
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*"
-                    disabled={isUploadingFiles}
-                    onChange={handleDirectFileUpload}
-                    className="hidden"
-                  />
-                </label>
+                <div className="flex items-center gap-2 shrink-0">
+                  <label className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-semibold cursor-pointer transition-all shadow-xs">
+                    <span className="material-symbols-outlined text-[18px]">add_photo_alternate</span>
+                    <span>{isUploadingFiles ? 'Subiendo...' : 'Subir Fotos'}</span>
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      disabled={isUploadingFiles || isUploadingVideo}
+                      onChange={handleDirectFileUpload}
+                      className="hidden"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 text-black border border-neutral-300 rounded-xl text-xs font-semibold cursor-pointer transition-all shadow-xs">
+                    <span className="material-symbols-outlined text-[18px]">videocam</span>
+                    <span>{isUploadingVideo ? 'Guardando...' : 'Subir Video'}</span>
+                    <input
+                      type="file"
+                      accept="video/mp4,video/webm,video/quicktime,video/*"
+                      disabled={isUploadingFiles || isUploadingVideo}
+                      onChange={handleDirectVideoUpload}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
               )}
 
               <div className="flex-1 flex items-center gap-2">
                 <input
                   type="url"
-                  placeholder="O pegar URL directa o enlace de Google Drive..."
+                  placeholder="O pegar URL directa de imagen o video (MP4, YouTube, Drive)..."
                   value={newImageUrl}
                   onChange={(e) => setNewImageUrl(e.target.value)}
                   className="flex-1 px-3 py-2 bg-[#fbf9f8] border border-neutral-200 rounded-xl text-xs text-black focus:outline-none focus:bg-white"
@@ -1124,7 +1180,7 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                   type="button"
                   onClick={handleAddImageUrl}
                   disabled={!newImageUrl.trim()}
-                  className="px-3 py-2 bg-neutral-200 hover:bg-neutral-300 disabled:opacity-40 text-black rounded-xl text-xs font-semibold transition-colors"
+                  className="px-3.5 py-2 bg-neutral-200 hover:bg-neutral-300 disabled:opacity-40 text-black rounded-xl text-xs font-semibold transition-colors cursor-pointer shrink-0"
                 >
                   Vincular
                 </button>
@@ -1137,10 +1193,10 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
               </div>
             )}
 
-            {/* Photos Grid */}
+            {/* Photos & Videos Grid */}
             {product.images.length === 0 ? (
               <div className="p-8 rounded-2xl bg-[#fbf9f8] border border-neutral-200 text-center text-xs text-neutral-400">
-                Aún no has agregado fotos. Podés subir desde tu dispositivo o pegar un enlace arriba.
+                Aún no has agregado fotos ni videos. Podés subir desde tu dispositivo o pegar un enlace arriba.
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
@@ -1149,16 +1205,17 @@ export const ProductEditModal: React.FC<ProductEditModalProps> = ({
                     key={imgUrl + idx}
                     className="relative group rounded-xl overflow-hidden bg-[#efeded] aspect-[3/4] shadow-xs border border-neutral-200"
                   >
-                    <img src={imgUrl} alt={`Foto ${idx + 1}`} className="w-full h-full object-cover" />
+                    <MediaThumbnail src={imgUrl} alt={`Foto o Video ${idx + 1}`} />
                     {idx === 0 && (
-                      <span className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/80 text-white text-[9px] font-bold uppercase tracking-wider">
+                      <span className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/80 text-white text-[9px] font-bold uppercase tracking-wider z-10">
                         Portada
                       </span>
                     )}
                     <button
                       type="button"
                       onClick={() => handleRemoveImage(idx)}
-                      className="absolute top-2 right-2 p-1 bg-white/90 hover:bg-red-50 text-red-600 rounded-lg shadow-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="absolute top-2 right-2 p-1 bg-white/90 hover:bg-red-50 text-red-600 rounded-lg shadow-xs opacity-0 group-hover:opacity-100 transition-opacity z-10 cursor-pointer"
+                      title="Eliminar"
                     >
                       <span className="material-symbols-outlined text-[16px]">delete</span>
                     </button>
